@@ -69,7 +69,7 @@ static inline GeoProps geo_props(GeoType t)
     case GEO_GOLDBERG_92:     p.verts=92; p.edges=270;p.faces=92; p.cells=1; break;
     case GEO_COMP_SPIKE_120:  p.verts=120;p.edges=180;p.faces=62; p.cells=1; break;
     case GEO_GOLDBERG_132:    p.verts=132;p.edges=270;p.faces=92; p.cells=1; break;
-    case GEO_COMPOUND_144:    p.verts=144;p.edges=288;p.faces=144;p.cells=1; break;
+    case GEO_COMPOUND_144:    p.verts=144; p.edges=576; p.faces=576; p.cells=144; break;
     case GEO_GOLDBERG_192:    p.verts=192;p.edges=270;p.faces=92; p.cells=1; break;
     default:                  p.verts=20; p.edges=30; p.faces=12; p.cells=1; break;
     }

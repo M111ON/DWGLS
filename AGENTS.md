@@ -17,8 +17,13 @@
 | GEO_GOLDBERG_92 | 92 | 270 | 92 | 1 | goldberg dual |
 | GEO_COMP_SPIKE_120 | 120 | 180 | 62 | 1 | spike compound |
 | GEO_GOLDBERG_132 | 132 | 270 | 92 | 1 | goldberg level 2 |
-| GEO_COMPOUND_144 | 144 | 288 | 144 | 1 | 6 × 24 = 144 |
+| **GEO_COMPOUND_144** | **144** | **576** | **576** | **144** | **★ 6ico = 18tes (protagonist)** |
 | GEO_GOLDBERG_192 | 192 | 270 | 92 | 1 | goldberg level 3 |
+
+**★ 6ico Compound (GEO_COMPOUND_144) — The Protagonist**
+- V=144 · E=576 · F=576 · C=144
+- "18tes" — 18-triangle tessellation field
+- This is the WORKING field for KIS-timeline
 
 **Mechanism:**
 - Parameters before entry — you choose GeoType → selects shape
@@ -89,7 +94,8 @@ DWGLS/
 - **92**: goldberg-92
 - **120**: spike compound
 - **132/192**: goldberg levels
-- **144**: 6 × 24 = 6-fold compound
+- **144**: 6ico compound (★ protagonist, 18tes)
+- **576**: edges+faces of 6ico compound
 
 ### Coordinate = Address
 - Geometry provides: mask bit per vertex (which slots used) + addressing
