@@ -16,10 +16,17 @@ Cube: 8 vertices
 
 ```
 cube edge = φ × pentagon edge
-1.617958 ≈ φ = 1.618034
+2.0 = 1.618034 × 1.236068
 
 NOT coincidence — classical geometry fact
 (compound of 5 cubes in a dodecahedron)
+
+Pentagon edge = distance between adjacent vertices on pentagonal face
+  e.g., (1,1,1) and (0, 1/φ, φ) = 1.236068
+Cube edge = distance between adjacent cube vertices
+  e.g., (1,1,1) and (1,1,-1) = 2.0
+
+Ratio = 2.0 / 1.236068 = φ = 1.618034
 ```
 
 ---
