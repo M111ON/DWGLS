@@ -262,6 +262,7 @@ Potential use cases:
 2. Implement disk spill for large datasets
 3. Benchmark with real-world data (GGUF tensors)
 4. Explore adaptive layer count based on data distribution
+5. **Seed Roots Lane** — memory-efficient access via spike paths (see `seed_roots_lane_research.md`)
 
 ---
 
