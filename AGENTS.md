@@ -33,11 +33,25 @@
 
 ### KIS-Timeline (`core/kis_codec_v4/v5/v6.h`)
 
-Loop transition of dodeca ↔ icosahedron through spike vertex:
+**KIS = FIELD, not pipeline.**
 
 ```
-Icosahedron (20 tri) → spike → dodec-like (60 faces)
-Dodecahedron (12 pent) → spike → ico-like (60 faces)
+∞ ← contraction ← 0 ← expansion → ∞
+                    ↑
+              enter anywhere
+```
+
+- **No start, no end, no zero entry point** — enter ANYWHERE
+- **Forward** = expansion (spike → more vertices)
+- **Backward** = contraction (seal → fewer vertices)
+- **Like a balance scale** — place data anywhere on 0-20736
+- **6 values same position** = 6 data points from different topology
+- **Direction = value** = path data came from
+
+**Loop transition:** dodeca ↔ icosahedron through spike vertex
+```
+Dodeca (12 pent) → spike → Ico-like (60 faces)
+Ico (20 tri) → spike → Dodec-like (60 faces)
 ```
 
 **Infinite alternation: Ico ↔ Dodec through spiking**
