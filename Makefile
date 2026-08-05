@@ -25,6 +25,7 @@ TIER1 := \
   section4_seal_residual \
   test_cell_classify \
   test_cube_addr \
+  test_cube_container \
   test_cube_in_dodeca \
   kis_birds_eye \
   kis_multi_container \
