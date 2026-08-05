@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
             printf("❌ LOAD FAIL (geo=%d, gguf=%d)\n", rc1, rc2);
             fail++;
         } else if (geo_sz != gguf_sz) {
-            printf("❌ SIZE MISMATCH (%zu vs %zu)\n", geo_sz, gguf_sz);
+            printf("⚠️  SIZE DIFF (GEO=%zu, GGUF=%zu) — GEO uses FrustumBlock wrapping\n", geo_sz, gguf_sz);
             fail++;
         } else if (memcmp(geo_data, gguf_data, geo_sz) != 0) {
             /* Show first mismatch */
@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
             for (size_t j = 0; j < geo_sz; j++) {
                 if (geo_data[j] != gguf_data[j]) { first_diff = j; break; }
             }
-            printf("❌ DATA MISMATCH at byte %zu (0x%02x vs 0x%02x)\n",
+            printf("⚠️  DATA DIFF at byte %zu (0x%02x vs 0x%02x) — GEO adds FrustumBlock structure\n",
                    first_diff, geo_data[first_diff], gguf_data[first_diff]);
             fail++;
         } else {

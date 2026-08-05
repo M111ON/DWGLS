@@ -297,7 +297,7 @@ int main(void) {
         kis_write(&field, (uint32_t)(v + 10), 0, 0, vdata[v]);
         kis_occupy(&field, (uint32_t)(v + 10), 0);
     }
-    kis_scale(&field, 0, 30, 4, 0);  /* v=10..13, W=0 → W=30 */
+    kis_scale(&field, 0, 30, 4, 10);  /* v=10..13, W=0 → W=30 */
     CHECK(33, "vertex 10 at W=30 == 1.1", kis_read(&field, 10, 30, 0) == 1.1f);
     CHECK(34, "vertex 13 at W=30 == 4.4", kis_read(&field, 13, 30, 0) == 4.4f);
     CHECK(35, "vertex 10 at W=0 still 1.1", kis_read(&field, 10, 0, 0) == 1.1f);

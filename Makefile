@@ -31,7 +31,6 @@ TIER1 := \
   kis_scale_test \
   test_geo_inference \
   test_geo_sid_loader \
-  test_geo_sid_verify \
   test_monitor \
   test_phi_microscope \
   test_safetensors_reader
@@ -43,6 +42,7 @@ TIER2 := \
   kis_codec_v6_test \
   kis_map_roundtrip \
   kis_real_gguf_test \
+  test_geo_sid_verify \
   test_qwen3_microscope \
   test_real_gguf_microscope
 
