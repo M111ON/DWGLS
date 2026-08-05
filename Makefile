@@ -97,6 +97,20 @@ $(BUILD):
 clean:
 	rm -rf $(BUILD)
 
+# ── Batch converter (cross-repo: DWGLS + FGLS_new) ────
+BATCH_SRC := tools/geo_batch_convert.c
+BATCH_BIN := $(BUILD)/geo_batch_convert.exe
+BATCH_CFLAGS := $(CFLAGS) -I I:/FGLS_new/runner
+
+batch: $(BATCH_SRC) | $(BUILD)
+	@echo "▶ BUILD  batch converter"
+	$(CC) $(BATCH_CFLAGS) -o $(BATCH_BIN) $(BATCH_SRC) $(LDFLAGS)
+	@echo "✅ geo_batch_convert.exe ready"
+
+# ── Run batch: make batch-run GGUF=I:/model/file.gguf DIR=./output
+batch-run: batch
+	@$(BATCH_BIN) $(GGUF) $(DIR)
+
 list:
 	@echo "All tests ($(words $(ALL_TESTS))):"
 	@for t in $(ALL_TESTS); do echo "  $$t"; done
