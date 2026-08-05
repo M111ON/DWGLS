@@ -47,6 +47,7 @@ TIER2 := \
   kis_real_gguf_test \
   test_geo_sid_verify \
   test_geo_tensor_hub \
+  test_rail_hub \
   test_qwen3_microscope \
   test_real_gguf_microscope
 

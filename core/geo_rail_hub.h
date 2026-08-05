@@ -210,6 +210,11 @@ static inline int geo_rail_hub_pull(GeoRailHub *r,
     /* ── 4. BRIDGE: fire Jet Bridge — no data copy, no residual write ─ */
     jet_bridge_hop(fs, pipe_id, NULL, 0u, NULL);
 
+    /* ── 4.5 RIBCAGE STEP: register this pipe's entry so freeze can find it.
+     * p5h_freeze_at_tick12 walks bridged pipes looking for ribcage entries.
+     * Without this step, entry_count=0 → freeze returns 0 → -3. */
+    p5h_ribcage_step(r->ribcage, pipe_id, FS_JET_BRIDGE_TICK, (uint64_t)tensor_offset);
+
     /* ── 5. BARRIER: freeze at tick-12 boundary ──────────────────────
      * p5h_freeze_at_tick12 walks bridged pipes and freezes them; here we
      * just need the barrier to be satisfied for THIS pipe. The freeze
