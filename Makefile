@@ -27,6 +27,7 @@ TIER1 := \
   test_cube_addr \
   test_cube_container \
   test_cube_in_dodeca \
+  test_geo_diamond_map \
   kis_birds_eye \
   kis_multi_container \
   kis_scale_test \
