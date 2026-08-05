@@ -20,6 +20,7 @@ TIER1 := \
   kis_4d_explore \
   kis_alternating_verify \
   kis_codec_v6_standalone_test \
+  kis_adaptive_deploy \
   kis_container_place \
   section4_seal_residual \
   test_cell_classify \
@@ -42,7 +43,6 @@ TIER2 := \
   kis_codec_v6_test \
   kis_map_roundtrip \
   kis_real_gguf_test \
-  kis_adaptive_deploy \
   test_qwen3_microscope \
   test_real_gguf_microscope
 
