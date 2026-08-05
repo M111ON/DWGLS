@@ -11,9 +11,65 @@
       "id": 2,
       "title": "Phase 2 next",
       "body": "Batch convert + cube container",
-      "status": "todo",
+      "status": "done",
       "created": "2026-08-05T16:22:22"
+    },
+    {
+      "id": 3,
+      "title": "Batch convert GGUF→GEO",
+      "body": "SID runner + contour to convert GGUF→FGLS/POGLS — blocked on geo_frame_seek.h",
+      "status": "todo",
+      "created": "2026-08-05T16:26:49"
+    },
+    {
+      "id": 4,
+      "title": "Cube container integration",
+      "body": "GeoJump + Metatron Maze + golden-ratio voxels → spherical container",
+      "status": "todo",
+      "created": "2026-08-05T16:26:49"
+    },
+    {
+      "id": 5,
+      "title": "Universal Codec extract→chunk+backpressure",
+      "body": "extract codec params → chunk processing → backpressure flow",
+      "status": "todo",
+      "created": "2026-08-05T16:26:49"
+    },
+    {
+      "id": 6,
+      "title": "KIS-timeline formula",
+      "body": "formalize KIS timeline as mathematical formula",
+      "status": "todo",
+      "created": "2026-08-05T16:26:50"
+    },
+    {
+      "id": 7,
+      "title": "Geomatrix weights deterministic + rotation layer",
+      "body": "deterministic weight mapping + rotation layer for geo_matrix",
+      "status": "todo",
+      "created": "2026-08-05T16:26:50"
+    },
+    {
+      "id": 8,
+      "title": "Phi microscope on larger models",
+      "body": "Run phi-microscope on 7B+ models, compare entropy patterns",
+      "status": "todo",
+      "created": "2026-08-05T16:26:50"
+    },
+    {
+      "id": 9,
+      "title": "Tier-2 tests: gguf_reader.h",
+      "body": "Unblock 8 tests needing gguf_reader.h — copy from FGLS_new or rewrite",
+      "status": "todo",
+      "created": "2026-08-05T16:26:50"
+    },
+    {
+      "id": 10,
+      "title": "Geo-frame-seek.h missing",
+      "body": "geo_frame_seek.h not in DWGLS — blocks kis_adaptive_deploy + batch convert",
+      "status": "done",
+      "created": "2026-08-05T16:26:50"
     }
   ],
-  "next_id": 3
+  "next_id": 11
 }
