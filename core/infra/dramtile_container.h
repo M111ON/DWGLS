@@ -158,8 +158,8 @@ static inline void dtc_print(DtContainer *c, const char *label) {
             dtc_is_delta(c) ? "|DELTA" : "");
     for (int i = 0; i < c->view.ndim; i++)
         fprintf(stderr, "%s%u", i ? "," : "", c->view.shape[i]);
-    fprintf(stderr, "] elem_sz=%zu strides=[", c->elem_size);
+    fprintf(stderr, "] elem_sz=%u strides=[", (unsigned)c->elem_size);
     for (int i = 0; i < c->view.ndim; i++)
-        fprintf(stderr, "%s%zu", i ? "," : "", c->stride[i]);
+        fprintf(stderr, "%s%u", i ? "," : "", (unsigned)c->stride[i]);
     fprintf(stderr, "] ptr=%p\n", (void*)c->view.data);
 }

@@ -143,8 +143,8 @@ static inline uint32_t dt_name_to_rdh(const char *name) {
 
 static inline int dt_store_init(DRamTileStore *store, size_t min_bytes) {
     memset(store, 0, sizeof(*store));
-    size_t cap = min_bytes < 4UL * 1024 * 1024 * 1024
-               ? 4UL * 1024 * 1024 * 1024
+    size_t cap = min_bytes < 4ULL * 1024 * 1024 * 1024
+               ? 4ULL * 1024 * 1024 * 1024
                : min_bytes;
 #ifdef _WIN32
     store->base = (uint8_t*)VirtualAlloc(NULL, cap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -310,7 +310,6 @@ static inline uint8_t *dt_put(DRamTileStore *store,
     uint32_t addr = dt_name_to_addr(name);
     uint32_t slot = addr % DT_HASH_SLOTS;
     if (store->hash[slot].dram_addr == addr) {
-        /* unused */         size_t off = store->hash[slot].offset;
         if (store->hash[slot].size != sz) return NULL;
         if (store->hash[slot].session_tick > 0)
             fprintf(stderr, "[dt_put] WARNING: overwriting slot %u '%s' — "
@@ -770,8 +769,8 @@ static inline int dt_store_init_twin_dual(DRamTileStore *store,
     memset(store, 0, sizeof(*store));
     if (weight_ratio <= 0.0f) weight_ratio = 0.5f;
     if (weight_ratio >= 1.0f) weight_ratio = 0.9f;
-    size_t total = max_bytes < 4UL * 1024 * 1024 * 1024
-                  ? 4UL * 1024 * 1024 * 1024 : max_bytes;
+    size_t total = max_bytes < 4ULL * 1024 * 1024 * 1024
+                  ? 4ULL * 1024 * 1024 * 1024 : max_bytes;
     size_t wcap = ((size_t)(total * weight_ratio)) & ~4095u;
     size_t kcap = (total - wcap) & ~4095u;
     if (kcap < (1u << 20)) kcap = 1u << 20;
@@ -930,6 +929,7 @@ static inline uint8_t *dt_putv(DRamTileStore *store,
                                 const uint32_t *shape,
                                 const uint8_t *data, size_t sz)
 {
+    (void)dtype; (void)ndim; (void)shape;
     return dt_put(store, name, data, sz);
 }
 
