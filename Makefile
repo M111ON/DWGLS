@@ -19,6 +19,7 @@ TIER1 := \
   geo_cube_in_dodeca_test \
   kis_4d_explore \
   kis_alternating_verify \
+  kis_codec_v6_standalone_test \
   kis_container_place \
   section4_seal_residual \
   test_cell_classify \

@@ -270,4 +270,44 @@ static int v6_decode(const uint8_t *d, uint32_t dlen, int8_t *out, uint32_t n) {
 }
 #define kis_v6_decode v6_decode
 
+/* ════════════════════════════════════════════════════════
+   PRODUCTION API — buffer-size-first pattern
+   ════════════════════════════════════════════════════════ */
+
+/* v6_encode_buf — query required buffer size, then encode.
+ * Pass buf=NULL, cap=0 to get size only. */
+static inline uint32_t v6_encode_buf(const int8_t *w, uint32_t n,
+                                     uint8_t *buf, uint32_t cap) {
+    if (!w || n == 0) return 0;
+    /* worst case: header(9) + cb(~580) + bitmap(2592*n_chunks) + n */
+    uint32_t n_chunks = (n + V6_SLOTS - 1) / V6_SLOTS;
+    uint32_t need = 9 + 580 + (uint32_t)(V6_BM_BYTES * n_chunks) + n + 64;
+    if (!buf || cap < need) return need;
+    return v6_encode(w, n, buf, cap);
+}
+
+/* v6_decode_buf — decode wrapper with consistent naming */
+static inline int v6_decode_buf(const uint8_t *d, uint32_t dlen,
+                                int8_t *out, uint32_t n) {
+    return v6_decode(d, dlen, out, n);
+}
+
+/* v6_verify — compare decoded output against original, return 1 if lossless */
+static inline int v6_verify(const uint8_t *d, uint32_t dlen,
+                            const int8_t *ref, uint32_t n) {
+    int8_t *tmp = (int8_t *)malloc(n);
+    if (!tmp) return 0;
+    int rc = v6_decode(d, dlen, tmp, n);
+    if (rc != 0) { free(tmp); return 0; }
+    int ok = (memcmp(tmp, ref, n) == 0);
+    free(tmp);
+    return ok;
+}
+
+/* v6_ratio — compressed size / raw size */
+static inline float v6_ratio(const uint8_t *d, uint32_t dlen, uint32_t n) {
+    (void)d; (void)dlen;
+    return n > 0 ? (float)dlen / n : 0.0f;
+}
+
 #endif /* KIS_V6_H */
