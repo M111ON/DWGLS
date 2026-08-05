@@ -1,1 +1,16 @@
+# Build
+build/
 *.exe
+*.o
+*.obj
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Tooling
+.hermes/
+
+# PDF samples (regenerable)
+dropbag/PDF_sample/
