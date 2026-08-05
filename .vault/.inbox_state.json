@@ -1,0 +1,19 @@
+{
+  "cards": [
+    {
+      "id": 1,
+      "title": "Phase 1 complete",
+      "body": "Makefile + git hygiene + KIS v6 hardening — all done",
+      "status": "done",
+      "created": "2026-08-05T16:22:22"
+    },
+    {
+      "id": 2,
+      "title": "Phase 2 next",
+      "body": "Batch convert + cube container",
+      "status": "todo",
+      "created": "2026-08-05T16:22:22"
+    }
+  ],
+  "next_id": 3
+}
