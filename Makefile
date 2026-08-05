@@ -31,6 +31,7 @@ TIER1 := \
   kis_scale_test \
   test_geo_inference \
   test_geo_sid_loader \
+  test_geo_prune \
   test_monitor \
   test_phi_microscope \
   test_safetensors_reader
