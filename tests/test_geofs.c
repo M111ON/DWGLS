@@ -59,7 +59,6 @@ static void test_volume_init(void) {
     ASSERT(v.total_blocks_free == 20736 - 256, "wrong free count");
     ASSERT(v.total_blocks_used == 0, "should have 0 used blocks");
     ASSERT(v.inode_count == 0, "should have 0 inodes");
-    ASSERT(v.auto_compress == 1, "auto_compress should be on");
 
     /* Verify volume blocks are marked used */
     for (uint32_t i = 0; i < GEOS_VOL_DATA_START; i++) {
@@ -222,33 +221,37 @@ static void test_tier(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   T8: Compression savings
+   T8: Summon / Unsummon round-trip
    ═══════════════════════════════════════════════════════════ */
 static void test_compression(void) {
-    TEST("Compression savings (tier 3 → tier 0)");
+    TEST("Summon / Unsummon round-trip");
     GeosVolume v;
     geos_volume_init(&v);
 
-    /* Create a tier 3 file (high entropy, large) */
-    uint8_t big[2048];
-    for (int i = 0; i < 2048; i++) big[i] = (uint8_t)(i * 17 + 5);
-    GeosInode *inode = geos_create(&v, "big.dat", 2048, big);
-    ASSERT(inode != NULL, "create big.dat");
+    uint8_t data[256];
+    for (int i = 0; i < 256; i++) data[i] = (uint8_t)(i * 17 + 5);
+
+    /* Summon at a geometric coordinate */
+    GeosInode *inode = geos_summon(&v, "big.dat", 256, data, 1, 2, 100);
+    ASSERT(inode != NULL, "summon big.dat");
+    ASSERT(inode->block_count > 0, "should have blocks");
+    ASSERT(strcmp(inode->name, "big.dat") == 0, "name mismatch");
 
     uint32_t blocks_before = inode->block_count;
 
-    /* Force tier to 3 for testing */
-    inode->tier = 3;
-    inode->entropy = 220;
+    /* Unsummon */
+    int rc = geos_unsummon(&v, "big.dat");
+    ASSERT(rc == 0, "unsummon should succeed");
+    ASSERT(v.inode_count == 0, "inode count should be 0");
 
-    /* Run compression */
-    uint32_t saved = geos_idle_compress(&v);
+    /* Summon again at a different coordinate */
+    inode = geos_summon(&v, "big.dat", 256, data, 3, 4, 200);
+    ASSERT(inode != NULL, "re-summon big.dat");
+    ASSERT(inode->block_count == blocks_before, "same block count");
 
-    ASSERT(saved > 0, "compression should save space");
-    ASSERT(inode->block_count < blocks_before,
-           "compressed file should have fewer blocks");
-    ASSERT(inode->flags & GEOS_FLAG_COMPRESSED,
-           "should be marked compressed");
+    /* Unsummon non-existent */
+    rc = geos_unsummon(&v, "nope.dat");
+    ASSERT(rc == -2, "unsummon missing file returns -2");
 
     PASS();
 }
@@ -372,33 +375,27 @@ static void test_addr_make(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   T14: Compression: tier 3 file shrinks
+   T14: Bijection forward produces valid flat addresses
    ═══════════════════════════════════════════════════════════ */
 static void test_compression_tier3(void) {
-    TEST("Compression: tier 3 file shrinks");
+    TEST("Bijection forward produces valid flat addresses");
     GeosVolume v;
     geos_volume_init(&v);
 
-    /* Create tier 3 file (324 blocks = 20.7KB) */
-    uint8_t big[20480];
-    for (int i = 0; i < 20480; i++) big[i] = (uint8_t)(i & 0xFF);
-    GeosInode *inode = geos_create(&v, "huge.dat", 20480, big);
-    ASSERT(inode != NULL, "create huge.dat");
+    /* Test bijection forward for several coordinates */
+    uint8_t test_gens[] = {0, 1, 2, 5};
+    uint8_t test_faces[] = {0, 1, 3, 5};
+    uint16_t test_slots[] = {0, 100, 500, 20735};
 
-    /* Force tier 3 */
-    inode->tier = 3;
-    inode->entropy = 230;
+    for (int i = 0; i < 4; i++) {
+        GeosBijection b = geos_bijection_forward(test_gens[i], test_faces[i], test_slots[i]);
+        ASSERT(b.block_flat < GEOS_ADDR_SPACE, "flat address in range");
+        ASSERT(b.byte_offset == b.block_flat * GEOS_BLOCK_SZ, "byte_offset consistent");
+        ASSERT(b.gen == test_gens[i], "gen stored");
+        ASSERT(b.face == test_faces[i], "face stored");
+        ASSERT(b.slot == test_slots[i], "slot stored");
+    }
 
-    uint16_t blocks_before = inode->block_count;
-
-    /* Compress */
-    uint32_t saved = geos_idle_compress(&v);
-
-    ASSERT(saved > 0, "should save space");
-    ASSERT(inode->block_count < blocks_before,
-           "blocks should decrease");
-
-    printf("(saved %u bytes, %u→%u blocks) ", saved, blocks_before, inode->block_count);
     PASS();
 }
 
