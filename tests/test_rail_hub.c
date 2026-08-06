@@ -10,6 +10,7 @@
 #include "geo_cube_container.h"
 #include "geo_cell_addr.h"
 #include "geo_rail_hub.h"
+#include "geo_zerocopy.h"
 
 static int pass = 0, fail = 0;
 #define CHECK(n, desc, cond) do { \
@@ -162,6 +163,42 @@ int main(int argc, char **argv) {
     printf("\n");
 
     if (rail_ok) geo_rail_hub_close(&rail);
+    /* DON'T close hub or remove gcube — T8 reuses both */
+
+    /* ── T8: Zero-copy integration ──────────────────────────── */
+    printf("T8: Zero-copy rail hub pull\n");
+    {
+        GeoZeroCopy zc;
+        GeoRailHub zc_rail;
+        memset(&zc_rail, 0, sizeof(zc_rail));
+
+        int zrc = geo_zerocopy_open(&zc, gcube);
+        CHECK(8, "zc open returns 0", zrc == 0);
+
+        if (zrc == 0 && hub_ok) {
+            int zr = geo_rail_hub_open_zc(&zc_rail, &hub, &zc);
+            CHECK(8, "rail open_zc returns 0", zr == 0);
+
+            if (zr == 0 && zc.cube.header.n_tensors > 0) {
+                const char *name = zc.cube.tensors[0].name;
+                uint8_t *zc_data = NULL;
+                uint32_t zc_n = 0, zc_dt = 0;
+                int prc = geo_rail_hub_pull(&zc_rail, name,
+                                            &zc_data, &zc_n, &zc_dt);
+                CHECK(8, "zc pull returns 0", prc == 0);
+
+                if (prc == 0 && zc_data) {
+                    int in_map = (zc_data >= zc.base &&
+                                  zc_data < zc.base + zc.mapped_size);
+                    CHECK(8, "pointer in mmap region", in_map);
+                }
+            }
+            geo_rail_hub_close(&zc_rail);
+        }
+        geo_zerocopy_close(&zc);
+    }
+    printf("\n");
+
     if (hub_ok)  geo_hub_close(&hub);
     remove(gcube);
 

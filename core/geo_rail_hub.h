@@ -47,6 +47,7 @@
 /* Hub + addressing layer (core/) */
 #include "geo_tensor_hub.h"    /* GeoTensorHub, geo_hub_open/load/close */
 #include "geo_cell_addr.h"     /* GeoCellAddr, geo_cell_addr_from_offset */
+#include "geo_zerocopy.h"      /* GeoZeroCopy, mmap-based zero-copy load */
 
 /* Sync layer (infra/) */
 #include "infra/gear_lock.h"    /* GearLock               */
@@ -66,6 +67,7 @@
    ═══════════════════════════════════════════════════════════════ */
 typedef struct {
     GeoTensorHub  *hub;          /* borrowed — outlives the RailHub scope  */
+    GeoZeroCopy   *zc;           /* borrowed — mmap zero-copy (or NULL)    */
     FiboSpine      spine;       /* 1728-pipe rail state (28 KB)            */
     P5HRibcage    *ribcage;     /* heap-allocated via p5h_ribcage_init    */
     GearLock       gear;        /* CPU/GPU world-count (init only)         */
@@ -97,7 +99,22 @@ static inline int geo_rail_hub_open(GeoRailHub *r,
     r->gear.gpu_worlds = GEAR_GPU_WORLD;  /* 162 */
 
     r->is_open = 1;
+    r->zc = NULL;  /* no zero-copy by default */
     return 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   RAIL HUB OPEN (zero-copy variant)
+   Same as above but additionally registers a GeoZeroCopy context.
+   When zc is set, geo_rail_hub_pull() uses mmap pointer (zero copy).
+   ═══════════════════════════════════════════════════════════════ */
+static inline int geo_rail_hub_open_zc(GeoRailHub *r,
+                                        GeoTensorHub *hub,
+                                        GeoZeroCopy *zc)
+{
+    int rc = geo_rail_hub_open(r, hub);
+    if (rc == 0 && zc) r->zc = zc;
+    return rc;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -163,20 +180,33 @@ static inline int geo_rail_hub_pull(GeoRailHub *r,
         return -1;
     }
 
-    /* ── 1. LOOKUP via hub — gives us the raw weight bytes ──────────── */
+    /* ── 1. LOOKUP via zero-copy or hub ─────────────────────
+     * If r->zc is set, use mmap pointer (zero copy).
+     * Otherwise fall back to hub_load (malloc + fread). */
     uint8_t  *raw   = NULL;
     uint32_t  n     = 0;
     uint32_t  dtype = 0;
-    if (geo_hub_load(r->hub, tensor_name, &raw, &n, &dtype) != 0) {
-        return -2;  /* tensor not in GGUF index or .gcube */
+
+    if (r->zc) {
+        /* Zero-copy path: pointer into mmap'd region */
+        if (geo_zerocopy_load(r->zc, tensor_name, &raw, &n, &dtype) != 0) {
+            return -2;
+        }
+    } else {
+        /* Fallback: malloc + fread path via hub */
+        if (geo_hub_load(r->hub, tensor_name, &raw, &n, &dtype) != 0) {
+            return -2;
+        }
     }
 
-    /* Tensor's linear offset within .gcube comes from the cube entry. We
-     * recover it by name → block_start (which is the linear index). This
-     * is O(1) per tensor because gcube_find is name-keyed (NOT a search in
-     * the rail hub itself — that's hub's bookkeeping). */
-    const GCubeTensorEntry *ge =
-        gcube_find(r->hub->cube, tensor_name);
+    /* Tensor's linear offset within .gcube — look up from the appropriate
+     * container (zero-copy mmap or fread-loaded). */
+    const GCubeTensorEntry *ge = NULL;
+    if (r->zc) {
+        ge = gcube_find(&r->zc->cube, tensor_name);
+    } else {
+        ge = gcube_find(r->hub->cube, tensor_name);
+    }
     if (!ge) return -2;
 
     /* tensor_offset = first block index for this tensor */
