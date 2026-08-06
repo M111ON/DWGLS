@@ -515,20 +515,43 @@ static inline uint32_t geos_idle_compress(GeosVolume *v) {
 
         /* Strategy 2: Block deduplication (same-content blocks) */
         if (inode->block_count > 2) {
-            uint32_t dedup_count = 0;
-            for (uint32_t a = 0; a < inode->block_count - 1; a++) {
-                for (uint32_t b = a + 1; b < inode->block_count; b++) {
-                    uint32_t flat_a = inode->block_start + a;
+            /* Find duplicate blocks and compact them */
+            uint32_t write_idx = 0;
+            for (uint32_t a = 0; a < inode->block_count; a++) {
+                uint32_t flat_a = inode->block_start + a;
+                const uint8_t *block_a = &v->data[flat_a * GEOS_BLOCK_SZ];
+
+                /* Check if this block is a duplicate of an earlier block */
+                int is_dup = 0;
+                for (uint32_t b = 0; b < a; b++) {
                     uint32_t flat_b = inode->block_start + b;
-                    if (_geos_block_equal(&v->data[flat_a * GEOS_BLOCK_SZ],
-                                          &v->data[flat_b * GEOS_BLOCK_SZ])) {
-                        dedup_count++;
+                    if (_geos_block_equal(&v->data[flat_b * GEOS_BLOCK_SZ], block_a)) {
+                        is_dup = 1;
+                        break;
                     }
                 }
+
+                if (!is_dup) {
+                    /* Move non-duplicate block to compact position */
+                    if (write_idx != a) {
+                        uint32_t dst_flat = inode->block_start + write_idx;
+                        memcpy(&v->data[dst_flat * GEOS_BLOCK_SZ], block_a, GEOS_BLOCK_SZ);
+                    }
+                    write_idx++;
+                }
             }
-            /* dedup_count counts pairs; each pair saves 64 bytes */
-            /* (not actually removing duplicates yet — just counting potential) */
-            (void)dedup_count;
+
+            if (write_idx < inode->block_count) {
+                uint32_t old_count = inode->block_count;
+                uint32_t new_count = write_idx;
+
+                /* Free unused blocks */
+                geos_free_blocks(v, inode->block_start + new_count,
+                                 (uint16_t)(old_count - new_count));
+                inode->block_count = (uint16_t)new_count;
+                inode->flags |= GEOS_FLAG_COMPRESSED;
+                total_saved += (old_count - new_count) * GEOS_BLOCK_SZ;
+            }
         }
     }
 
@@ -572,6 +595,130 @@ static inline int geos_stat(GeosVolume *v, const char *name, GeosStat *st) {
 
     geo_cell_addr_offset_to_pipe(inode->block_start, &st->pipe_id, &st->tick);
     return 0;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GEOS_RECON — Data pattern analysis + compression forecast
+   ═══════════════════════════════════════════════════════════
+   Analyzes block content to find:
+   - Zero blocks (eliminatable)
+   - Duplicate blocks (deduplicatable)
+   - Repeated patterns (compressible)
+   - Entropy distribution (compressibility score)
+   Returns forecast: how many bytes can be saved.
+   ═══════════════════════════════════════════════════════════ */
+
+typedef struct {
+    uint32_t total_blocks;
+    uint32_t zero_blocks;        /* all-zero blocks */
+    uint32_t duplicate_pairs;    /* identical block pairs */
+    uint32_t unique_blocks;      /* distinct block content */
+    uint32_t bytes_saved_forecast; /* estimated savings */
+    float    compressibility;     /* 0.0 = no compress, 1.0 = max */
+    char     profile[16];         /* "sparse"|"dense"|"repeated"|"mixed" */
+} GeosRecon;
+
+static inline void geos_recon(GeosVolume *v, const char *name, GeosRecon *r) {
+    if (!v || !r) return;
+    memset(r, 0, sizeof(*r));
+
+    GeosInode *inode = geos_find(v, name);
+    if (!inode) return;
+
+    r->total_blocks = inode->block_count;
+    if (r->total_blocks == 0) return;
+
+    /* Track unique block signatures (simple hash) */
+    uint32_t sigs[4096];  /* block signatures */
+    uint32_t n_sigs = 0;
+
+    for (uint32_t b = 0; b < inode->block_count && b < 4096; b++) {
+        uint32_t flat = inode->block_start + b;
+        const uint8_t *block = &v->data[flat * GEOS_BLOCK_SZ];
+
+        /* Check zero block */
+        int is_zero = 1;
+        for (uint32_t j = 0; j < GEOS_BLOCK_SZ; j++) {
+            if (block[j] != 0) { is_zero = 0; break; }
+        }
+        if (is_zero) { r->zero_blocks++; continue; }
+
+        /* Compute signature (djb2 hash) */
+        uint32_t sig = 5381;
+        for (uint32_t j = 0; j < GEOS_BLOCK_SZ; j++)
+            sig = ((sig << 5) + sig) + block[j];
+
+        /* Check for duplicates */
+        int found = 0;
+        for (uint32_t s = 0; s < n_sigs; s++) {
+            if (sigs[s] == sig) { r->duplicate_pairs++; found = 1; break; }
+        }
+        if (!found && n_sigs < 4096) {
+            sigs[n_sigs++] = sig;
+        }
+    }
+
+    r->unique_blocks = n_sigs;
+    r->bytes_saved_forecast = r->zero_blocks * GEOS_BLOCK_SZ;
+
+    if (r->total_blocks > 0) {
+        float zero_ratio = (float)r->zero_blocks / r->total_blocks;
+        float dup_ratio = (float)r->duplicate_pairs / r->total_blocks;
+        r->compressibility = zero_ratio + dup_ratio;
+        if (r->compressibility > 1.0f) r->compressibility = 1.0f;
+
+        if (zero_ratio > 0.5f)
+            snprintf(r->profile, sizeof(r->profile), "sparse");
+        else if (dup_ratio > 0.3f)
+            snprintf(r->profile, sizeof(r->profile), "repeated");
+        else if (r->compressibility < 0.05f)
+            snprintf(r->profile, sizeof(r->profile), "dense");
+        else
+            snprintf(r->profile, sizeof(r->profile), "mixed");
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GEOS_RECON_ALL — Analyze entire volume
+   ═══════════════════════════════════════════════════════════ */
+
+static inline void geos_recon_all(GeosVolume *v) {
+    if (!v) return;
+
+    printf("\n╔══════════════════════════════════════════════════════════════════╗\n");
+    printf("║  GeoFS Recon — Data Pattern Analysis                          ║\n");
+    printf("╠══════════════════════════════════════════════════════════════════╣\n");
+
+    uint32_t total_zero = 0, total_dup = 0, total_blocks = 0;
+    uint32_t total_forecast = 0;
+
+    printf("║  %-16s %6s %6s %6s %6s %8s %8s  ║\n",
+           "File", "Blocks", "Zero", "Dup", "Unique", "Save(B)", "Profile");
+    printf("║  ──────────────── ────── ────── ────── ────── ──────── ────────  ║\n");
+
+    for (uint16_t i = 0; i < v->inode_count; i++) {
+        GeosRecon r;
+        geos_recon(v, v->inodes[i].name, &r);
+
+        printf("║  %-16s %6u %6u %6u %6u %8u %-8s  ║\n",
+               v->inodes[i].name,
+               r.total_blocks, r.zero_blocks, r.duplicate_pairs,
+               r.unique_blocks, r.bytes_saved_forecast, r.profile);
+
+        total_zero += r.zero_blocks;
+        total_dup += r.duplicate_pairs;
+        total_blocks += r.total_blocks;
+        total_forecast += r.bytes_saved_forecast;
+    }
+
+    printf("╠══════════════════════════════════════════════════════════════════╣\n");
+    printf("║  TOTAL: %u blocks, %u zero, %u dup pairs                  ║\n",
+           total_blocks, total_zero, total_dup);
+    printf("║  Forecast: %u bytes saved (%.1f%% of %.1f KB)            ║\n",
+           total_forecast,
+           total_blocks > 0 ? (float)total_forecast / (total_blocks * GEOS_BLOCK_SZ) * 100.0f : 0,
+           total_blocks * GEOS_BLOCK_SZ / 1024.0);
+    printf("╚══════════════════════════════════════════════════════════════════╝\n\n");
 }
 
 /* ═══════════════════════════════════════════════════════════
