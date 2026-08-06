@@ -67,7 +67,7 @@ Ico (20 tri) → spike → Dodec-like (60 faces)
 
 ```
 DWGLS/
-├── core/           (16 headers)
+├── core/           (17 headers)
 │   ├── 4D Geometry (9)
 │   │   ├── geo_param_grid.h      ← PARAMETERIZED GEOMETRY (start here)
 │   │   ├── geo_dual_place.h      ← Hilbert+Peano 162→64 mapping
@@ -79,21 +79,27 @@ DWGLS/
 │   │   ├── geo_hex_layer.h       ← Hexagonal geometry
 │   │   └── geo_tring_walk.h      ← Tring walk patterns
 │   │
-│   └── KIS Timeline (7)
+│   └── KIS Timeline (8)
 │       ├── kis_codec_v4.h        ← LOSSLESS proven on real GGUF
 │       ├── kis_codec_v5.h        ← v5 codecs
 │       ├── kis_codec_v6.h        ← v6 codecs
 │       ├── geo_adaptive_store.h  ← Adaptive storage engine
 │       ├── geo_kis_container.h   ← Container format (CRC-64)
 │       ├── beam_entropy_container.h ← Beam code v2
-│       └── entropy_container.h   ← Entropy container
+│       ├── entropy_container.h   ← Entropy container
+│       └── geofs_core.h          ← ★ GeoFS: geometric filesystem
 │
-└── tests/          (7 files)
+├── core/infra/     (2 headers)
+│   ├── gear_lock.h               ← GEAR_GEO_FULL = 20736
+│   └── fibo_spine.h              ← FS_PIPES = 1728, FS_TICKS = 12
+│
+└── tests/          (8 files)
     ├── kis_codec_v4/v5/v6_test.c
     ├── kis_adaptive_deploy.c
     ├── kis_real_gguf_test.c
     ├── kis_map_roundtrip.c
-    └── section4_seal_residual.c
+    ├── section4_seal_residual.c
+    └── test_geo_fs.c             ← ★ GeoFS tests (10/10)
 ```
 
 ## 🧭 Working Rules
