@@ -118,6 +118,22 @@ typedef struct {
 } GeosInode;
 
 /* ═══════════════════════════════════════════════════════════
+   FREE LIST — sorted ranges for O(k) block allocation
+   ═══════════════════════════════════════════════════════════ */
+
+#define GEOS_MAX_FREE_RANGES  512u
+
+typedef struct {
+    uint32_t start;
+    uint32_t count;
+} GeosFreeRange;
+
+typedef struct {
+    GeosFreeRange ranges[GEOS_MAX_FREE_RANGES];
+    uint16_t      count;
+} GeosFreeList;
+
+/* ═══════════════════════════════════════════════════════════
    GEOS_VOLUME — Top-level filesystem state
    ═══════════════════════════════════════════════════════════
    Layout in 20736 address space:
@@ -146,6 +162,7 @@ typedef struct {
     uint8_t     block_map[GEOS_ADDR_SPACE / 8];
     uint32_t    total_entropy;
     uint8_t     auto_compress;
+    GeosFreeList free_list;   /* sorted free ranges for O(k) alloc */
 } GeosVolume;
 
 /* ═══════════════════════════════════════════════════════════
@@ -163,42 +180,119 @@ static inline void geos_volume_init(GeosVolume *v) {
     for (uint32_t i = 0; i < GEOS_VOL_DATA_START; i++) {
         v->block_map[i / 8] |= (1u << (i % 8));
     }
+
+    /* Initialize free list: single range [256, 20736) */
+    v->free_list.count = 1;
+    v->free_list.ranges[0].start = GEOS_VOL_DATA_START;
+    v->free_list.ranges[0].count = GEOS_ADDR_SPACE - GEOS_VOL_DATA_START;
 }
 
 /* ═══════════════════════════════════════════════════════════
-   BLOCK ALLOCATION — geometric block allocator
+   BLOCK ALLOCATION — free-list allocator (fast)
+   ═══════════════════════════════════════════════════════════
+   Free list: sorted array of (start, count) ranges.
+   Alloc = first-fit scan of free ranges (typically <50 entries).
+   Free = insert + merge adjacent. Both O(k) where k = range count.
+   Bitmap kept for backward compat (entropy calc, serialize).
    ═══════════════════════════════════════════════════════════ */
+
+/* ── Internal: add range to free list (sorted by start) ────── */
+
+static inline void _geos_freelist_insert(GeosFreeList *fl, uint32_t start, uint32_t count) {
+    if (fl->count >= GEOS_MAX_FREE_RANGES) return;
+
+    /* Find insertion point (sorted by start) */
+    uint16_t pos = 0;
+    while (pos < fl->count && fl->ranges[pos].start < start) pos++;
+
+    /* Shift right */
+    for (uint16_t i = fl->count; i > pos; i--)
+        fl->ranges[i] = fl->ranges[i - 1];
+
+    fl->ranges[pos].start = start;
+    fl->ranges[pos].count = count;
+    fl->count++;
+}
+
+/* ── Internal: merge adjacent ranges ──────────────────────── */
+
+static inline void _geos_freelist_merge(GeosFreeList *fl) {
+    uint16_t write = 0;
+    for (uint16_t read = 1; read < fl->count; read++) {
+        GeosFreeRange *prev = &fl->ranges[write];
+        GeosFreeRange *curr = &fl->ranges[read];
+        if (prev->start + prev->count == curr->start) {
+            /* Merge */
+            prev->count += curr->count;
+        } else {
+            write++;
+            fl->ranges[write] = *curr;
+        }
+    }
+    fl->count = write + 1;
+}
+
+/* ── Internal: mark bitmap for range ──────────────────────── */
+
+static inline void _geos_bitmap_set(GeosVolume *v, uint32_t start, uint32_t count, int used) {
+    for (uint32_t i = start; i < start + count; i++) {
+        if (used)
+            v->block_map[i / 8] |= (1u << (i % 8));
+        else
+            v->block_map[i / 8] &= ~(1u << (i % 8));
+    }
+}
+
+/* ── ALLOC — first-fit from free list ─────────────────────── */
 
 static inline uint32_t geos_alloc_blocks(GeosVolume *v, uint16_t count) {
     if (count == 0) return 0xFFFF;
     if (count > v->total_blocks_free) return 0xFFFF;
 
-    for (uint32_t start = GEOS_VOL_DATA_START;
-         start + count <= GEOS_ADDR_SPACE; start++)
-    {
-        int found = 1;
-        for (uint16_t i = 0; i < count; i++) {
-            if (v->block_map[(start + i) / 8] & (1u << ((start + i) % 8))) {
-                found = 0;
-                break;
+    GeosFreeList *fl = &v->free_list;
+
+    /* First-fit scan */
+    for (uint16_t i = 0; i < fl->count; i++) {
+        if (fl->ranges[i].count >= count) {
+            uint32_t start = fl->ranges[i].start;
+
+            /* Shrink or remove range */
+            fl->ranges[i].start += count;
+            fl->ranges[i].count -= count;
+            if (fl->ranges[i].count == 0) {
+                /* Remove: shift left */
+                for (uint16_t j = i; j < fl->count - 1; j++)
+                    fl->ranges[j] = fl->ranges[j + 1];
+                fl->count--;
             }
-        }
-        if (found) {
-            for (uint16_t i = 0; i < count; i++) {
-                v->block_map[(start + i) / 8] |= (1u << ((start + i) % 8));
-            }
+
+            /* Mark bitmap */
+            _geos_bitmap_set(v, start, count, 1);
             v->total_blocks_used += count;
             v->total_blocks_free -= count;
             return start;
         }
     }
-    return 0xFFFF;
+
+    return 0xFFFF;  /* no fit found */
 }
 
+/* ── FREE — return range to free list + merge ─────────────── */
+
 static inline void geos_free_blocks(GeosVolume *v, uint32_t start, uint16_t count) {
-    for (uint16_t i = 0; i < count; i++) {
-        v->block_map[(start + i) / 8] &= ~(1u << ((start + i) % 8));
-    }
+    if (count == 0) return;
+
+    GeosFreeList *fl = &v->free_list;
+
+    /* Clear bitmap */
+    _geos_bitmap_set(v, start, count, 0);
+
+    /* Insert into free list */
+    _geos_freelist_insert(fl, start, count);
+
+    /* Merge adjacent ranges */
+    _geos_freelist_merge(fl);
+
     v->total_blocks_used -= count;
     v->total_blocks_free += count;
 }
