@@ -134,14 +134,13 @@ typedef struct {
 } GeosFreeList;
 
 /* ═══════════════════════════════════════════════════════════
-   GEOS_VOLUME — Top-level filesystem state
+   DATA STORE — in-memory block storage
    ═══════════════════════════════════════════════════════════
-   Layout in 20736 address space:
-     [0..127]       Volume header + inode table
-     [128..255]     Directory metadata
-     [256..20735]   File data blocks (20480 blocks = 1.25 MB)
+   Flat byte array: block N → bytes [N*64 .. N*64+63].
+   Total: 20736 × 64 = 1,327,104 bytes (~1.3 MB).
    ═══════════════════════════════════════════════════════════ */
 
+#define GEOS_DATA_STORE_SIZE  (GEOS_ADDR_SPACE * GEOS_BLOCK_SZ)  /* 1.3 MB */
 #define GEOS_VOL_HDR_BLOCKS  128u
 #define GEOS_VOL_DIR_BLOCKS  128u
 #define GEOS_VOL_DATA_START  256u
@@ -162,7 +161,8 @@ typedef struct {
     uint8_t     block_map[GEOS_ADDR_SPACE / 8];
     uint32_t    total_entropy;
     uint8_t     auto_compress;
-    GeosFreeList free_list;   /* sorted free ranges for O(k) alloc */
+    GeosFreeList free_list;
+    uint8_t     *data;          /* heap-allocated block data (1.3 MB) */
 } GeosVolume;
 
 /* ═══════════════════════════════════════════════════════════
@@ -176,6 +176,9 @@ static inline void geos_volume_init(GeosVolume *v) {
     v->total_blocks_free = GEOS_ADDR_SPACE - GEOS_VOL_DATA_START;
     v->auto_compress = 1;
 
+    /* Allocate data store */
+    v->data = (uint8_t *)calloc(1, GEOS_DATA_STORE_SIZE);
+
     /* Mark volume blocks as used */
     for (uint32_t i = 0; i < GEOS_VOL_DATA_START; i++) {
         v->block_map[i / 8] |= (1u << (i % 8));
@@ -185,6 +188,10 @@ static inline void geos_volume_init(GeosVolume *v) {
     v->free_list.count = 1;
     v->free_list.ranges[0].start = GEOS_VOL_DATA_START;
     v->free_list.ranges[0].count = GEOS_ADDR_SPACE - GEOS_VOL_DATA_START;
+}
+
+static inline void geos_volume_free(GeosVolume *v) {
+    if (v && v->data) { free(v->data); v->data = NULL; }
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -351,6 +358,50 @@ static inline GeosInode* geos_find(GeosVolume *v, const char *name) {
             return &v->inodes[i];
     }
     return NULL;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GEOS_WRITE — write data to file blocks
+   ═══════════════════════════════════════════════════════════ */
+
+static inline int geos_write(GeosVolume *v, const char *name,
+                              const uint8_t *data, uint32_t size) {
+    GeosInode *inode = geos_find(v, name);
+    if (!inode || !data || size == 0) return -1;
+
+    uint32_t max_bytes = inode->block_count * GEOS_BLOCK_SZ;
+    uint32_t bytes = (size < max_bytes) ? size : max_bytes;
+
+    for (uint32_t b = 0; b < inode->block_count && b * GEOS_BLOCK_SZ < bytes; b++) {
+        uint32_t offset = (inode->block_start + b) * GEOS_BLOCK_SZ;
+        uint32_t chunk = bytes - b * GEOS_BLOCK_SZ;
+        if (chunk > GEOS_BLOCK_SZ) chunk = GEOS_BLOCK_SZ;
+        memcpy(&v->data[offset], data + b * GEOS_BLOCK_SZ, chunk);
+    }
+
+    inode->size_bytes = bytes;
+    return (int)bytes;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GEOS_READ — read data from file blocks
+   ═══════════════════════════════════════════════════════════ */
+
+static inline int geos_read(GeosVolume *v, const char *name,
+                             uint8_t *buf, uint32_t buf_size) {
+    GeosInode *inode = geos_find(v, name);
+    if (!inode || !buf) return -1;
+
+    uint32_t bytes = (buf_size < inode->size_bytes) ? buf_size : inode->size_bytes;
+
+    for (uint32_t b = 0; b < inode->block_count && b * GEOS_BLOCK_SZ < bytes; b++) {
+        uint32_t offset = (inode->block_start + b) * GEOS_BLOCK_SZ;
+        uint32_t chunk = bytes - b * GEOS_BLOCK_SZ;
+        if (chunk > GEOS_BLOCK_SZ) chunk = GEOS_BLOCK_SZ;
+        memcpy(buf + b * GEOS_BLOCK_SZ, &v->data[offset], chunk);
+    }
+
+    return (int)bytes;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -552,6 +603,15 @@ static inline int geos_serialize(GeosVolume *v, const char *path) {
         fwrite(&v->inodes[i], sizeof(GeosInode), 1, f);
     }
 
+    /* Write data blocks (only used blocks, compressed) */
+    for (uint16_t i = 0; i < v->inode_count; i++) {
+        GeosInode *inode = &v->inodes[i];
+        for (uint16_t b = 0; b < inode->block_count; b++) {
+            uint32_t offset = (inode->block_start + b) * GEOS_BLOCK_SZ;
+            fwrite(&v->data[offset], GEOS_BLOCK_SZ, 1, f);
+        }
+    }
+
     fclose(f);
     return 0;
 }
@@ -565,6 +625,9 @@ static inline int geos_deserialize(GeosVolume *v, const char *path) {
 
     FILE *f = fopen(path, "rb");
     if (!f) return -2;
+
+    /* Allocate data store if not already */
+    if (!v->data) v->data = (uint8_t *)calloc(1, GEOS_DATA_STORE_SIZE);
 
     /* Read volume header */
     char magic[4];
@@ -594,10 +657,31 @@ static inline int geos_deserialize(GeosVolume *v, const char *path) {
     for (uint32_t i = 0; i < GEOS_VOL_DATA_START; i++)
         v->block_map[i / 8] |= (1u << (i % 8));
 
+    /* Rebuild free list + read data blocks */
+    v->free_list.count = 0;
+
     for (uint16_t i = 0; i < v->inode_count; i++) {
         for (uint16_t b = 0; b < v->inodes[i].block_count; b++) {
             uint32_t flat = v->inodes[i].block_start + b;
             v->block_map[flat / 8] |= (1u << (flat % 8));
+            /* Read data block from file */
+            uint32_t offset = flat * GEOS_BLOCK_SZ;
+            fread(&v->data[offset], GEOS_BLOCK_SZ, 1, f);
+        }
+    }
+
+    /* Rebuild free list from block map gaps */
+    {
+        uint32_t range_start = GEOS_VOL_DATA_START;
+        for (uint32_t i = GEOS_VOL_DATA_START; i <= GEOS_ADDR_SPACE; i++) {
+            int used = (i < GEOS_ADDR_SPACE) ?
+                       (v->block_map[i / 8] & (1u << (i % 8))) : 1;
+            if (used) {
+                if (i > range_start) {
+                    _geos_freelist_insert(&v->free_list, range_start, i - range_start);
+                }
+                range_start = i + 1;
+            }
         }
     }
 

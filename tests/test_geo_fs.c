@@ -236,19 +236,32 @@ static void test_voronoi_file_access(void) {
     VoronoiCache vc;
     voronoi_init(&vc);
 
-    /* Create file */
+    /* Create file + write real data */
     uint8_t data[192];
     memset(data, 0xCD, sizeof(data));
+    for (int i = 0; i < 192; i++) data[i] = (uint8_t)(i * 3 + 7);
+
     GeosInode *inode = geos_create(&vol, "tensor.bin", 192, data);
     assert(inode != NULL);
 
-    /* First access — cache miss (insert triggers internal lookup) */
+    /* Write data into blocks */
+    int written = geos_write(&vol, "tensor.bin", data, 192);
+    assert(written == 192);
+
+    /* Read data back */
+    uint8_t readbuf[192];
+    memset(readbuf, 0, sizeof(readbuf));
+    int read_n = geos_read(&vol, "tensor.bin", readbuf, sizeof(readbuf));
+    assert(read_n == 192);
+    assert(memcmp(data, readbuf, 192) == 0);  /* byte-for-byte match */
+
+    /* Voronoi access */
     uint32_t misses_before = vc.misses;
     uint32_t offset = 0, size = 0;
     VoronoiCell *cell = geos_voronoi_access(&vol, &vc, "tensor.bin", &offset, &size);
     assert(cell != NULL);
     assert(size == 192);
-    assert(vc.misses > misses_before);  /* at least one miss from insert */
+    assert(vc.misses > misses_before);
 
     /* Second access — cache hit */
     uint32_t hits_before = vc.hits;
@@ -301,11 +314,14 @@ static void test_serialize_roundtrip(void) {
     geos_volume_init(&vol);
     strncpy(vol.vol_name, "roundtrip_test", 31);
 
-    /* Create files */
-    uint8_t data[64];
-    memset(data, 0xBE, sizeof(data));
-    geos_create(&vol, "file1.txt", 64, data);
-    geos_create(&vol, "file2.bin", 64, data);
+    /* Create files with distinct data */
+    uint8_t data1[128], data2[128];
+    for (int i = 0; i < 128; i++) { data1[i] = (uint8_t)(i * 3); data2[i] = (uint8_t)(i * 7 + 1); }
+
+    geos_create(&vol, "file1.txt", 128, data1);
+    geos_create(&vol, "file2.bin", 128, data2);
+    geos_write(&vol, "file1.txt", data1, 128);
+    geos_write(&vol, "file2.bin", data2, 128);
 
     uint16_t orig_count = vol.inode_count;
     uint32_t orig_used = vol.total_blocks_used;
@@ -320,10 +336,22 @@ static void test_serialize_roundtrip(void) {
     rc = geos_deserialize(&vol2, "build/test_geofs.geofs");
     assert(rc == 0);
 
-    /* Verify */
+    /* Verify metadata */
     assert(vol2.inode_count == orig_count);
     assert(vol2.total_blocks_used == orig_used);
     assert(memcmp(vol2.magic, GEOS_MAGIC, 4) == 0);
+
+    /* Verify DATA roundtrip — byte-for-byte */
+    uint8_t readbuf[128];
+    memset(readbuf, 0, sizeof(readbuf));
+    int n1 = geos_read(&vol2, "file1.txt", readbuf, 128);
+    assert(n1 == 128);
+    assert(memcmp(data1, readbuf, 128) == 0);
+
+    memset(readbuf, 0, sizeof(readbuf));
+    int n2 = geos_read(&vol2, "file2.bin", readbuf, 128);
+    assert(n2 == 128);
+    assert(memcmp(data2, readbuf, 128) == 0);
 
     PASS();
 }
