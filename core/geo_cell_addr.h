@@ -129,8 +129,8 @@ static inline void geo_cell_addr_to_pipe(GeoCellAddr addr,
     uint32_t flat = ((uint32_t)addr.generation << CELL_GEN_SHIFT)
                   | ((uint32_t)addr.face       << CELL_FACE_SHIFT)
                   | ((uint32_t)addr.slot       << CELL_SLOT_SHIFT);
-    /* Wrap into the slot cube — reject if >= GEAR_GEO_FULL */
-    if (flat >= GEAR_GEO_FULL) flat = flat % GEAR_GEO_FULL;
+    /* Wrap into the slot cube — valid coords max at 16383, no mod needed */
+    if (flat >= GEAR_GEO_FULL) flat = 0;
     *pipe_id = (uint16_t)(flat % FS_PIPES);
     *tick    = (uint8_t)((flat / FS_PIPES) % FS_TICKS_PER_CYCLE);
 }

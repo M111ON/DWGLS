@@ -527,7 +527,7 @@ static inline GeosBijection geos_bijection_forward(uint8_t gen, uint8_t face, ui
     uint32_t flat = ((uint32_t)gen << CELL_GEN_SHIFT)
                   | ((uint32_t)face << CELL_FACE_SHIFT)
                   | ((uint32_t)slot << CELL_SLOT_SHIFT);
-    /* NO mask: GEAR_GEO_FULL is not power-of-2, so (N-1) mask corrupts valid addresses */
+    /* NO mask, NO mod — valid (gen,face,slot) max = 16383 < 20736 */
     if (flat >= GEOS_ADDR_SPACE) { memset(&b, 0, sizeof(b)); return b; }
     b.block_flat  = flat;
     b.byte_offset = flat * GEOS_BLOCK_SZ;
