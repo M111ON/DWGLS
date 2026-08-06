@@ -1,430 +1,343 @@
 /* ═══════════════════════════════════════════════════════════════════════════
- * test_geo_fs.c — GeoFS Tests
+ * test_geo_fs.c — GeoFS Unit Tests (Summon/Unsummon/Project)
  * ═══════════════════════════════════════════════════════════════════════════
- *
- * Tests:
- *   1. Volume init + create/find/delete
- *   2. Block allocator (contiguous allocation)
- *   3. Voronoi cache (insert/lookup/eviction)
- *   4. Voronoi subdivision + collapse
- *   5. Directory support (mkdir/ls)
- *   6. Voronoi-integrated file access
- *   7. Self-compression (idle_compress)
- *   8. Serialize/deserialize roundtrip
- *   9. Visualization (ASCII grid)
- *  10. Geometric address consistency
+ * Tests the corrected architecture:
+ *   - Summon at location (NOT create+write)
+ *   - Unsummon from location (NOT delete)
+ *   - Project zero-copy reads (NOT decompress)
+ *   - Twin bijection mapping
+ *   - No compression (gravity is fixed)
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include "geofs_core.h"
 
-static int tests_run = 0;
 static int tests_passed = 0;
+static int tests_failed = 0;
 
 #define TEST(name) do { \
-    tests_run++; \
-    printf("  TEST %d: %-40s ", tests_run, name); \
-    fflush(stdout); \
-} while(0)
+    printf("  TEST %2d: %-45s ", tests_passed + tests_failed + 1, name); \
+    } while(0)
 
-#define PASS() do { tests_passed++; printf("PASS\n"); } while(0)
-#define FAIL(msg) do { printf("FAIL: %s\n", msg); } while(0)
+#define PASS() do { printf("✅ PASS\n"); tests_passed++; } while(0)
+#define FAIL(msg) do { printf("❌ FAIL: %s\n", msg); tests_failed++; } while(0)
 
-/* ── Test 1: Volume init + create/find/delete ──────────────── */
+/* ── Test 1: Volume init + free ─────────────────────────────────── */
 
 static void test_volume_lifecycle(void) {
-    TEST("Volume init + create/find/delete");
-
-    GeosVolume vol;
-    geos_volume_init(&vol);
-    strncpy(vol.vol_name, "test_vol", 31);
-
-    /* Verify init */
-    assert(memcmp(vol.magic, GEOS_MAGIC, 4) == 0);
-    assert(vol.version == GEOS_VERSION);
-    assert(vol.inode_count == 0);
-    assert(vol.total_blocks_free > 0);
-
-    /* Create file */
-    uint8_t data[256];
-    memset(data, 0xAB, sizeof(data));
-    GeosInode *inode = geos_create(&vol, "hello.txt", 256, data);
-    assert(inode != NULL);
-    assert(inode->size_bytes == 256);
-    assert(inode->block_count >= 4);  /* 256/64 = 4 blocks */
-    assert(vol.inode_count == 1);
-    assert(vol.n_files == 1);
-
-    /* Find file */
-    GeosInode *found = geos_find(&vol, "hello.txt");
-    assert(found != NULL);
-    assert(strcmp(found->name, "hello.txt") == 0);
-
-    /* Not found */
-    GeosInode *missing = geos_find(&vol, "nope.txt");
-    assert(missing == NULL);
-
-    /* Delete file */
-    int rc = geos_delete(&vol, "hello.txt");
-    assert(rc == 0);
-    assert(vol.inode_count == 0);
-    assert(vol.n_files == 0);
-    assert(vol.total_blocks_free > 0);  /* blocks freed */
-
-    PASS();
-}
-
-/* ── Test 2: Block allocator (contiguous) ──────────────────── */
-
-static void test_block_allocator(void) {
-    TEST("Block allocator (contiguous)");
-
+    TEST("Volume init + free lifecycle");
     GeosVolume vol;
     geos_volume_init(&vol);
 
-    /* Allocate 10 blocks */
-    uint32_t start = geos_alloc_blocks(&vol, 10);
-    assert(start >= GEOS_VOL_DATA_START);
-    assert(start + 10 <= GEOS_ADDR_SPACE);
+    if (strcmp(vol.magic, GEOS_MAGIC) != 0) { FAIL("magic"); return; }
+    if (vol.version != GEOS_VERSION) { FAIL("version"); return; }
+    if (vol.total_blocks_free != GEOS_ADDR_SPACE - GEOS_VOL_DATA_START) { FAIL("free blocks"); return; }
+    if (!vol.data) { FAIL("data store"); return; }
 
-    /* Allocate another 5 */
-    uint32_t start2 = geos_alloc_blocks(&vol, 5);
-    assert(start2 == start + 10);  /* contiguous */
-
-    /* Free first 10 */
-    geos_free_blocks(&vol, start, 10);
-
-    /* Allocate 3 — should find space in freed region */
-    uint32_t start3 = geos_alloc_blocks(&vol, 3);
-    assert(start3 == start);  /* reuses freed space */
-
-    /* Allocate until full */
-    geos_alloc_blocks(&vol, 1000);
+    geos_volume_free(&vol);
+    if (vol.data != NULL) { FAIL("data not freed"); return; }
 
     PASS();
 }
 
-/* ── Test 3: Voronoi cache (insert/lookup/eviction) ────────── */
+/* ── Test 2: Summon a file ──────────────────────────────────────── */
 
-static void test_voronoi_cache(void) {
-    TEST("Voronoi cache (insert/lookup/eviction)");
+static void test_summon(void) {
+    TEST("Summon file at coordinate");
+    GeosVolume vol;
+    geos_volume_init(&vol);
 
-    VoronoiCache vc;
-    voronoi_init(&vc);
+    uint8_t buf[256];
+    for (int i = 0; i < 256; i++) buf[i] = (uint8_t)i;
 
-    /* Insert cells — insert calls lookup internally */
-    VoronoiCell *c1 = voronoi_insert(&vc, 100, 0, 6400, 256);
-    assert(c1 != NULL);
-    assert(c1->flat_id == 100);
-    assert(c1->state == VORONOI_CELL_ACTIVE);
-    assert(vc.count == 1);
+    GeosInode *inode = geos_summon(&vol, "test.bin", 256, buf, 0, 1, 0);
+    if (!inode) { FAIL("summon returned NULL"); geos_volume_free(&vol); return; }
+    if (vol.inode_count != 1) { FAIL("inode_count != 1"); geos_volume_free(&vol); return; }
+    if (vol.n_files != 1) { FAIL("n_files != 1"); geos_volume_free(&vol); return; }
+    if (inode->block_count != 4) { FAIL("block_count != 4"); geos_volume_free(&vol); return; }
+    if (inode->size_bytes != 256) { FAIL("size_bytes != 256"); geos_volume_free(&vol); return; }
 
-    VoronoiCell *c2 = voronoi_insert(&vc, 200, 2, 12800, 512);
-    assert(c2 != NULL);
-    assert(vc.count == 2);
-
-    /* Lookup — should be a hit (insert already cached it) */
-    VoronoiCell *found = voronoi_lookup(&vc, 100);
-    assert(found != NULL);
-    assert(found->access_count >= 2);  /* insert + this lookup */
-    assert(vc.hits >= 1);
-
-    /* Miss — different address */
-    uint32_t misses_before2 = vc.misses;
-    VoronoiCell *miss = voronoi_lookup(&vc, 999);
-    assert(miss == NULL);
-    assert(vc.misses == misses_before2 + 1);
-
-    /* Verify */
-    int vrc = voronoi_verify(&vc);
-    assert(vrc == 0);
-
+    geos_volume_free(&vol);
     PASS();
 }
 
-/* ── Test 4: Voronoi subdivision + collapse ────────────────── */
+/* ── Test 3: Unsummon a file ────────────────────────────────────── */
 
-static void test_voronoi_subdivide(void) {
-    TEST("Voronoi subdivision + collapse");
+static void test_unsummon(void) {
+    TEST("Unsummon file from coordinate");
+    GeosVolume vol;
+    geos_volume_init(&vol);
 
-    VoronoiCache vc;
-    voronoi_init(&vc);
+    uint8_t buf[128] = {0};
+    geos_summon(&vol, "temp.bin", 128, buf, 0, 2, 0);
+    if (vol.inode_count != 1) { FAIL("pre-condition"); geos_volume_free(&vol); return; }
 
-    /* Insert a cell with enough data to subdivide */
-    VoronoiCell *parent = voronoi_insert(&vc, 1000, 1, 64000, 256);
-    assert(parent != NULL);
+    int rc = geos_unsummon(&vol, "temp.bin");
+    if (rc != 0) { FAIL("unsummon failed"); geos_volume_free(&vol); return; }
+    if (vol.inode_count != 0) { FAIL("inode_count != 0"); geos_volume_free(&vol); return; }
+    if (vol.n_files != 0) { FAIL("n_files != 0"); geos_volume_free(&vol); return; }
 
-    /* Subdivide */
-    int rc = voronoi_subdivide(&vc, 1000);
-    assert(rc == 0);
-    assert(parent->state == VORONOI_CELL_SUBDIV);
-    assert(vc.subdivisions == 1);
+    /* Unsummon non-existent */
+    rc = geos_unsummon(&vol, "ghost.bin");
+    if (rc != -2) { FAIL("expected -2 for missing"); geos_volume_free(&vol); return; }
 
-    /* Children should exist */
-    for (int i = 0; i < 4; i++) {
-        assert(parent->child_ids[i] != 0xFFFFFFFF);
+    geos_volume_free(&vol);
+    PASS();
+}
+
+/* ── Test 4: Project zero-copy read ─────────────────────────────── */
+
+static void test_project_zerocopy(void) {
+    TEST("Project — zero-copy pointer into data store");
+    GeosVolume vol;
+    geos_volume_init(&vol);
+
+    uint8_t buf[64];
+    for (int i = 0; i < 64; i++) buf[i] = (uint8_t)(i * 3 + 7);
+
+    geos_summon(&vol, "data.bin", 64, buf, 0, 3, 0);
+
+    uint32_t size = 0;
+    const uint8_t *ptr = geos_project_by_name(&vol, "data.bin", &size);
+    if (!ptr) { FAIL("project returned NULL"); geos_volume_free(&vol); return; }
+    if (size != 64) { FAIL("size mismatch"); geos_volume_free(&vol); return; }
+
+    /* Verify pointer points to actual data (zero-copy, no memcpy) */
+    int match = 1;
+    for (int i = 0; i < 64; i++) {
+        if (ptr[i] != buf[i]) { match = 0; break; }
+    }
+    if (!match) { FAIL("data mismatch at pointer"); geos_volume_free(&vol); return; }
+
+    /* Verify pointer is inside vol.data (truly zero-copy) */
+    if (ptr < vol.data || ptr >= vol.data + GEOS_DATA_STORE_SIZE) {
+        FAIL("pointer not in data store"); geos_volume_free(&vol); return;
     }
 
-    /* Verify */
-    int vrc = voronoi_verify(&vc);
-    assert(vrc == 0);
+    geos_volume_free(&vol);
+    PASS();
+}
 
-    /* Collapse */
-    rc = voronoi_collapse(&vc, 1000);
-    assert(rc == 0);
-    assert(parent->state == VORONOI_CELL_ACTIVE);
-    assert(vc.collapses == 1);
+/* ── Test 5: Project by coordinate (identity → data) ────────────── */
 
-    /* Children gone */
-    for (int i = 0; i < 4; i++) {
-        assert(parent->child_ids[i] == 0xFFFFFFFF);
+static void test_project_coordinate(void) {
+    TEST("Project at (gen, face, slot) coordinate");
+    GeosVolume vol;
+    geos_volume_init(&vol);
+
+    uint8_t buf[64];
+    memset(buf, 0xAA, 64);
+
+    /* Summon: data gets allocated at free-list address (block_start) */
+    GeosInode *inode = geos_summon(&vol, "coord.bin", 64, buf, 1, 0, 5);
+    if (!inode) { FAIL("summon"); geos_volume_free(&vol); return; }
+
+    /* project_by_name uses block_start (physical location) */
+    uint32_t size = 0;
+    const uint8_t *ptr = geos_project_by_name(&vol, "coord.bin", &size);
+    if (!ptr) { FAIL("project_by_name NULL"); geos_volume_free(&vol); return; }
+    if (size != 64) { FAIL("size mismatch"); geos_volume_free(&vol); return; }
+    if (ptr[0] != 0xAA || ptr[63] != 0xAA) {
+        FAIL("data mismatch"); geos_volume_free(&vol); return;
     }
 
+    /* The inode's addr stores identity (gen=1,face=0,slot=5) */
+    if (inode->addr.generation != 1) { FAIL("gen"); geos_volume_free(&vol); return; }
+    if (inode->addr.face != 0) { FAIL("face"); geos_volume_free(&vol); return; }
+    if (inode->addr.slot != 5) { FAIL("slot"); geos_volume_free(&vol); return; }
+
+    geos_volume_free(&vol);
     PASS();
 }
 
-/* ── Test 5: Directory support ─────────────────────────────── */
+/* ── Test 6: Bijection forward/reverse roundtrip ────────────────── */
 
-static void test_directory_support(void) {
-    TEST("Directory support (mkdir/ls)");
-
+static void test_bijection_roundtrip(void) {
+    TEST("Bijection forward → reverse roundtrip");
     GeosVolume vol;
     geos_volume_init(&vol);
 
-    GeosDirTable dt;
-    geos_dir_table_init(&dt);
+    /* Test with a known flat address in the data range */
+    uint32_t flat = 300;  /* in data range [256, 20736) */
+    GeosBijection rev = geos_bijection_reverse(flat);
+    GeosBijection fwd = geos_bijection_forward(rev.gen, rev.face, rev.slot);
 
-    /* Root exists */
-    assert(dt.dir_count == 1);
-    assert(strcmp(dt.dirs[0].name, "/") == 0);
+    if (fwd.block_flat != rev.block_flat) {
+        FAIL("flat_id mismatch"); geos_volume_free(&vol); return;
+    }
+    if (fwd.gen != rev.gen || fwd.face != rev.face || fwd.slot != rev.slot) {
+        FAIL("coord mismatch"); geos_volume_free(&vol); return;
+    }
 
-    /* Create subdirectory */
-    int rc = geos_mkdir(&vol, &dt, "models", 0);
-    assert(rc == 0);
-    assert(dt.dir_count == 2);
-
-    /* Create nested dir */
-    rc = geos_mkdir(&vol, &dt, "qwen", 1);
-    assert(rc == 0);
-    assert(dt.dir_count == 3);
-
-    /* Create file in root */
-    uint8_t data[64] = {0};
-    GeosInode *inode = geos_create(&vol, "config.txt", 64, data);
-    assert(inode != NULL);
-    inode->parent_addr = 0;  /* root dir */
-
-    /* List root */
-    const char *names[16];
-    int is_dirs[16];
-    int n = geos_ls(&vol, &dt, 0, names, is_dirs, 16);
-    assert(n >= 1);  /* at least "models" dir */
-
+    geos_volume_free(&vol);
     PASS();
 }
 
-/* ── Test 6: Voronoi-integrated file access ────────────────── */
+/* ── Test 7: Project block (specific block within file) ─────────── */
 
-static void test_voronoi_file_access(void) {
-    TEST("Voronoi-integrated file access");
-
+static void test_project_block(void) {
+    TEST("Project specific block within file");
     GeosVolume vol;
     geos_volume_init(&vol);
 
-    VoronoiCache vc;
-    voronoi_init(&vc);
+    uint8_t buf[192];  /* 3 blocks */
+    for (int i = 0; i < 192; i++) buf[i] = (uint8_t)(i + 42);
 
-    /* Create file + write real data */
-    uint8_t data[192];
-    memset(data, 0xCD, sizeof(data));
-    for (int i = 0; i < 192; i++) data[i] = (uint8_t)(i * 3 + 7);
+    geos_summon(&vol, "multi.bin", 192, buf, 0, 4, 0);
 
-    GeosInode *inode = geos_create(&vol, "tensor.bin", 192, data);
-    assert(inode != NULL);
+    /* Check each block */
+    for (uint32_t b = 0; b < 3; b++) {
+        const uint8_t *blk = geos_project_block(&vol, "multi.bin", b);
+        if (!blk) { FAIL("project_block NULL"); geos_volume_free(&vol); return; }
 
-    /* Write data into blocks */
-    int written = geos_write(&vol, "tensor.bin", data, 192);
-    assert(written == 192);
+        /* Verify content matches */
+        for (int j = 0; j < 64; j++) {
+            uint32_t idx = b * 64 + j;
+            if (blk[j] != buf[idx]) { FAIL("block data mismatch"); geos_volume_free(&vol); return; }
+        }
+    }
 
-    /* Read data back */
-    uint8_t readbuf[192];
-    memset(readbuf, 0, sizeof(readbuf));
-    int read_n = geos_read(&vol, "tensor.bin", readbuf, sizeof(readbuf));
-    assert(read_n == 192);
-    assert(memcmp(data, readbuf, 192) == 0);  /* byte-for-byte match */
+    /* Out-of-bounds block should return NULL */
+    const uint8_t *oob = geos_project_block(&vol, "multi.bin", 99);
+    if (oob != NULL) { FAIL("OOB should be NULL"); geos_volume_free(&vol); return; }
 
-    /* Voronoi access */
-    uint32_t misses_before = vc.misses;
-    uint32_t offset = 0, size = 0;
-    VoronoiCell *cell = geos_voronoi_access(&vol, &vc, "tensor.bin", &offset, &size);
-    assert(cell != NULL);
-    assert(size == 192);
-    assert(vc.misses > misses_before);
-
-    /* Second access — cache hit */
-    uint32_t hits_before = vc.hits;
-    cell = geos_voronoi_access(&vol, &vc, "tensor.bin", &offset, &size);
-    assert(cell != NULL);
-    assert(vc.hits > hits_before);
-
-    /* Verify */
-    int vrc = voronoi_verify(&vc);
-    assert(vrc == 0);
-
+    geos_volume_free(&vol);
     PASS();
 }
 
-/* ── Test 7: Self-compression (idle_compress) ──────────────── */
-
-static void test_idle_compress(void) {
-    TEST("Self-compression (idle_compress)");
-
-    GeosVolume vol;
-    geos_volume_init(&vol);
-
-    /* Create several files with varying entropy */
-    uint8_t low_entropy[128];
-    memset(low_entropy, 0x42, sizeof(low_entropy));  /* all same byte → low entropy */
-
-    uint8_t high_entropy[128];
-    for (int i = 0; i < 128; i++) high_entropy[i] = (uint8_t)i;  /* all different → high entropy */
-
-    geos_create(&vol, "low.bin", 128, low_entropy);
-    geos_create(&vol, "high.bin", 128, high_entropy);
-
-    uint32_t before = vol.total_blocks_used;
-
-    /* Run idle compress */
-    uint32_t saved = geos_idle_compress(&vol);
-
-    /* Some files should have been compressed (low entropy ones) */
-    printf("(saved=%u blocks_before=%u) ", saved, before);
-
-    PASS();
-}
-
-/* ── Test 8: Serialize/deserialize roundtrip ───────────────── */
+/* ── Test 8: Serialize + deserialize roundtrip ──────────────────── */
 
 static void test_serialize_roundtrip(void) {
-    TEST("Serialize/deserialize roundtrip");
-
+    TEST("Serialize → deserialize roundtrip");
     GeosVolume vol;
     geos_volume_init(&vol);
-    strncpy(vol.vol_name, "roundtrip_test", 31);
 
-    /* Create files with distinct data */
-    uint8_t data1[128], data2[128];
-    for (int i = 0; i < 128; i++) { data1[i] = (uint8_t)(i * 3); data2[i] = (uint8_t)(i * 7 + 1); }
+    uint8_t buf[128];
+    for (int i = 0; i < 128; i++) buf[i] = (uint8_t)(i * 11 + 3);
 
-    geos_create(&vol, "file1.txt", 128, data1);
-    geos_create(&vol, "file2.bin", 128, data2);
-    geos_write(&vol, "file1.txt", data1, 128);
-    geos_write(&vol, "file2.bin", data2, 128);
-
-    uint16_t orig_count = vol.inode_count;
-    uint32_t orig_used = vol.total_blocks_used;
+    geos_summon(&vol, "persist.bin", 128, buf, 0, 5, 0);
 
     /* Serialize */
-    int rc = geos_serialize(&vol, "build/test_geofs.geofs");
-    assert(rc == 0);
+    int rc = geos_serialize(&vol, "build/test_roundtrip.geofs");
+    if (rc != 0) { FAIL("serialize failed"); geos_volume_free(&vol); return; }
 
-    /* Deserialize */
+    /* Deserialize into fresh volume */
+    geos_volume_free(&vol);
     GeosVolume vol2;
     memset(&vol2, 0, sizeof(vol2));
-    rc = geos_deserialize(&vol2, "build/test_geofs.geofs");
-    assert(rc == 0);
+    rc = geos_deserialize(&vol2, "build/test_roundtrip.geofs");
+    if (rc != 0) { FAIL("deserialize failed"); return; }
 
-    /* Verify metadata */
-    assert(vol2.inode_count == orig_count);
-    assert(vol2.total_blocks_used == orig_used);
-    assert(memcmp(vol2.magic, GEOS_MAGIC, 4) == 0);
+    if (vol2.inode_count != 1) { FAIL("inode count mismatch"); return; }
 
-    /* Verify DATA roundtrip — byte-for-byte */
-    uint8_t readbuf[128];
-    memset(readbuf, 0, sizeof(readbuf));
-    int n1 = geos_read(&vol2, "file1.txt", readbuf, 128);
-    assert(n1 == 128);
-    assert(memcmp(data1, readbuf, 128) == 0);
+    /* Verify data survived via project (zero-copy) */
+    uint32_t size = 0;
+    const uint8_t *ptr = geos_project_by_name(&vol2, "persist.bin", &size);
+    if (!ptr) { FAIL("project after deserialize NULL"); geos_volume_free(&vol2); return; }
+    if (size != 128) { FAIL("size mismatch after deser"); geos_volume_free(&vol2); return; }
 
-    memset(readbuf, 0, sizeof(readbuf));
-    int n2 = geos_read(&vol2, "file2.bin", readbuf, 128);
-    assert(n2 == 128);
-    assert(memcmp(data2, readbuf, 128) == 0);
-
-    PASS();
-}
-
-/* ── Test 9: Geometric address consistency ─────────────────── */
-
-static void test_geometric_address(void) {
-    TEST("Geometric address consistency");
-
-    /* Verify address space mappings */
-    for (uint32_t flat = 0; flat < 20736; flat += 144) {
-        GeoCellAddr ca = geo_cell_addr_from_offset(flat);
-
-        /* Verify cell_type from parity */
-        uint8_t expected_type = ((ca.generation & 1) << 2)
-                              | ((ca.face & 1) << 1)
-                              | (ca.slot & 1);
-        assert(ca.cell_type == expected_type);
-
-        /* Verify pipe_id and tick */
-        uint16_t pipe_id;
-        uint8_t tick;
-        geo_cell_addr_to_pipe(ca, &pipe_id, &tick);
-        assert(pipe_id < 1728);
-        assert(tick < 12);
+    int match = 1;
+    for (int i = 0; i < 128; i++) {
+        if (ptr[i] != buf[i]) { match = 0; break; }
     }
+    if (!match) { FAIL("data mismatch after roundtrip"); geos_volume_free(&vol2); return; }
 
+    geos_volume_free(&vol2);
     PASS();
 }
 
-/* ── Test 10: Visualization (smoke test) ───────────────────── */
+/* ── Test 9: Multiple summons — no overlap ──────────────────────── */
 
-static void test_visualization(void) {
-    TEST("Visualization (ASCII grid)");
-
+static void test_multiple_summons(void) {
+    TEST("Multiple summons — no overlap");
     GeosVolume vol;
     geos_volume_init(&vol);
-    strncpy(vol.vol_name, "viz_test", 31);
 
-    /* Create a file */
-    uint8_t data[320];  /* 5 blocks */
-    memset(data, 0xAA, sizeof(data));
-    geos_create(&vol, "visual.txt", 320, data);
+    uint8_t a[64], b[64], c[64];
+    memset(a, 0x11, 64);
+    memset(b, 0x22, 64);
+    memset(c, 0x33, 64);
 
-    /* This should not crash */
-    geos_visualize(&vol, "visual.txt");
+    geos_summon(&vol, "alpha.bin", 64, a, 0, 0, 0);
+    geos_summon(&vol, "beta.bin", 64, b, 0, 1, 0);
+    geos_summon(&vol, "gamma.bin", 64, c, 0, 2, 0);
 
+    if (vol.inode_count != 3) { FAIL("inode_count != 3"); geos_volume_free(&vol); return; }
+
+    /* Each project should return its own data */
+    const uint8_t *pa = geos_project_by_name(&vol, "alpha.bin", NULL);
+    const uint8_t *pb = geos_project_by_name(&vol, "beta.bin", NULL);
+    const uint8_t *pc = geos_project_by_name(&vol, "gamma.bin", NULL);
+
+    if (!pa || !pb || !pc) { FAIL("project NULL"); geos_volume_free(&vol); return; }
+    if (pa[0] != 0x11 || pb[0] != 0x22 || pc[0] != 0x33) {
+        FAIL("data cross-contamination"); geos_volume_free(&vol); return;
+    }
+
+    /* Unsummon middle one, others should be intact */
+    geos_unsummon(&vol, "beta.bin");
+    if (vol.inode_count != 2) { FAIL("count after unsummon"); geos_volume_free(&vol); return; }
+
+    pa = geos_project_by_name(&vol, "alpha.bin", NULL);
+    pc = geos_project_by_name(&vol, "gamma.bin", NULL);
+    if (!pa || !pc) { FAIL("project after unsummon NULL"); geos_volume_free(&vol); return; }
+    if (pa[0] != 0x11 || pc[0] != 0x33) {
+        FAIL("data integrity after unsummon"); geos_volume_free(&vol); return;
+    }
+
+    geos_volume_free(&vol);
     PASS();
 }
 
-/* ═══════════════════════════════════════════════════════════════
+/* ── Test 10: Stat file ─────────────────────────────────────────── */
+
+static void test_stat(void) {
+    TEST("Stat file — geometric info");
+    GeosVolume vol;
+    geos_volume_init(&vol);
+
+    uint8_t buf[64];
+    memset(buf, 0xFF, 64);
+    geos_summon(&vol, "stat.bin", 64, buf, 1, 2, 3);
+
+    GeosStat st;
+    int rc = geos_stat(&vol, "stat.bin", &st);
+    if (rc != 0) { FAIL("stat failed"); geos_volume_free(&vol); return; }
+    if (st.block_count != 1) { FAIL("block_count"); geos_volume_free(&vol); return; }
+    if (st.generation != 1) { FAIL("generation"); geos_volume_free(&vol); return; }
+    if (st.face != 2) { FAIL("face"); geos_volume_free(&vol); return; }
+    if (st.slot != 3) { FAIL("slot"); geos_volume_free(&vol); return; }
+
+    geos_volume_free(&vol);
+    PASS();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    MAIN
-   ═══════════════════════════════════════════════════════════════ */
+   ═══════════════════════════════════════════════════════════════════════════ */
 
 int main(void) {
-    printf("===============================================================\n");
-    printf("  GeoFS Test Suite\n");
-    printf("===============================================================\n\n");
+    printf("╔══════════════════════════════════════════════════════════╗\n");
+    printf("║  GeoFS Unit Tests — Summon/Unsummon/Project            ║\n");
+    printf("╚══════════════════════════════════════════════════════════╝\n\n");
 
     test_volume_lifecycle();
-    test_block_allocator();
-    test_voronoi_cache();
-    test_voronoi_subdivide();
-    test_directory_support();
-    test_voronoi_file_access();
-    test_idle_compress();
+    test_summon();
+    test_unsummon();
+    test_project_zerocopy();
+    test_project_coordinate();
+    test_bijection_roundtrip();
+    test_project_block();
     test_serialize_roundtrip();
-    test_geometric_address();
-    test_visualization();
+    test_multiple_summons();
+    test_stat();
 
-    printf("\n===============================================================\n");
-    printf("  RESULTS: %d / %d PASS\n", tests_passed, tests_run);
-    printf("===============================================================\n");
+    printf("\n───────────────────────────────────────\n");
+    printf("PASS: %d / %d  FAIL: %d\n", tests_passed, tests_passed + tests_failed, tests_failed);
+    printf("═══════════════════════════════════════\n");
 
-    return (tests_passed == tests_run) ? 0 : 1;
+    return tests_failed > 0 ? 1 : 0;
 }

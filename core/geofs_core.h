@@ -160,7 +160,6 @@ typedef struct {
     uint16_t    inode_count;
     uint8_t     block_map[GEOS_ADDR_SPACE / 8];
     uint32_t    total_entropy;
-    uint8_t     auto_compress;
     GeosFreeList free_list;
     uint8_t     *data;          /* heap-allocated block data (1.3 MB) */
 } GeosVolume;
@@ -174,7 +173,6 @@ static inline void geos_volume_init(GeosVolume *v) {
     memcpy(v->magic, GEOS_MAGIC, 4);
     v->version = GEOS_VERSION;
     v->total_blocks_free = GEOS_ADDR_SPACE - GEOS_VOL_DATA_START;
-    v->auto_compress = 1;
 
     /* Allocate data store */
     v->data = (uint8_t *)calloc(1, GEOS_DATA_STORE_SIZE);
@@ -427,135 +425,173 @@ static inline int geos_delete(GeosVolume *v, const char *name) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   SELF-COMPRESSION — geos_idle_compress
+   GEOS_SUMMON — Materialize data at a geometric coordinate
    ═══════════════════════════════════════════════════════════
-   Real compression strategies:
-   1. Zero-block elimination: all-zero blocks → free (saves 64B each)
-   2. Block deduplication: identical blocks → share same storage
-   3. Run-length encoding: repeated byte runs → compact
-   Only compresses when data ACTUALLY fits in fewer blocks.
+   "Summon at location" — the ONLY way to place data.
+   Data lives at (x, y, z). Moving after summon = drift.
+   Coordinate IS identity — no rename, no move.
    ═══════════════════════════════════════════════════════════ */
 
-static inline int _geos_block_is_zero(const uint8_t *block) {
-    for (int i = 0; i < GEOS_BLOCK_SZ; i++)
-        if (block[i] != 0) return 0;
-    return 1;
-}
+static inline GeosInode* geos_summon(GeosVolume *v,
+                                      const char *name,
+                                      uint32_t size_bytes,
+                                      const uint8_t *data,
+                                      uint8_t gen, uint8_t face, uint16_t slot) {
+    if (!v || !name || v->inode_count >= GEOS_MAX_INODES) return NULL;
 
-static inline int _geos_block_equal(const uint8_t *a, const uint8_t *b) {
-    return memcmp(a, b, GEOS_BLOCK_SZ) == 0;
-}
+    uint16_t n_blocks = (uint16_t)((size_bytes + GEOS_BLOCK_SZ - 1) / GEOS_BLOCK_SZ);
+    if (n_blocks == 0) n_blocks = 1;
 
-static inline uint32_t geos_idle_compress(GeosVolume *v) {
-    if (!v || !v->auto_compress) return 0;
+    uint32_t block_start = geos_alloc_blocks(v, n_blocks);
+    if (block_start == 0xFFFF) return NULL;
 
-    uint32_t total_saved = 0;
+    GeosInode *inode = &v->inodes[v->inode_count];
+    memset(inode, 0, sizeof(*inode));
+    inode->addr = geos_addr_make(gen, face, slot);
+    strncpy(inode->name, name, GEOS_MAX_NAME - 1);
+    inode->size_bytes = size_bytes;
+    inode->block_start = block_start;
+    inode->block_count = n_blocks;
+    inode->created_kis_enc = frame_enc(v->inode_count);
+    inode->accessed_kis_enc = inode->created_kis_enc;
 
-    for (uint16_t i = 0; i < v->inode_count; i++) {
-        GeosInode *inode = &v->inodes[i];
+    /* Compute entropy from data */
+    if (data && size_bytes > 0) {
+        uint8_t seen[256] = {0};
+        for (uint32_t i = 0; i < size_bytes && i < n_blocks * GEOS_BLOCK_SZ; i++)
+            seen[data[i]] = 1;
+        uint16_t unique = 0;
+        for (int i = 0; i < 256; i++) unique += seen[i];
+        inode->entropy = (uint8_t)((unique * 255) / 256);
+        inode->tier = adaptive_tier(inode->entropy);
 
-        if (inode->flags & (GEOS_FLAG_DIR | GEOS_FLAG_PINNED)) continue;
-        if (inode->tier == 0) continue;
-        if (inode->block_count <= 1) continue;
-
-        /* Strategy 1: Zero-block elimination */
-        uint32_t non_zero_start = inode->block_start;
-        uint32_t non_zero_end = inode->block_start + inode->block_count;
-
-        /* Trim trailing zero blocks */
-        while (non_zero_end > non_zero_start) {
-            uint32_t flat = non_zero_end - 1;
-            uint32_t offset = flat * GEOS_BLOCK_SZ;
-            if (_geos_block_is_zero(&v->data[offset])) {
-                non_zero_end--;
-            } else {
-                break;
-            }
-        }
-
-        /* Trim leading zero blocks */
-        while (non_zero_start < non_zero_end) {
-            uint32_t flat = non_zero_start;
-            uint32_t offset = flat * GEOS_BLOCK_SZ;
-            if (_geos_block_is_zero(&v->data[offset])) {
-                non_zero_start++;
-            } else {
-                break;
-            }
-        }
-
-        uint32_t new_count = non_zero_end - non_zero_start;
-        if (new_count == 0) new_count = 1;  /* keep at least 1 block */
-
-        if (new_count < inode->block_count) {
-            uint32_t old_start = inode->block_start;
-            uint32_t old_count = inode->block_count;
-
-            /* Allocate new contiguous range */
-            uint32_t new_start = geos_alloc_blocks(v, (uint16_t)new_count);
-            if (new_start == 0xFFFF) continue;
-
-            /* Copy non-zero data */
-            for (uint32_t b = 0; b < new_count; b++) {
-                uint32_t src_flat = non_zero_start + b;
-                uint32_t dst_flat = new_start + b;
-                memcpy(&v->data[dst_flat * GEOS_BLOCK_SZ],
-                       &v->data[src_flat * GEOS_BLOCK_SZ],
-                       GEOS_BLOCK_SZ);
-            }
-
-            /* Free old blocks */
-            geos_free_blocks(v, old_start, (uint16_t)old_count);
-
-            inode->block_start = new_start;
-            inode->block_count = (uint16_t)new_count;
-            inode->flags |= GEOS_FLAG_COMPRESSED;
-            total_saved += (old_count - new_count) * GEOS_BLOCK_SZ;
-        }
-
-        /* Strategy 2: Block deduplication (same-content blocks) */
-        if (inode->block_count > 2) {
-            /* Find duplicate blocks and compact them */
-            uint32_t write_idx = 0;
-            for (uint32_t a = 0; a < inode->block_count; a++) {
-                uint32_t flat_a = inode->block_start + a;
-                const uint8_t *block_a = &v->data[flat_a * GEOS_BLOCK_SZ];
-
-                /* Check if this block is a duplicate of an earlier block */
-                int is_dup = 0;
-                for (uint32_t b = 0; b < a; b++) {
-                    uint32_t flat_b = inode->block_start + b;
-                    if (_geos_block_equal(&v->data[flat_b * GEOS_BLOCK_SZ], block_a)) {
-                        is_dup = 1;
-                        break;
-                    }
-                }
-
-                if (!is_dup) {
-                    /* Move non-duplicate block to compact position */
-                    if (write_idx != a) {
-                        uint32_t dst_flat = inode->block_start + write_idx;
-                        memcpy(&v->data[dst_flat * GEOS_BLOCK_SZ], block_a, GEOS_BLOCK_SZ);
-                    }
-                    write_idx++;
-                }
-            }
-
-            if (write_idx < inode->block_count) {
-                uint32_t old_count = inode->block_count;
-                uint32_t new_count = write_idx;
-
-                /* Free unused blocks */
-                geos_free_blocks(v, inode->block_start + new_count,
-                                 (uint16_t)(old_count - new_count));
-                inode->block_count = (uint16_t)new_count;
-                inode->flags |= GEOS_FLAG_COMPRESSED;
-                total_saved += (old_count - new_count) * GEOS_BLOCK_SZ;
-            }
+        /* Write data to blocks */
+        for (uint32_t b = 0; b < n_blocks; b++) {
+            uint32_t offset = (block_start + b) * GEOS_BLOCK_SZ;
+            uint32_t chunk = size_bytes - b * GEOS_BLOCK_SZ;
+            if (chunk > GEOS_BLOCK_SZ) chunk = GEOS_BLOCK_SZ;
+            memcpy(&v->data[offset], data + b * GEOS_BLOCK_SZ, chunk);
         }
     }
 
-    return total_saved;
+    v->inode_count++;
+    v->n_files++;
+    return inode;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GEOS_UNSUMMON — Remove data from coordinate
+   ═══════════════════════════════════════════════════════════
+   The ONLY way to remove data. Frees blocks at the coordinate.
+   Coordinate becomes available for new summon.
+   ═══════════════════════════════════════════════════════════ */
+
+static inline int geos_unsummon(GeosVolume *v, const char *name) {
+    if (!v || !name) return -1;
+    for (uint16_t i = 0; i < v->inode_count; i++) {
+        if (strcmp(v->inodes[i].name, name) == 0) {
+            geos_free_blocks(v, v->inodes[i].block_start, v->inodes[i].block_count);
+            if (i < v->inode_count - 1) {
+                memmove(&v->inodes[i], &v->inodes[i + 1],
+                        sizeof(GeosInode) * (v->inode_count - 1 - i));
+            }
+            v->inode_count--;
+            v->n_files--;
+            return 0;
+        }
+    }
+    return -2;  /* not found */
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GEOS_BIJECTION — Twin bijection mapping
+   ═══════════════════════════════════════════════════════════
+   Maps between flat block address and 3D geometric coordinate.
+   This IS the "Aquarium glass" — you view through this mapping.
+   Zero-copy: returns pointer directly into data store.
+   ═══════════════════════════════════════════════════════════ */
+
+typedef struct {
+    uint32_t block_flat;     /* flat block index in data store */
+    uint32_t byte_offset;   /* byte offset = block_flat * 64 */
+    uint8_t  gen;            /* generation */
+    uint8_t  face;           /* face */
+    uint16_t slot;           /* slot */
+    uint8_t  cell_type;      /* 3-bit parity type */
+} GeosBijection;
+
+/* Forward: 3D coordinate → flat address */
+static inline GeosBijection geos_bijection_forward(uint8_t gen, uint8_t face, uint16_t slot) {
+    GeosBijection b;
+    /* Reconstruct flat from bit-packed coordinate (inverse of geo_cell_addr_from_offset) */
+    uint32_t flat = ((uint32_t)gen << CELL_GEN_SHIFT)
+                  | ((uint32_t)face << CELL_FACE_SHIFT)
+                  | ((uint32_t)slot << CELL_SLOT_SHIFT);
+    /* NO mask: GEAR_GEO_FULL is not power-of-2, so (N-1) mask corrupts valid addresses */
+    if (flat >= GEOS_ADDR_SPACE) { memset(&b, 0, sizeof(b)); return b; }
+    b.block_flat  = flat;
+    b.byte_offset = flat * GEOS_BLOCK_SZ;
+    b.gen         = gen;
+    b.face        = face;
+    b.slot        = slot;
+    GeoCellAddr ca = geo_cell_addr_from_offset(flat);
+    b.cell_type   = ca.cell_type;
+    return b;
+}
+
+/* Reverse: flat address → 3D coordinate */
+static inline GeosBijection geos_bijection_reverse(uint32_t flat_id) {
+    GeosBijection b;
+    GeoCellAddr ca = geo_cell_addr_from_offset(flat_id);
+    b.block_flat  = flat_id % GEOS_ADDR_SPACE;
+    b.byte_offset = b.block_flat * GEOS_BLOCK_SZ;
+    b.gen         = ca.generation;
+    b.face        = ca.face;
+    b.slot        = ca.slot;
+    b.cell_type   = ca.cell_type;
+    return b;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GEOS_PROJECT — Zero-copy frame read (Aquarium principle)
+   ═══════════════════════════════════════════════════════════
+   "Look through the glass" — returns pointer to data at coordinate.
+   No decompress, no decode, no copy. The data IS at that coordinate.
+   Like photographing fish: view from outside, never enter.
+   ═══════════════════════════════════════════════════════════ */
+
+/* Project: get direct pointer to block data at coordinate (zero-copy) */
+static inline const uint8_t* geos_project(GeosVolume *v,
+                                           uint8_t gen, uint8_t face, uint16_t slot) {
+    if (!v || !v->data) return NULL;
+
+    GeosBijection b = geos_bijection_forward(gen, face, slot);
+    if (b.block_flat >= GEOS_ADDR_SPACE) return NULL;
+
+    return &v->data[b.byte_offset];
+}
+
+/* Project by name: find file, return pointer to its data (zero-copy) */
+static inline const uint8_t* geos_project_by_name(GeosVolume *v, const char *name,
+                                                    uint32_t *out_size) {
+    if (!v || !name) return NULL;
+
+    GeosInode *inode = geos_find(v, name);
+    if (!inode) return NULL;
+
+    if (out_size) *out_size = inode->size_bytes;
+    return &v->data[inode->block_start * GEOS_BLOCK_SZ];
+}
+
+/* Project block: get pointer to a specific block within a file */
+static inline const uint8_t* geos_project_block(GeosVolume *v, const char *name,
+                                                  uint32_t block_idx) {
+    if (!v || !name) return NULL;
+
+    GeosInode *inode = geos_find(v, name);
+    if (!inode || block_idx >= inode->block_count) return NULL;
+
+    return &v->data[(inode->block_start + block_idx) * GEOS_BLOCK_SZ];
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -598,130 +634,6 @@ static inline int geos_stat(GeosVolume *v, const char *name, GeosStat *st) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   GEOS_RECON — Data pattern analysis + compression forecast
-   ═══════════════════════════════════════════════════════════
-   Analyzes block content to find:
-   - Zero blocks (eliminatable)
-   - Duplicate blocks (deduplicatable)
-   - Repeated patterns (compressible)
-   - Entropy distribution (compressibility score)
-   Returns forecast: how many bytes can be saved.
-   ═══════════════════════════════════════════════════════════ */
-
-typedef struct {
-    uint32_t total_blocks;
-    uint32_t zero_blocks;        /* all-zero blocks */
-    uint32_t duplicate_pairs;    /* identical block pairs */
-    uint32_t unique_blocks;      /* distinct block content */
-    uint32_t bytes_saved_forecast; /* estimated savings */
-    float    compressibility;     /* 0.0 = no compress, 1.0 = max */
-    char     profile[16];         /* "sparse"|"dense"|"repeated"|"mixed" */
-} GeosRecon;
-
-static inline void geos_recon(GeosVolume *v, const char *name, GeosRecon *r) {
-    if (!v || !r) return;
-    memset(r, 0, sizeof(*r));
-
-    GeosInode *inode = geos_find(v, name);
-    if (!inode) return;
-
-    r->total_blocks = inode->block_count;
-    if (r->total_blocks == 0) return;
-
-    /* Track unique block signatures (simple hash) */
-    uint32_t sigs[4096];  /* block signatures */
-    uint32_t n_sigs = 0;
-
-    for (uint32_t b = 0; b < inode->block_count && b < 4096; b++) {
-        uint32_t flat = inode->block_start + b;
-        const uint8_t *block = &v->data[flat * GEOS_BLOCK_SZ];
-
-        /* Check zero block */
-        int is_zero = 1;
-        for (uint32_t j = 0; j < GEOS_BLOCK_SZ; j++) {
-            if (block[j] != 0) { is_zero = 0; break; }
-        }
-        if (is_zero) { r->zero_blocks++; continue; }
-
-        /* Compute signature (djb2 hash) */
-        uint32_t sig = 5381;
-        for (uint32_t j = 0; j < GEOS_BLOCK_SZ; j++)
-            sig = ((sig << 5) + sig) + block[j];
-
-        /* Check for duplicates */
-        int found = 0;
-        for (uint32_t s = 0; s < n_sigs; s++) {
-            if (sigs[s] == sig) { r->duplicate_pairs++; found = 1; break; }
-        }
-        if (!found && n_sigs < 4096) {
-            sigs[n_sigs++] = sig;
-        }
-    }
-
-    r->unique_blocks = n_sigs;
-    r->bytes_saved_forecast = r->zero_blocks * GEOS_BLOCK_SZ;
-
-    if (r->total_blocks > 0) {
-        float zero_ratio = (float)r->zero_blocks / r->total_blocks;
-        float dup_ratio = (float)r->duplicate_pairs / r->total_blocks;
-        r->compressibility = zero_ratio + dup_ratio;
-        if (r->compressibility > 1.0f) r->compressibility = 1.0f;
-
-        if (zero_ratio > 0.5f)
-            snprintf(r->profile, sizeof(r->profile), "sparse");
-        else if (dup_ratio > 0.3f)
-            snprintf(r->profile, sizeof(r->profile), "repeated");
-        else if (r->compressibility < 0.05f)
-            snprintf(r->profile, sizeof(r->profile), "dense");
-        else
-            snprintf(r->profile, sizeof(r->profile), "mixed");
-    }
-}
-
-/* ═══════════════════════════════════════════════════════════
-   GEOS_RECON_ALL — Analyze entire volume
-   ═══════════════════════════════════════════════════════════ */
-
-static inline void geos_recon_all(GeosVolume *v) {
-    if (!v) return;
-
-    printf("\n╔══════════════════════════════════════════════════════════════════╗\n");
-    printf("║  GeoFS Recon — Data Pattern Analysis                          ║\n");
-    printf("╠══════════════════════════════════════════════════════════════════╣\n");
-
-    uint32_t total_zero = 0, total_dup = 0, total_blocks = 0;
-    uint32_t total_forecast = 0;
-
-    printf("║  %-16s %6s %6s %6s %6s %8s %8s  ║\n",
-           "File", "Blocks", "Zero", "Dup", "Unique", "Save(B)", "Profile");
-    printf("║  ──────────────── ────── ────── ────── ────── ──────── ────────  ║\n");
-
-    for (uint16_t i = 0; i < v->inode_count; i++) {
-        GeosRecon r;
-        geos_recon(v, v->inodes[i].name, &r);
-
-        printf("║  %-16s %6u %6u %6u %6u %8u %-8s  ║\n",
-               v->inodes[i].name,
-               r.total_blocks, r.zero_blocks, r.duplicate_pairs,
-               r.unique_blocks, r.bytes_saved_forecast, r.profile);
-
-        total_zero += r.zero_blocks;
-        total_dup += r.duplicate_pairs;
-        total_blocks += r.total_blocks;
-        total_forecast += r.bytes_saved_forecast;
-    }
-
-    printf("╠══════════════════════════════════════════════════════════════════╣\n");
-    printf("║  TOTAL: %u blocks, %u zero, %u dup pairs                  ║\n",
-           total_blocks, total_zero, total_dup);
-    printf("║  Forecast: %u bytes saved (%.1f%% of %.1f KB)            ║\n",
-           total_forecast,
-           total_blocks > 0 ? (float)total_forecast / (total_blocks * GEOS_BLOCK_SZ) * 100.0f : 0,
-           total_blocks * GEOS_BLOCK_SZ / 1024.0);
-    printf("╚══════════════════════════════════════════════════════════════════╝\n\n");
-}
-
-/* ═══════════════════════════════════════════════════════════
    GEOS_VISUALIZE — 144×144 ASCII grid
    ═══════════════════════════════════════════════════════════ */
 
@@ -756,7 +668,7 @@ static inline void geos_visualize(GeosVolume *v, const char *highlight_name) {
     if (highlight_name) {
         GeosInode *inode = geos_find(v, highlight_name);
         if (inode) {
-            char m = (inode->flags & GEOS_FLAG_COMPRESSED) ? 'C' : '@';
+            char m = '@';
             for (uint16_t b = 0; b < inode->block_count; b++) {
                 uint32_t flat = inode->block_start + b;
                 uint32_t row = flat / 144, col = flat % 144;
@@ -785,7 +697,7 @@ static inline void geos_visualize(GeosVolume *v, const char *highlight_name) {
                ca.generation, ca.face, ca.slot,
                cell_type_name(ca.cell_type),
                inode->tier, inode->entropy, inode->block_count,
-               (inode->flags & GEOS_FLAG_COMPRESSED) ? " (compressed)" : "");
+               "");
     }
 }
 
