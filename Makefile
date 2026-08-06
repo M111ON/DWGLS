@@ -126,5 +126,17 @@ help:
 	@echo "make test       — compile + run tier-1 tests"
 	@echo "make test-NAME  — run single test (e.g. make test-test_cell_classify)"
 	@echo "make tier2      — list blocked tests"
+	@echo "make vis        — start FGLS_vis visualizer (port 5001)"
+	@echo "make vis GGUF=I:/model/model.gguf — visualizer with model"
 	@echo "make clean      — remove build/"
 	@echo "make list       — list all tests"
+
+# ── FGLS_vis: geometry visualizer + console ─────────────
+GGUF ?= I:/model/SmolLM2-360M-Instruct.Q8_0.gguf
+
+vis: $(BUILD)/gguf_tool.exe
+	@echo "▶ FGLS_UI → http://127.0.0.1:5001  (GGUF: $(GGUF))"
+	python tools/fgls_vis.py 5001 $(GGUF)
+
+$(BUILD)/gguf_tool.exe: tools/gguf_tool.c tools/gguf_dump.c .hermes/desktop-attachments/gguf_reader.h | $(BUILD)
+	$(CC) $(CFLAGS) -I.hermes/desktop-attachments -o $(BUILD)/gguf_tool.exe tools/gguf_tool.c $(LDFLAGS)
