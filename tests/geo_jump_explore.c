@@ -37,12 +37,12 @@ static void test_jump_types(void) {
    Test 2: MOD — stride variations
    ═══════════════════════════════════════════════════════════════════════════ */
 static void test_mod_stride(void) {
-    printf("═══ Test 2: MOD Stride — 37 (frame_seek), 162, 16813 ═══\n\n");
+    printf("═══ Test 2: MOD Stride — 5 (BEST), 37 (frame_seek), 162, 16813 ═══\n\n");
 
-    uint32_t strides[] = {37, 162, 16813, 1440, 576};
-    const char *labels[] = {"37 (frame_seek)", "162 (prime)", "16813 (inverse)", "1440 (clock)", "576 (20736/36)"};
+    uint32_t strides[] = {5, 37, 162, 16813, 1440, 576};
+    const char *labels[] = {"5 (BEST, order 1728)", "37 (frame_seek)", "162 (tower identity)", "16813 (inverse)", "1440 (clock)", "576 (20736/36)"};
 
-    for (int s = 0; s < 5; s++) {
+    for (int s = 0; s < 6; s++) {
         printf("  stride=%s:\n", labels[s]);
         uint32_t node = 0;
         printf("    ");
