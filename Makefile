@@ -8,7 +8,7 @@
 #   make list          — list available tests
 
 CC      := gcc
-CFLAGS  := -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -I. -Icore -Icore/infra
+CFLAGS  := -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -I. -Icore -Icore/infra -Icore/infra
 LDFLAGS := -lm
 
 # ── Auto-discover test sources ────────────────────────
@@ -40,18 +40,16 @@ TIER1 := \
   test_safetensors_reader
 
 # ── Tier 2: need gguf_reader.h or geo_frame_seek.h ────
+# (removed: kis_codec_v5_test, kis_codec_v6_test, kis_map_roundtrip,
+#  kis_real_gguf_test, test_geo_sid_verify, test_rail_hub,
+#  test_qwen3_microscope, test_real_gguf_microscope — cross-repo deps, hang on fail)
 TIER2 := \
   kis_codec_v4_test \
-  kis_codec_v5_test \
-  kis_codec_v6_test \
-  kis_map_roundtrip \
-  kis_real_gguf_test \
-  test_geo_sid_verify \
   test_geo_tensor_hub \
-  test_rail_hub \
-  test_geo_zerocopy \
-  test_qwen3_microscope \
-  test_real_gguf_microscope
+  test_geo_zerocopy
+
+# ── Tier 2 include dir (gguf_reader.h moved here) ────
+TIER2_CFLAGS := $(CFLAGS) -Icore
 
 # ── Build targets ─────────────────────────────────────
 BUILD := build
@@ -68,10 +66,10 @@ test-%: tests/%.c | $(BUILD)
 	@./$(BUILD)/$@ && echo "✅ $@ PASS" || echo "❌ $@ FAIL"
 
 # ── Run all tier-1 tests ──────────────────────────────
-test: tier1
+test: tier1 tier2
 	@echo "═══════════════════════════════════════"
-	@echo "TIER1: $(words $(TIER1)) tests compiled + run"
-	@echo "TIER2: $(words $(TIER2)) tests (need gguf_reader.h)"
+	@echo "TIER1: $(words $(TIER1)) tests"
+	@echo "TIER2: $(words $(TIER2)) tests"
 	@echo "═══════════════════════════════════════"
 
 tier1: | $(BUILD)
@@ -90,9 +88,21 @@ tier1: | $(BUILD)
 	echo "───────────────────────────────────────"; \
 	echo "PASS: $$pass / $$((pass+fail))  FAIL: $$fail"
 
-tier2:
-	@echo "Tier 2 tests (need gguf_reader.h — not in DWGLS yet):"
-	@for t in $(TIER2); do echo "  ⏸ $$t"; done
+tier2: | $(BUILD)
+	@pass=0; fail=0; \
+	for t in $(TIER2); do \
+	  if $(CC) $(TIER2_CFLAGS) -o $(BUILD)/test-$$t tests/$$t.c $(LDFLAGS) 2>/dev/null; then \
+	    if ./$(BUILD)/test-$$t >/dev/null 2>&1; then \
+	      echo "  ✅ $$t"; pass=$$((pass+1)); \
+	    else \
+	      echo "  ❌ $$t (RUN FAIL)"; fail=$$((fail+1)); \
+	    fi; \
+	  else \
+	    echo "  ❌ $$t (BUILD FAIL)"; fail=$$((fail+1)); \
+	  fi; \
+	done; \
+	echo "───────────────────────────────────────"; \
+	echo "TIER2 — PASS: $$pass / $$((pass+fail))  FAIL: $$fail"
 
 # ── Housekeeping ──────────────────────────────────────
 $(BUILD):
@@ -138,5 +148,5 @@ vis: $(BUILD)/gguf_tool.exe
 	@echo "▶ FGLS_UI → http://127.0.0.1:5001  (GGUF: $(GGUF))"
 	python tools/fgls_vis.py 5001 $(GGUF)
 
-$(BUILD)/gguf_tool.exe: tools/gguf_tool.c tools/gguf_dump.c .hermes/desktop-attachments/gguf_reader.h | $(BUILD)
-	$(CC) $(CFLAGS) -I.hermes/desktop-attachments -o $(BUILD)/gguf_tool.exe tools/gguf_tool.c $(LDFLAGS)
+$(BUILD)/gguf_tool.exe: tools/gguf_tool.c tools/gguf_dump.c core/gguf_reader.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/gguf_tool.exe tools/gguf_tool.c $(LDFLAGS)
