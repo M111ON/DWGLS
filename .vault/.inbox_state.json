@@ -188,7 +188,14 @@
       "body": "carrier pyramid swing: self-dual 4↔5 (V=F=5 E=8) ไม่ต้อง dual pair. SEALED↔SPIKED layer machine, pair=9, 20736/9=2304=48², 4608 layers เติม 20736 เป๊ะ 0 overhang. Octa fill (V6/F8/E12 honeycomb), hyperbolic s(n+1)=s(n)+9 linear. test 30/30 + make test 25/25. Commit 4b253d4",
       "status": "todo",
       "created": "2026-08-09T05:05:53"
+    },
+    {
+      "id": 28,
+      "title": "Pyramid 3-axis + hyperbolic (Aug 10)",
+      "body": "KIS{x,y,z} บน pyramid carrier: x=i, y=i+1728, z=i+3456 ใช้ field 20736 เดียวกัน. hyp_shift(slot,shift)=slot×shift mod 20736, inverse 5=16589. 4-step protocol lossless ทั้ง 3 แกน (append→×5→×16589→verify), pyramid parity รอด drift. test 16/16 + make test 25/25. Commit ดู git log",
+      "status": "todo",
+      "created": "2026-08-09T05:23:04"
     }
   ],
-  "next_id": 28
+  "next_id": 29
 }
