@@ -153,7 +153,14 @@
       "body": "PROTOTYPE COMPLETE (Aug 7):\n\nContainer format: geo_kis_4d_container.h\n- Header: 48 bytes (magic, version, scale, etc.)\n- Data: compressed values\n- Map: address mapping\n\nTest results:\n- Data dedup only: 81.32x (Q8_0 has 256 distinct values)\n- KIS scaling only: 2.00x (scale 0.5)\n- Combined: 162x compression!\n\nPipeline:\n1. GGUF weights → Dedup values (81.32x)\n2. Deduplicated → KIS scale addresses (2x)\n3. Total: 162x compression!\n\nKey insight:\n- Data dedup = VALUE redundancy (same values)\n- KIS scaling = ADDRESS redundancy (same addresses)\n- They complement, not compete\n\nFiles:\n- core/geo_kis_4d_container.h (new)\n- tests/test_kis_4d_container.c (4/4 PASS)\n- tests/test_kis_4d_scale_all.c (3/3 PASS)\n\nBoard: #14-22\nNext: Plan full compression pipeline",
       "status": "todo",
       "created": "2026-08-08T03:11:44"
+    },
+    {
+      "id": 23,
+      "title": "geo_jump explorer + stride order sweep (Aug 9)",
+      "body": "Hilbert/Peano = MAZE WALLS not filling. Sacred verified: TRIT 27, L38 34, bridge 54, stride 37=1440-only. STRIDE 5 = max order 1728 = 1 pentagon; 12 orbits = 20736. 5-tetra chain 60→720→1440→20736. 0.4 threshold geometry-given. Commit 6d5573b. Docs: docs/geo-jump-explorer-2026-08-09.md",
+      "status": "todo",
+      "created": "2026-08-09T00:20:59"
     }
   ],
-  "next_id": 23
+  "next_id": 24
 }
