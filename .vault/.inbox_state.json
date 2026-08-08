@@ -158,9 +158,16 @@
       "id": 23,
       "title": "geo_jump explorer + stride order sweep (Aug 9)",
       "body": "Hilbert/Peano = MAZE WALLS not filling. Sacred verified: TRIT 27, L38 34, bridge 54, stride 37=1440-only. STRIDE 5 = max order 1728 = 1 pentagon; 12 orbits = 20736. 5-tetra chain 60→720→1440→20736. 0.4 threshold geometry-given. Commit 6d5573b. Docs: docs/geo-jump-explorer-2026-08-09.md",
-      "status": "todo",
+      "status": "done",
       "created": "2026-08-09T00:20:59"
+    },
+    {
+      "id": 24,
+      "title": "MOD-5 implemented (Aug 10, from #23)",
+      "body": "geo_jump MOD default fixed: _jump_mod(mult=0) now uses GEO_MOD_STRIDE=5 (order 1728=MAX, 12 orbits=20736) instead of GEO_MOD_PRIME=162 (order 9, gcd≠1 collapse). GEO_MOD_PRIME kept as tower identity 128x162=20736. Synced module+dgls copies (h/src/py). make test 25/25 PASS.",
+      "status": "todo",
+      "created": "2026-08-09T02:46:27"
     }
   ],
-  "next_id": 24
+  "next_id": 25
 }
