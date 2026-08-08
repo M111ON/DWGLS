@@ -174,7 +174,21 @@
       "body": "Frame = index ชี้ข้อมูล 4D tesseract (12^4): frame 1728 slots 3D view, capo 12 layers = 20736 full. Composition capo+MOD(5)+octant roundtrip lossless (5^-1=16589). CORRECTION: MOD(5) real orbit = 128 (4 unit size-1728, 4 fixed pts 0/5184/10368/15552) — board '12 orbits' was capo LAYER count. Tests: frame_index_demo 6/6 + capo_seeker_mix 7/7 PASS, make test 25/25. Commit: <check git log>",
       "status": "todo",
       "created": "2026-08-09T03:44:48"
+    },
+    {
+      "id": 26,
+      "title": "#3 done — batch convert works on real GGUF (Aug 10)",
+      "body": "geo_batch_convert: GGUF→.gcube จริงบน Qwen2.5-0.5B Q8_0 (290 tensors, 352.7MB verified lossless, 50+20 PASS). FIXED naming bug: strip .gguf แล้วต่อ .gcube (memmove เดิมทิ้ง residue '.gcubegcube'). Commit 27591fb. เครื่องมือครบ: gguf_reader + geo_frame_seek + batch convert",
+      "status": "todo",
+      "created": "2026-08-09T03:53:59"
+    },
+    {
+      "id": 27,
+      "title": "Pyramid swing carrier v1 (Aug 10)",
+      "body": "carrier pyramid swing: self-dual 4↔5 (V=F=5 E=8) ไม่ต้อง dual pair. SEALED↔SPIKED layer machine, pair=9, 20736/9=2304=48², 4608 layers เติม 20736 เป๊ะ 0 overhang. Octa fill (V6/F8/E12 honeycomb), hyperbolic s(n+1)=s(n)+9 linear. test 30/30 + make test 25/25. Commit 4b253d4",
+      "status": "todo",
+      "created": "2026-08-09T05:05:53"
     }
   ],
-  "next_id": 26
+  "next_id": 28
 }
