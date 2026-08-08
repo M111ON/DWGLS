@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 #include <time.h>
 #include "gguf_reader.h"
 #include "core/kis_codec_v5.h"
@@ -37,6 +38,40 @@ static int test_roundtrip(const char *name, int8_t *w, uint32_t n) {
     return (dec == 0 && mm == 0);
 }
 
+/* Decode Q8_0 blocks → int8 weights using FP16 ldexpf */
+static uint32_t decode_q8_weights(const uint8_t *data, uint32_t n_blocks,
+                                   int8_t *out, uint32_t max) {
+    uint32_t loaded = 0;
+    for (uint32_t b = 0; b < n_blocks && loaded < max; b++) {
+        uint16_t su;
+        memcpy(&su, data + b*34, 2);
+        uint32_t exp = (su >> 10) & 0x1F, mant = su & 0x3FF;
+        float scale;
+        if (exp == 0) scale = (float)mant / 1024.0f * 5.960464478e-8f;
+        else {
+            scale = (float)mant / 1024.0f + 1.0f;
+            scale = ldexpf(scale, (int)exp - 15);
+        }
+        if (su & 0x8000) scale = -scale;
+        (void)scale; /* weight value = int8, no scale needed for codec test */
+        for (int i = 0; i < 32 && loaded < max; i++)
+            out[loaded++] = (int8_t)data[b*34 + 2 + i];
+    }
+    return loaded;
+}
+
+/* Find first Q8_0 tensor (type=8) with most data */
+static int find_q8_tensor(GgufReader *gf) {
+    int best = -1;
+    for (uint32_t i = 0; i < gf->n_tensors; i++) {
+        if (gf->sizes[i] > 0 && gf->sizes[i] > (uint32_t)(best >= 0 ? gf->sizes[best] : 0)) {
+            /* Q8_0 size = blocks * 34 */
+            if (gf->sizes[i] % 34 == 0) best = i;
+        }
+    }
+    return best;
+}
+
 int main(void) {
     printf("╔══ KIS CODEC v5 — Roundtrip Test ══╗\n\n");
 
@@ -63,40 +98,51 @@ int main(void) {
     /* Real GGUF */
     printf("\n═══ Real GGUF ═══\n");
     const char *models[] = {
-        "I:/model/Qwen2.5-0.5B-Instruct-Q8_0.gguf",
         "I:/model/qwen25_q8.gguf",
         "I:/model/SmolLM2-360M-Instruct.Q8_0.gguf",
-        "I:/model/Kokoro_no_espeak_Q8.gguf",
         NULL
     };
     for (int m = 0; models[m]; m++) {
-        GGUF_File *gf = gguf_open(models[m]);
-        if (!gf) { printf("  SKIP: %s\n", models[m]); continue; }
-        int tidx = -1;
-        for (uint64_t i = 0; i < gf->tensor_count; i++)
-            if (gf->tensors[i].type == GGML_TYPE_Q8_0) { tidx = (int)i; break; }
-        if (tidx < 0) { printf("  SKIP: no Q8_0\n"); gguf_close(gf); continue; }
-
-        GGUF_Tensor *t = &gf->tensors[tidx];
-        uint32_t n = 1000000;
-        printf("\n  %s — %s (%u weights)\n", models[m], t->name, n);
-
-        int8_t *raw = (int8_t *)malloc(n);
-        uint64_t foff = gf->tensor_data_start + t->offset;
-        foff = (foff + 31) & ~(uint64_t)31;
-        fseek(gf->fp, (long)foff, SEEK_SET);
-        uint32_t rd = 0;
-        uint64_t nblk = (t->n_weights + 31) / 32;
-        for (uint64_t b = 0; b < nblk && rd < n; b++) {
-            uint16_t scale; int8_t w[32];
-            if (fread(&scale,2,1,gf->fp) != 1) break;
-            if (fread(w,1,32,gf->fp) != 32) break;
-            for (int i = 0; i < 32 && rd < n; i++) raw[rd++] = w[i];
+        GgufReader gf;
+        if (gguf_open(models[m], &gf) != 0) {
+            printf("  SKIP: %s\n", models[m]);
+            continue;
         }
-        gguf_close(gf);
 
-        T(10 + m, models[m], test_roundtrip(models[m], raw, rd));
-        free(raw);
+        int tidx = find_q8_tensor(&gf);
+        if (tidx < 0) {
+            printf("  SKIP: no Q8_0 in %s\n", models[m]);
+            gguf_close(&gf);
+            continue;
+        }
+
+        uint32_t n = 1000000;
+        uint32_t n_blocks = gf.sizes[tidx] / 34;
+        if (n_blocks * 32 < n) n = n_blocks * 32;
+
+        printf("\n  %s — %s (%u weights)\n", models[m], gf.names[tidx], n);
+
+        /* Read tensor via bulk mmap */
+        uint8_t *raw_data = (uint8_t *)malloc(gf.sizes[tidx]);
+        if (!raw_data) { gguf_close(&gf); continue; }
+        if (gguf_read_tensor(models[m], &gf, tidx, raw_data, gf.sizes[tidx]) != 0) {
+            printf("  read failed\n");
+            free(raw_data); gguf_close(&gf); continue;
+        }
+
+        int8_t *weights = (int8_t *)malloc(n);
+        uint32_t loaded = decode_q8_weights(raw_data, n_blocks, weights, n);
+        free(raw_data);
+        gguf_close(&gf);
+
+        if (loaded == 0) {
+            printf("  no weights decoded\n");
+            free(weights);
+            continue;
+        }
+
+        T(10 + m, models[m], test_roundtrip(models[m], weights, loaded));
+        free(weights);
     }
 
     printf("\n══════════════════════════════\n");

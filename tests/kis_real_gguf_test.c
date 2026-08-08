@@ -4,19 +4,20 @@
  * Reads first Q8_0 tensor from GGUF, feeds through adaptive store,
  * verifies roundtrip on actual weight data.
  *
- * Compile:
- *   gcc -O2 -Wall -I. -Icore -Icore/infra -I.hermes/desktop-attachments \
- *       -o build/test-kis_real_gguf tests/kis_real_gguf_test.c -lm
- * Run:
- *   ./build/test-kis_real_gguf I:/model/SmolLM2-360M-Instruct.Q8_0.gguf
- */
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
-#include "core/geo_adaptive_store.h"
-#include "core/geo_kis_container.h"
-#include "gguf_reader.h"
+ /* Compile:
+  *   gcc -O2 -Wall -I. -Icore -Icore/infra \
+  *       -o build/test-kis_real_gguf tests/kis_real_gguf_test.c -lm
+  * Run:
+  *   ./build/test-kis_real_gguf I:/model/qwen25_q8.gguf
+  */
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <stdint.h>
+ #include <string.h>
+ #include <math.h>
+ #include "core/geo_adaptive_store.h"
+ #include "core/geo_kis_container.h"
+ #include "gguf_reader.h"
 
 static int pass_count = 0, fail_count = 0;
 #define T(n,desc,ok) do { \

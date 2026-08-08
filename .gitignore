@@ -14,3 +14,7 @@ __pycache__/
 
 # PDF samples (regenerable)
 dropbag/PDF_sample/
+output/
+*.exe
+build/
+__pycache__/

@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DWGLS Feature Explorer — Live Engine</title>
+<style>
+:root {
+  --bg-root: #0a0a0f; --bg-surface: #12121a; --bg-card: #1a1a24;
+  --bg-input: #0e0e16; --border: #2a2a3a; --border-focus: #4a6fa5;
+  --text-primary: #e8e8f0; --text-secondary: #8888a0; --text-muted: #555568;
+  --accent: #4a9eff; --success: #3ddc84; --warning: #ffb74d; --error: #ff5252;
+  --p1:#4a9eff; --p2:#7c4dff; --p3:#e040fb; --p4:#ff5252; --p5:#ff9100; --p6:#3ddc84;
+  --font: system-ui,-apple-system,sans-serif;
+  --mono: 'SF Mono','Cascadia Code','Fira Code',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--font);background:var(--bg-root);color:var(--text-primary);min-height:100vh}
+.app{max-width:1400px;margin:0 auto;padding:24px;display:flex;flex-direction:column;gap:20px}
+
+/* Header */
+.header{display:flex;align-items:center;justify-content:space-between;padding-bottom:16px;border-bottom:1px solid var(--border)}
+.hb{display:flex;align-items:center;gap:12px}
+.logo{width:36px;height:36px;background:linear-gradient(135deg,var(--accent),var(--p2));border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:14px}
+.ht{font-size:18px;font-weight:600}
+.hv{font-size:11px;color:var(--text-muted);font-family:var(--mono)}
+.st{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-secondary)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--success);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+/* Layout */
+.main{display:grid;grid-template-columns:1fr 420px;gap:20px}
+@media(max-width:1000px){.main{grid-template-columns:1fr}}
+
+/* Section */
+.s{background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+.sl{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.sl .badge{background:var(--accent);color:#fff;padding:2px 6px;border-radius:4px;font-size:9px}
+.sl .live{background:var(--success);animation:pulse 2s infinite}
+
+/* Model Selector */
+.model-row{display:flex;gap:8px;flex-wrap:wrap}
+.model-btn{padding:8px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);color:var(--text-secondary);font-size:12px;cursor:pointer;transition:all .15s;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:110px}
+.model-btn:hover{border-color:var(--border-focus);background:#1e1e2a}
+.model-btn.active{border-color:var(--accent);background:rgba(74,158,255,.1);color:var(--text-primary);box-shadow:0 0 12px rgba(74,158,255,.15)}
+.model-btn .name{font-weight:600;font-size:13px}
+.model-btn .meta{font-size:10px;color:var(--text-muted);font-family:var(--mono)}
+
+/* Feature Toggles */
+.toggle-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.toggle-item{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;cursor:pointer;transition:all .2s;user-select:none}
+.toggle-item:hover{border-color:var(--border-focus);background:#1e1e2a}
+.toggle-item.on{border-color:var(--accent);background:rgba(74,158,255,.08)}
+.toggle-item.on .toggle-indicator{background:var(--accent);border-color:var(--accent)}
+.toggle-item.on .toggle-indicator::after{transform:translateX(16px)}
+.toggle-indicator{width:32px;height:18px;border:1px solid var(--border);border-radius:9px;position:relative;transition:all .2s;flex-shrink:0}
+.toggle-indicator::after{content:'';position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--text-muted);transition:transform .2s}
+.toggle-info{display:flex;flex-direction:column;gap:1px}
+.toggle-name{font-size:12px;font-weight:600}
+.toggle-desc{font-size:10px;color:var(--text-muted)}
+
+/* Pipeline Viz */
+.pipeline{display:flex;align-items:center;gap:0;overflow-x:auto;padding:4px 0}
+.stg{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:90px;padding:10px 6px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border);transition:all .3s}
+.stg.active{border-color:var(--accent);box-shadow:0 0 12px rgba(74,158,255,.2);transform:translateY(-2px)}
+.stg.disabled{opacity:.3;border-color:transparent}
+.stg.disabled .si{background:#333!important}
+.si{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;flex-shrink:0;transition:all .3s}
+.sn{font-size:10px;font-weight:600;text-align:center;line-height:1.2}
+.sd{font-size:8px;color:var(--text-muted);text-align:center}
+.ar{color:var(--text-muted);font-size:14px;padding:0 2px;flex-shrink:0;transition:color .3s}
+.ar.on{color:var(--accent)}
+
+/* Stats */
+.sg{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.stat{text-align:center;padding:12px 8px;background:var(--bg-card);border-radius:8px;border:1px solid var(--border)}
+.sv{font-size:22px;font-weight:700;font-family:var(--mono);color:var(--accent);line-height:1}
+.sv.good{color:var(--success)}
+.sv.warn{color:var(--warning)}
+.sv.bad{color:var(--error)}
+.sl2{font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
+
+/* Heatmap */
+.heatmap{display:grid;grid-template-columns:repeat(12,1fr);gap:2px}
+.heat-cell{aspect-ratio:1;border-radius:3px;cursor:pointer;transition:all .15s;position:relative}
+.heat-cell:hover{transform:scale(1.15);z-index:1;box-shadow:0 0 8px rgba(0,0,0,.5)}
+.heat-cell .tooltip{display:none;position:absolute;bottom:110%;left:50%;transform:translateX(-50%);background:#000;color:#fff;padding:4px 8px;border-radius:4px;font-size:10px;font-family:var(--mono);white-space:nowrap;z-index:10;pointer-events:none}
+.heat-cell:hover .tooltip{display:block}
+
+/* Tensor Table */
+.tensor-table{width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)}
+.tensor-table th{text-align:left;padding:4px 6px;color:var(--text-muted);border-bottom:1px solid var(--border);font-weight:600;font-size:10px}
+.tensor-table td{padding:4px 6px;border-bottom:1px solid rgba(42,42,58,.5);color:var(--text-secondary)}
+.tensor-table tr:hover{background:rgba(74,158,255,.05)}
+.tensor-table .bar{height:4px;background:var(--accent);border-radius:2px;display:inline-block}
+
+/* Comparison Bar */
+.comp-bar{height:24px;background:var(--bg-card);border-radius:4px;overflow:hidden;position:relative;margin:4px 0}
+.comp-fill{height:100%;border-radius:4px;transition:width .5s ease;position:relative}
+.comp-fill.original{background:rgba(74,158,255,.3);border:1px solid var(--accent)}
+.comp-fill.compressed{background:linear-gradient(90deg,var(--success),var(--accent));border:1px solid var(--accent)}
+.comp-label{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:10px;font-family:var(--mono);font-weight:600}
+
+/* Feature Impact */
+.feat-bar-row{display:flex;align-items:center;gap:8px;font-size:11px;margin:4px 0}
+.feat-name{width:80px;font-weight:600;font-size:10px}
+.feat-bar{flex:1;height:6px;background:var(--bg-card);border-radius:3px;overflow:hidden}
+.feat-bar-fill{height:100%;border-radius:3px;transition:width .3s}
+.feat-pct{width:50px;text-align:right;font-family:var(--mono);font-size:10px}
+
+/* Log */
+.log{background:var(--bg-input);border-radius:6px;padding:10px;font-family:var(--mono);font-size:11px;line-height:1.6;overflow-y:auto;max-height:200px;color:var(--text-secondary)}
+.l{padding:1px 0}
+.l-s{color:var(--success)}
+.l-e{color:var(--error)}
+.l-i{color:var(--accent)}
+.l-w{color:var(--warning)}
+
+/* Knowledge */
+.knowledge{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
+.kcard{padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;font-size:11px;line-height:1.4}
+.kcard .kt{font-weight:600;font-size:12px;margin-bottom:4px;color:var(--accent)}
+.kcard .kv{color:var(--text-secondary)}
+
+/* Buttons */
+.btn{padding:9px 16px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text-primary);font-family:var(--font);font-size:12px;font-weight:500;cursor:pointer;transition:all .15s}
+.btn:hover{background:#1e1e2a;border-color:var(--border-focus)}
+.btn:active{transform:scale(.97)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn-primary:hover{background:#5aa8ff}
+.run-row{display:flex;gap:8px;align-items:center}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:var(--bg-root)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--text-muted)}
+
+/* Footer */
+.ft{display:flex;justify-content:space-between;padding-top:12px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted)}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="header">
+    <div class="hb">
+      <div class="logo">◆</div>
+      <div>
+        <div class="ht">DWGLS Feature Explorer</div>
+        <div class="hv">Live Engine · Demo · Benchmark · Learning</div>
+      </div>
+    </div>
+    <div class="st">
+      <span class="dot" id="serverDot"></span>
+      <span id="serverStatus">Connecting...</span>
+    </div>
+  </header>
+
+  <div class="main">
+    <div style="display:flex;flex-direction:column;gap:16px">
+
+      <!-- Model Selection -->
+      <div class="s">
+        <div class="sl">📁 Select Model <span class="badge live">LIVE</span></div>
+        <div class="model-row" id="modelRow">
+          <div style="color:var(--text-muted);font-size:12px;padding:8px">Loading models...</div>
+        </div>
+      </div>
+
+      <!-- Feature Toggles -->
+      <div class="s">
+        <div class="sl">⚙️ Feature Toggles</div>
+        <div class="toggle-grid">
+          <div class="toggle-item on" data-feature="sort-mask" onclick="toggleFeature(this)">
+            <div class="toggle-indicator"></div>
+            <div class="toggle-info">
+              <div class="toggle-name">Sort + Mask</div>
+              <div class="toggle-desc">Sort weights → RLE → sparse mask</div>
+            </div>
+          </div>
+          <div class="toggle-item on" data-feature="frame-seek" onclick="toggleFeature(this)">
+            <div class="toggle-indicator"></div>
+            <div class="toggle-info">
+              <div class="toggle-name">Frame Seek</div>
+              <div class="toggle-desc">Stride-37 geometric ordering</div>
+            </div>
+          </div>
+          <div class="toggle-item" data-feature="contour" onclick="toggleFeature(this)">
+            <div class="toggle-indicator"></div>
+            <div class="toggle-info">
+              <div class="toggle-name">Contour Codec</div>
+              <div class="toggle-desc">Circle packing weight compression</div>
+            </div>
+          </div>
+          <div class="toggle-item" data-feature="adaptive" onclick="toggleFeature(this)">
+            <div class="toggle-indicator"></div>
+            <div class="toggle-info">
+              <div class="toggle-name">Adaptive Store</div>
+              <div class="toggle-desc">Per-tensor encoding selection</div>
+            </div>
+          </div>
+          <div class="toggle-item" data-feature="kis-codec" onclick="toggleFeature(this)">
+            <div class="toggle-indicator"></div>
+            <div class="toggle-info">
+              <div class="toggle-name">KIS Codec</div>
+              <div class="toggle-desc">Timeline-based lossless codec</div>
+            </div>
+          </div>
+          <div class="toggle-item" data-feature="geofs" onclick="toggleFeature(this)">
+            <div class="toggle-indicator"></div>
+            <div class="toggle-info">
+              <div class="toggle-name">GeoFS</div>
+              <div class="toggle-desc">Geometric filesystem mount</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pipeline Visualization -->
+      <div class="s">
+        <div class="sl">🔄 Pipeline Flow</div>
+        <div class="pipeline" id="pipeline">
+          <div class="stg active" data-stage="gguf"><div class="si" style="background:var(--p1)">①</div><div class="sn">GGUF</div><div class="sd">Input</div></div>
+          <div class="ar on">→</div>
+          <div class="stg active" data-stage="sort"><div class="si" style="background:var(--p2)">②</div><div class="sn">Sort</div><div class="sd">Ordering</div></div>
+          <div class="ar on">→</div>
+          <div class="stg active" data-stage="mask"><div class="si" style="background:var(--p3)">③</div><div class="sn">Mask</div><div class="sd">Prune</div></div>
+          <div class="ar">→</div>
+          <div class="stg" data-stage="contour"><div class="si" style="background:var(--p4)">④</div><div class="sn">Contour</div><div class="sd">Circle pack</div></div>
+          <div class="ar">→</div>
+          <div class="stg active" data-stage="frame"><div class="si" style="background:var(--p5)">⑤</div><div class="sn">Frame</div><div class="sd">Geo map</div></div>
+          <div class="ar">→</div>
+          <div class="stg" data-stage="fgls"><div class="si" style="background:var(--p6)">⑥</div><div class="sn">.fgls</div><div class="sd">Output</div></div>
+        </div>
+      </div>
+
+      <!-- Run -->
+      <div class="run-row">
+        <button class="btn btn-primary" onclick="runBenchmark()">▶ Run Benchmark</button>
+        <button class="btn" onclick="resetAll()">↻ Reset</button>
+        <button class="btn" onclick="runAllCombinations()">⚡ Test All Combos</button>
+        <span style="font-size:11px;color:var(--text-muted);margin-left:8px" id="runStatus"></span>
+      </div>
+
+      <!-- Results -->
+      <div class="s">
+        <div class="sl">📊 Performance Results</div>
+        <div class="sg">
+          <div class="stat"><div class="sv" id="sRatio">—</div><div class="sl2">Ratio</div></div>
+          <div class="stat"><div class="sv" id="sSpeed">—</div><div class="sl2">Speed</div></div>
+          <div class="stat"><div class="sv" id="sSaved">—</div><div class="sl2">Saved</div></div>
+          <div class="stat"><div class="sv" id="sEntropy">—</div><div class="sl2">Entropy</div></div>
+        </div>
+        <div style="margin-top:12px">
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted);margin-bottom:4px">
+            <span>Original: <span id="origSize">—</span></span>
+            <span>Compressed: <span id="compSize">—</span></span>
+          </div>
+          <div class="comp-bar"><div class="comp-fill original" style="width:100%"><div class="comp-label">100%</div></div></div>
+          <div class="comp-bar"><div class="comp-fill compressed" id="compBar" style="width:0%"><div class="comp-label" id="compLabel">—</div></div></div>
+        </div>
+      </div>
+
+      <!-- Combination Results -->
+      <div class="s" id="comboResults" style="display:none">
+        <div class="sl">⚡ All Combination Results <span class="badge" id="comboCount"></span></div>
+        <div style="overflow-x:auto;max-height:300px;overflow-y:auto">
+          <table class="tensor-table">
+            <thead><tr>
+              <th style="text-align:left">Features</th>
+              <th style="text-align:right">Ratio</th>
+              <th style="text-align:right">Speed</th>
+              <th style="text-align:right">Saved</th>
+              <th style="text-align:right">Compressed</th>
+            </tr></thead>
+            <tbody id="comboBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Knowledge Cards -->
+      <div class="s">
+        <div class="sl">📚 How It Works</div>
+        <div class="knowledge" id="knowledgeCards">
+          <div class="kcard">
+            <div class="kt">Sort + Mask</div>
+            <div class="kv">Weights → sort → repeated values cluster → RLE compress. Sparse mask stores positions. <b>Proven:</b> kis_sort_mask.h, lossless.</div>
+          </div>
+          <div class="kcard">
+            <div class="kt">Frame Seek</div>
+            <div class="kv">stride-37 walk maps to 144×12 grid. O(1) access: frame_enc(t) = t×37%1440. <b>Proven:</b> geo_frame_seek.h.</div>
+          </div>
+          <div class="kcard">
+            <div class="kt">KIS Timeline</div>
+            <div class="kv">0-20736 address space. Forward=expansion, backward=contraction. Enter ANYWHERE. <b>Proven:</b> kis_codec_v4 lossless.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Sidebar -->
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <!-- Weight Heatmap -->
+      <div class="s">
+        <div class="sl">🗺️ Weight Distribution</div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-bottom:4px">
+          <span>Tensor: <span id="sampleTensor">—</span></span>
+          <span>Entropy: <span id="sampleEntropy">—</span></span>
+        </div>
+        <div class="heatmap" id="heatmap"></div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:9px;color:var(--text-muted)">
+          <span>Low density</span>
+          <div style="display:flex;gap:3px;align-items:center">
+            <div style="width:10px;height:6px;background:#1a1a2e;border-radius:2px"></div>
+            <div style="width:10px;height:6px;background:#2d3a6e;border-radius:2px"></div>
+            <div style="width:10px;height:6px;background:#4a6fa5;border-radius:2px"></div>
+            <div style="width:10px;height:6px;background:#7c4dff;border-radius:2px"></div>
+            <div style="width:10px;height:6px;background:#e040fb;border-radius:2px"></div>
+          </div>
+          <span>High density</span>
+        </div>
+      </div>
+
+      <!-- Tensor List (top 10) -->
+      <div class="s">
+        <div class="sl">🧬 Tensor Breakdown <span class="badge" id="tensorCount"></span></div>
+        <div style="overflow-y:auto;max-height:250px">
+          <table class="tensor-table">
+            <thead><tr><th>Name</th><th>Type</th><th>Params</th><th>Size</th></tr></thead>
+            <tbody id="tensorList"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Feature Impact -->
+      <div class="s">
+        <div class="sl">📈 Feature Impact</div>
+        <div id="featureImpact"></div>
+      </div>
+
+      <!-- Log -->
+      <div class="s">
+        <div class="sl">📋 Activity Log</div>
+        <div class="log" id="log">
+          <div class="l l-i">Connecting to server...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ft">
+    <span>DWGLS Feature Explorer · Live Engine · Geometry = Address = Data</span>
+    <span id="footerInfo">build from proven components</span>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+// DWGLS Feature Explorer — Live Engine
+// ══════════════════════════════════════════════════════════════
+const API = '';  // same origin when served by dwgls_server.py
+
+const state = {
+  models: [],
+  selectedModel: null,
+  features: { 'sort-mask': true, 'frame-seek': true, 'contour': false, 'adaptive': false, 'kis-codec': false, 'geofs': false },
+  running: false,
+  modelInfo: null,
+  histogram: null,
+};
+
+const FEATURE_EFFECTS = {
+  'sort-mask':  { ratio: 0.78, speed: 2 },
+  'frame-seek': { ratio: 0.85, speed: 1 },
+  'contour':    { ratio: 0.72, speed: 5 },
+  'adaptive':   { ratio: 0.88, speed: 1 },
+  'kis-codec':  { ratio: 0.62, speed: 8 },
+  'geofs':      { ratio: 0.95, speed: 0 },
+};
+
+const pipelineMap = {
+  'sort-mask': ['sort', 'mask'],
+  'frame-seek': ['frame'],
+  'contour': ['contour'],
+  'adaptive': ['sort'],
+  'kis-codec': ['sort', 'mask', 'frame'],
+  'geofs': ['fgls'],
+};
+
+// ══════════════════════════════════════════════════════════════
+// API Calls
+// ══════════════════════════════════════════════════════════════
+async function api(path, body = null) {
+  try {
+    const opts = body ? { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) } : {};
+    const r = await fetch(API + path, opts);
+    return await r.json();
+  } catch (e) {
+    log('API error: ' + e.message, 'e');
+    return null;
+  }
+}
+
+async function loadModels() {
+  const models = await api('/api/models');
+  if (!models) return;
+  state.models = models;
+  const row = document.getElementById('modelRow');
+  row.innerHTML = '';
+  models.forEach((m, i) => {
+    const btn = document.createElement('div');
+    btn.className = 'model-btn' + (i === 0 ? ' active' : '');
+    btn.dataset.index = i;
+    btn.onclick = () => selectModel(i);
+    btn.innerHTML = `<div class="name">${m.name.split('-')[0]}</div><div class="meta">${m.size_mb}MB</div>`;
+    row.appendChild(btn);
+  });
+  if (models.length > 0) await selectModel(0);
+}
+
+async function selectModel(index) {
+  document.querySelectorAll('.model-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector(`.model-btn[data-index="${index}"]`).classList.add('active');
+  state.selectedModel = state.models[index];
+  log(`Loading ${state.selectedModel.name}...`, 'i');
+
+  // Fetch real info + histogram
+  const [info, hist] = await Promise.all([
+    api('/api/info', { path: state.selectedModel.path }),
+    api('/api/histogram', { path: state.selectedModel.path }),
+  ]);
+  state.modelInfo = info;
+  state.histogram = hist;
+  updateTensorList(info);
+  updateHeatmapFromData(hist);
+  updateKnowledge();
+  updateFeatureImpact();
+  log(`Loaded: ${info?.n_tensors} tensors, ${info?.total_params?.toLocaleString()} params`, 's');
+}
+
+function updateTensorList(info) {
+  const tbody = document.getElementById('tensorList');
+  tbody.innerHTML = '';
+  document.getElementById('tensorCount').textContent = info?.n_tensors || 0;
+  if (!info?.tensors) return;
+  // Show top 15 by size
+  const sorted = [...info.tensors].sort((a, b) => b.total - a.total).slice(0, 15);
+  const maxParams = sorted[0]?.total || 1;
+  sorted.forEach(t => {
+    const tr = document.createElement('tr');
+    const typeNames = {0:'F32',1:'F16',8:'Q8_0'};
+    const pct = (t.total / maxParams * 100).toFixed(0);
+    tr.innerHTML = `
+      <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.name}">${t.name.split('.').pop()}</td>
+      <td>${typeNames[t.type] || t.type}</td>
+      <td>${t.total.toLocaleString()}</td>
+      <td><div class="bar" style="width:${pct}%"></div></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function updateHeatmapFromData(hist) {
+  if (!hist?.weight_sample) return;
+  const weights = hist.weight_sample;
+  document.getElementById('sampleTensor').textContent = hist.sample_tensor || '—';
+  document.getElementById('sampleEntropy').textContent = hist.entropy || '—';
+  const heatmap = document.getElementById('heatmap');
+  heatmap.innerHTML = '';
+  // Map weights to 12×12 grid (144 towers)
+  const cellSize = Math.ceil(weights.length / 144);
+  for (let i = 0; i < 144; i++) {
+    const start = i * cellSize;
+    const end = Math.min(start + cellSize, weights.length);
+    let sum = 0;
+    for (let j = start; j < end; j++) sum += Math.abs(weights[j]);
+    const avg = (end > start) ? sum / (end - start) : 0;
+    const maxW = Math.max(...weights.map(Math.abs)) || 1;
+    const density = Math.min(1, avg / maxW);
+    const cell = document.createElement('div');
+    cell.className = 'heat-cell';
+    const r = Math.floor(26 + density * 200);
+    const g = Math.floor(26 + density * 40);
+    const b = Math.floor(46 + density * 180);
+    cell.style.background = `rgb(${r},${g},${b})`;
+    cell.innerHTML = `<div class="tooltip">Tower ${i}<br>Avg: ${avg.toFixed(4)}<br>Density: ${(density*100).toFixed(1)}%</div>`;
+    heatmap.appendChild(cell);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// UI Updates
+// ══════════════════════════════════════════════════════════════
+function toggleFeature(el) {
+  el.classList.toggle('on');
+  state.features[el.dataset.feature] = el.classList.contains('on');
+  updatePipeline();
+  updateFeatureImpact();
+  updateKnowledge();
+  log(`Feature ${el.dataset.feature}: ${state.features[el.dataset.feature] ? 'ON' : 'OFF'}`, state.features[el.dataset.feature] ? 's' : 'w');
+}
+
+function updatePipeline() {
+  const activeStages = new Set(['gguf']);
+  Object.entries(state.features).forEach(([f, on]) => {
+    if (on && pipelineMap[f]) pipelineMap[f].forEach(s => activeStages.add(s));
+  });
+  if (Object.values(state.features).some(v => v)) activeStages.add('fgls');
+  document.querySelectorAll('.stg').forEach(stg => {
+    stg.classList.toggle('active', activeStages.has(stg.dataset.stage));
+    stg.classList.toggle('disabled', !activeStages.has(stg.dataset.stage));
+  });
+}
+
+function updateFeatureImpact() {
+  const c = document.getElementById('featureImpact');
+  c.innerHTML = '';
+  Object.entries(state.features).forEach(([feat, on]) => {
+    const e = FEATURE_EFFECTS[feat];
+    const pct = on ? ((1 - e.ratio) * 100) : 0;
+    const row = document.createElement('div');
+    row.className = 'feat-bar-row';
+    row.innerHTML = `
+      <div class="feat-name" style="color:${on ? 'var(--text-primary)' : 'var(--text-muted)'}">${feat}</div>
+      <div class="feat-bar"><div class="feat-bar-fill" style="width:${pct}%;background:${on ? 'var(--accent)' : 'transparent'}"></div></div>
+      <div class="feat-pct" style="color:${on ? 'var(--success)' : 'var(--text-muted)'}">${on ? `-${pct.toFixed(0)}%` : '—'}</div>
+    `;
+    c.appendChild(row);
+  });
+}
+
+function updateKnowledge() {
+  const info = state.modelInfo;
+  const cards = document.getElementById('knowledgeCards');
+  if (!info) return;
+  cards.innerHTML = `
+    <div class="kcard">
+      <div class="kt">Model Profile</div>
+      <div class="kv"><b>${info.n_tensors} tensors</b><br>Q8_0: ${(info.q8_params/1e6).toFixed(1)}M<br>F32: ${(info.f32_params/1e3).toFixed(0)}K<br>Total: ${(info.total_params/1e6).toFixed(1)}M params</div>
+    </div>
+    <div class="kcard">
+      <div class="kt">Active Pipeline</div>
+      <div class="kv">${Object.entries(state.features).filter(([k,v])=>v).map(([k])=>`✓ ${k}`).join('<br>') || '<i>None</i>'}</div>
+    </div>
+    <div class="kcard">
+      <div class="kt">Expected Result</div>
+      <div class="kv">${calcExpected()}</div>
+    </div>
+  `;
+}
+
+function calcExpected() {
+  let ratio = 1, speed = 0;
+  Object.entries(state.features).forEach(([f, on]) => {
+    if (on) { ratio *= FEATURE_EFFECTS[f].ratio; speed += FEATURE_EFFECTS[f].speed; }
+  });
+  const mb = state.modelInfo ? state.modelInfo.file_size_mb : 0;
+  return `Ratio: ${ratio.toFixed(3)}<br>Speed: ${speed}ms<br>Saved: ${((1-ratio)*mb).toFixed(1)}MB<br>Compressed: ${(ratio*mb).toFixed(1)}MB`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Benchmark
+// ══════════════════════════════════════════════════════════════
+async function runBenchmark() {
+  if (state.running || !state.selectedModel) return;
+  state.running = true;
+  document.querySelector('.btn-primary').textContent = '⏳ Running...';
+  const t0 = performance.now();
+
+  log(`▶ Benchmark: ${state.selectedModel.name}`, 'i');
+
+  const result = await api('/api/bench', {
+    path: state.selectedModel.path,
+    features: state.features,
+  });
+
+  if (result?.error) {
+    log(`Error: ${result.error}`, 'e');
+    state.running = false;
+    document.querySelector('.btn-primary').textContent = '▶ Run Benchmark';
+    return;
+  }
+
+  const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+  document.getElementById('sRatio').textContent = result.ratio.toFixed(3);
+  document.getElementById('sRatio').className = 'sv ' + (result.ratio < 0.6 ? 'good' : result.ratio < 0.8 ? 'warn' : '');
+  document.getElementById('sSpeed').textContent = result.speed_ms + 'ms';
+  document.getElementById('sSaved').textContent = result.saved_mb + 'MB';
+  document.getElementById('sEntropy').textContent = state.histogram?.entropy || '—';
+  document.getElementById('origSize').textContent = result.original_size_mb + ' MB';
+  document.getElementById('compSize').textContent = result.compressed_size_mb + ' MB';
+  document.getElementById('compBar').style.width = (result.ratio * 100) + '%';
+  document.getElementById('compLabel').textContent = (result.ratio * 100).toFixed(1) + '%';
+
+  log(`✅ ${result.original_size_mb}MB → ${result.compressed_size_mb}MB (ratio: ${result.ratio}, saved: ${result.saved_mb}MB) in ${elapsed}s`, 's');
+  state.running = false;
+  document.querySelector('.btn-primary').textContent = '▶ Run Benchmark';
+}
+
+async function runAllCombinations() {
+  if (!state.selectedModel) return;
+  log('⚡ Testing all combinations...', 'i');
+  const result = await api('/api/compare', { path: state.selectedModel.path });
+  if (!result?.results) return;
+
+  const container = document.getElementById('comboResults');
+  container.style.display = 'block';
+  document.getElementById('comboCount').textContent = result.total;
+  const tbody = document.getElementById('comboBody');
+  tbody.innerHTML = '';
+
+  result.results.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.style.cursor = 'pointer';
+    tr.onclick = () => {
+      const features = Object.keys(state.features);
+      features.forEach((feat, j) => {
+        const el = document.querySelector(`[data-feature="${feat}"]`);
+        const on = r.mask & (1 << j);
+        el.classList.toggle('on', !!on);
+        state.features[feat] = !!on;
+      });
+      updatePipeline(); updateFeatureImpact(); updateKnowledge();
+      log(`Applied: ${r.label}`, 'i');
+    };
+    const best = i === 0;
+    tr.innerHTML = `
+      <td style="color:${best ? 'var(--success)' : 'var(--text-secondary)'};font-weight:${best?600:400}">${r.label}</td>
+      <td style="text-align:right;color:${r.ratio < 0.6 ? 'var(--success)' : 'var(--text-secondary)'}">${r.ratio.toFixed(3)}</td>
+      <td style="text-align:right;color:var(--text-secondary)">${r.speed_ms}ms</td>
+      <td style="text-align:right;color:var(--success)">${r.saved_mb}MB</td>
+      <td style="text-align:right;color:var(--text-secondary)">${r.compressed_mb}MB</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  log(`✅ ${result.total} tested. Best: ${result.results[0].label} (ratio: ${result.results[0].ratio})`, 's');
+}
+
+function resetAll() {
+  Object.keys(state.features).forEach(f => { state.features[f] = false; document.querySelector(`[data-feature="${f}"]`).classList.remove('on'); });
+  state.features['sort-mask'] = true;
+  state.features['frame-seek'] = true;
+  document.querySelector('[data-feature="sort-mask"]').classList.add('on');
+  document.querySelector('[data-feature="frame-seek"]').classList.add('on');
+  updatePipeline(); updateFeatureImpact(); updateKnowledge();
+  ['sRatio','sSpeed','sSaved','sEntropy'].forEach(id => document.getElementById(id).textContent = '—');
+  document.getElementById('compBar').style.width = '0%';
+  document.getElementById('compLabel').textContent = '—';
+  document.getElementById('comboResults').style.display = 'none';
+  log('↻ Reset to defaults', 'i');
+}
+
+function log(msg, type = 'i') {
+  const el = document.getElementById('log');
+  const line = document.createElement('div');
+  line.className = `l l-${type}`;
+  const t = new Date().toLocaleTimeString('en-US', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  line.textContent = `[${t}] ${msg}`;
+  el.appendChild(line);
+  el.scrollTop = el.scrollHeight;
+  while (el.children.length > 60) el.removeChild(el.firstChild);
+}
+
+// ══════════════════════════════════════════════════════════════
+// Init
+// ══════════════════════════════════════════════════════════════
+async function init() {
+  updatePipeline();
+  updateFeatureImpact();
+  // Test server connection
+  const dot = document.getElementById('serverDot');
+  const status = document.getElementById('serverStatus');
+  try {
+    const r = await fetch(API + '/api/models');
+    if (r.ok) {
+      dot.style.background = 'var(--success)';
+      status.textContent = 'Server connected';
+      log('Server connected ✓', 's');
+      await loadModels();
+    } else throw new Error('HTTP ' + r.status);
+  } catch (e) {
+    dot.style.background = 'var(--error)';
+    status.textContent = 'Server offline — start with: python dwgls_server.py';
+    log('Server offline — run: python dwgls_server.py', 'e');
+    // Load demo data as fallback
+    loadDemoData();
+  }
+}
+
+function loadDemoData() {
+  // Fallback demo data when server is offline
+  const row = document.getElementById('modelRow');
+  row.innerHTML = '';
+  const demos = [
+    {name:'SmolLM2',size:'175MB',path:'demo'},
+    {name:'Kokoro',size:'197MB',path:'demo'},
+    {name:'Qwen3-0.6B',size:'610MB',path:'demo'},
+    {name:'smolVLM',size:'175MB',path:'demo'},
+  ];
+  demos.forEach((d, i) => {
+    const btn = document.createElement('div');
+    btn.className = 'model-btn' + (i === 0 ? ' active' : '');
+    btn.dataset.index = i;
+    btn.onclick = () => {
+      document.querySelectorAll('.model-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      log(`Demo model: ${d.name}`, 'i');
+    };
+    btn.innerHTML = `<div class="name">${d.name}</div><div class="meta">${d.size}</div>`;
+    row.appendChild(btn);
+  });
+  log('Running in demo mode (server offline)', 'w');
+}
+
+init();
+</script>
+</body>
+</html>

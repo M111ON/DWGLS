@@ -90,7 +90,70 @@
       "body": "## สิ่งที่คุยกัน Aug 6 — Architecture ที่ถูก\n\n### 1. Aquarium Principle (กระเป๋าโดราเอม่อน)\n- กระเป๋า = GeoFS (access interface)\n- ของข้างใน = DW Container (expand/shrink)\n- มือล้วง = Twin Bijection (projection read)\n- กระเป๋าไม่รู้ว่าข้างในมีอะไร — แค่รู้ว่าล้วงตรงไหน\n- ล้วงผิดจุด = ได้ของอีกชิ้น (wrong projection = different frame)\n\n### 2. Pyramid Gravity (Compression = กฎจักรวาล)\n- Compression ไม่ใช่ tool — มันเป็น fixed property ของ address space\n- ปรับ pyramid height = เปลี่ยน gravity ทั้งจักรวาล\n- Per-file compression เป็นไปไม่ได้ — gravity เท่ากันเสมอ\n- เราควบคุมไม่ได้ — มันเป็นค่าคงที่ของระบบ\n\n### 3. 3 แกน mujp7 (Summon/Unsummon เท่านั้น)\n- ข้อมูลอยู่ตรงไหนก็ตรงนั้น ห้ามขยับ\n- SUMMON at (x,y,z) — materialize ณ จุด\n- UNSUMMON at (x,y,z) — remove จากจุด\n- Move = drift ทันที เพราะ coordinate 3 ตัว track อยู่\n- Identity = coordinate — rename = drift\n\n### 4. GeoFS 3-Layer Architecture\n- Layer 1: STRUCTURE (geometry) — inodes, dirs, block allocator\n- Layer 2: DATA (DW Container) — high-entropy, expand/shrink\n- Layer 3: ACCESS (Voronoi) — adaptive resolution, hot/cold\n- ทั้ง 3 layers อยู่ใน 20736 address space เดียวกัน\n\n### 5. สิ่งที่ GeoFS ควรทำ / ไม่ควรทำ\nSHOULD:\n- Track coordinates (address space)\n- Summon/Unsummon at locations\n- Project frames via twin bijection\n- Maintain structure (inodes, dirs, allocator)\n- Voronoi cache for access patterns\n\nSHOULD NOT:\n- Per-file compression (gravity controls all)\n- Move data after summon (drift)\n- Defragment (drift)\n- Rename files (identity = coordinate)\n- Decompress on read (projection, not decode)\n\n### 6. Current State\n- geofs_core.h: has compression logic → needs REMOVAL\n- Tests: 22/22 PASS (but verify wrong behavior)\n- Next: strip compression, add summon/unsummon + projection\n\n### 7. Analogies\n- เหมือนถ่ายรูปใน Aquarium — ยืนหน้ากระจก ถ่าย frame ที่เห็น\n- เหมือนกระเป๋าโดราเอม่อน — ล้วงเข้าไป หยิบออกมา ไม่ต้องเทของ\n- เหมือน gravity — ปรับทีเดียว ทั้งจักรวาล shift",
       "status": "cancelled",
       "created": "2026-08-06T16:07:43"
+    },
+    {
+      "id": 14,
+      "title": "KIS-Hyperbolic Dual Boundary",
+      "body": "1. Threshold finding: KIS scale < 0.000001 → switch to Hyperbolic (precision protection)\n2. Handoff integrity: container seals data during KIS↔Hyper transition\n3. Hyperbolic = deterministic pattern (like Hilbert) for structured access\n4. Use case mapping: KIS for sequential, Hyperbolic for pattern-based\n5. Experiment: find right threshold, verify no drift, compare access patterns",
+      "status": "todo",
+      "created": "2026-08-07T10:43:34"
+    },
+    {
+      "id": 15,
+      "title": "System Status: What Works vs What's Missing",
+      "body": "HONEST ASSESSMENT (Aug 7):\n\nFILE SYSTEM (GeoFS):\n✅ volume lifecycle, summon/unsummon, block alloc, 23 tests\n❌ in-memory only, no disk I/O, no error handling, no stress test\n\nCOMPRESSOR:\n✅ sort+mask, delta+varint, stride-37, cell classify\n❌ NO end-to-end pipeline on real GGUF, NO benchmark, NO real ratio\n\nROUTER/FABRIC:\n✅ pure C headers, no external deps, modular\n❌ no integration layer for external systems, no API wrapper\n\nUSABILITY:\n✅ make test 22/22, clean architecture\n❌ no CLI tool, no examples, no package\n\nPRIORITY: Compressor is king — need real ratio on real GGUF to prove it works",
+      "status": "todo",
+      "created": "2026-08-07T10:43:44"
+    },
+    {
+      "id": 16,
+      "title": "Container = Protection for Scale/Offset Changes",
+      "body": "KEY INSIGHT (Aug 7):\n\nContainer is NOT optional — it's the protection mechanism against drift.\n\nWithout container:\n- Scale+1 → change offset → existing data breaks immediately\n- Drift spreads fast when data is large\n\nWith container:\n- Data sealed inside → scale/offset changes don't affect it\n- Like water bottle: sealed = safe, open cap = recalibrate\n\nRule: Data MUST be isolated in containers before any scale/offset changes.\nOtherwise: drift propagates instantly across all data.",
+      "status": "todo",
+      "created": "2026-08-07T10:43:52"
+    },
+    {
+      "id": 17,
+      "title": "KIS + Hyper: x × f(time) = compute on fly",
+      "body": "BREAKTHROUGH (Aug 7):\n\nOLD approach: KIS + Hyper delta (full) = no space savings\nNEW approach: KIS + Hyper structure x × f(time) = compute on fly\n\nArchitecture:\n- KIS: stores coarse structure\n- Hyper: stores formula ONLY (x × f(time))\n- Delta: COMPUTED at runtime, not stored\n\nResult:\n+ No space overhead (ไม่เก็บ delta ทั้งก้อน)\n+ Deterministic (formula เดิม = ผลเดิม)\n+ Fast (compute on fly, like frame_seek)\n\n= MAP not COMPRESS ที่ถูกต้องจริงๆ\n= Navigation computed at runtime, never stored",
+      "status": "todo",
+      "created": "2026-08-07T11:09:12"
+    },
+    {
+      "id": 18,
+      "title": "DRIFT PROVEN: Scale change = position shift",
+      "body": "PROVEN (Aug 7):\n\nTest results on real GGUF (Qwen2.5 Q8_0):\n- slot 0 at scale 1.0 → projects to 0\n- slot 1 at scale 0.1 → projects to 9,437,184 (!!!)\n- slot 2 at scale 0.1 → projects to 19,922,944 (!!!)\n\n→ Position changes completely when scale changes\n→ Read from old slot = WRONG data\n→ Must read from creation point = CORRECT data\n\nCONCLUSION:\n- Drift is REAL when files move/scale\n- Container is REQUIRED to seal data\n- Hyperbolic formula = address resolver (compute on fly)\n- Compression = side effect of viewpoint change",
+      "status": "todo",
+      "created": "2026-08-07T11:46:42"
+    },
+    {
+      "id": 19,
+      "title": "HYPERBOLIC FORMULA PROVEN: x × f(time) works",
+      "body": "BREAKTHROUGH (Aug 7):\n\nFormula: hyper_resolve_address(creation_point, current_scale)\n- creation_point = (slot, scale, hyper_re, hyper_im)\n- formula: x × scale_ratio → new address\n- Result: O(1) address computation\n\nTest results (real GGUF):\n- 10 slots → 6 addresses at scale 0.5 = 1.67x compression!\n- Multiple inputs → same output = natural compression\n- Deterministic (1000 runs same result)\n- Valid addresses at all scales\n\nArchitecture:\n- KIS: stores original data (no extra space)\n- Hyper: stores creation point formula (tiny)\n- Compression: side effect of scale change\n- = MAP not COMPRESS ที่ถูกต้อง!",
+      "status": "todo",
+      "created": "2026-08-07T11:55:26"
+    },
+    {
+      "id": 20,
+      "title": "KIS Container: 4D space must be container format",
+      "body": "INSIGHT (Aug 7):\n\nDiscovery chain:\n1. Drift is REAL when scale changes\n2. Hyperbolic formula x × f(time) computes addresses O(1)\n3. Compression = side effect of scaling (not ratio)\n4. Scale factor controls compression: 0.1→10x, 0.5→2x\n5. No creation points needed — formula computes all\n6. Random ratios = same as math ratios (ratio doesn't matter)\n\nKey insight:\n- Compression comes from SCALING, not from RATIO\n- Ratio = slot distribution only\n- Scale = compression factor\n\nArchitecture:\n- KIS 4D space MUST be container format\n- Container = sealed bottle (no drift)\n- Header: scale factor, axis config\n- Data: compressed values\n- Formula: embedded or derived\n\nNext: Build KIS 4D container prototype",
+      "status": "todo",
+      "created": "2026-08-07T21:33:18"
+    },
+    {
+      "id": 21,
+      "title": "KIS 4D: Distortion prevention mechanism",
+      "body": "BREAKTHROUGH (Aug 7):\n\nTest: 4D tesseract → 3D projection\nWITHOUT KIS: 8.7178 total distortion\nWITH KIS:    3.4641 total distortion\nImprovement: 2.5x less distortion!\n\nKey insight:\n- KIS axes hold 4D constraint\n- Preserves information during projection\n- KIS = distortion prevention mechanism\n\nApplication to DWGLS:\n- GGUF compression: preserve info during compress\n- Inference bridge: no distortion in GGUF→geometry\n- Multi-model sharing: KIS axes = shared constraints\n- Frame seek + KIS = fast + lossless\n\nArchitecture:\n- KIS 4D space MUST be container\n- Container = sealed bottle (no drift)\n- Header: scale factor, axis config\n- Data: compressed values\n- Formula: embedded or derived\n\nFiles: tests/test_kis_hyper_4d_distortion.c\nBoard: #14-21",
+      "status": "todo",
+      "created": "2026-08-08T02:36:22"
+    },
+    {
+      "id": 22,
+      "title": "KIS 4D Container: Dedup + KIS = 162x compression",
+      "body": "PROTOTYPE COMPLETE (Aug 7):\n\nContainer format: geo_kis_4d_container.h\n- Header: 48 bytes (magic, version, scale, etc.)\n- Data: compressed values\n- Map: address mapping\n\nTest results:\n- Data dedup only: 81.32x (Q8_0 has 256 distinct values)\n- KIS scaling only: 2.00x (scale 0.5)\n- Combined: 162x compression!\n\nPipeline:\n1. GGUF weights → Dedup values (81.32x)\n2. Deduplicated → KIS scale addresses (2x)\n3. Total: 162x compression!\n\nKey insight:\n- Data dedup = VALUE redundancy (same values)\n- KIS scaling = ADDRESS redundancy (same addresses)\n- They complement, not compete\n\nFiles:\n- core/geo_kis_4d_container.h (new)\n- tests/test_kis_4d_container.c (4/4 PASS)\n- tests/test_kis_4d_scale_all.c (3/3 PASS)\n\nBoard: #14-22\nNext: Plan full compression pipeline",
+      "status": "todo",
+      "created": "2026-08-08T03:11:44"
     }
   ],
-  "next_id": 14
+  "next_id": 23
 }

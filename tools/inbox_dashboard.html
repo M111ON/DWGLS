@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inbox Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --yellow: #d29922; --red: #f85149;
+    --purple: #bc8cff; --orange: #d18616;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; background:var(--bg); color:var(--text); padding:20px; }
+
+  .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:24px; padding-bottom:16px; border-bottom:1px solid var(--border); }
+  .header h1 { font-size:18px; font-weight:600; }
+  .header .meta { color:var(--muted); font-size:12px; }
+  .header .refresh { background:var(--surface); border:1px solid var(--border); color:var(--text); padding:6px 12px; border-radius:6px; cursor:pointer; font-size:12px; }
+  .header .refresh:hover { border-color:var(--accent); }
+
+  .stats { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:24px; }
+  .stat { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 16px; text-align:center; }
+  .stat .num { font-size:24px; font-weight:700; }
+  .stat .label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-top:4px; }
+  .stat.todo .num { color:var(--accent); }
+  .stat.progress .num { color:var(--yellow); }
+  .stat.done .num { color:var(--green); }
+  .stat.blocked .num { color:var(--red); }
+  .stat.cancelled .num { color:var(--muted); }
+
+  .section { margin-bottom:24px; }
+  .section h2 { font-size:14px; color:var(--muted); margin-bottom:12px; text-transform:uppercase; letter-spacing:0.5px; }
+
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:8px; transition:border-color 0.15s; }
+  .card:hover { border-color:var(--accent); }
+  .card-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+  .card-id { color:var(--muted); font-size:12px; }
+  .card-title { font-size:14px; font-weight:600; }
+  .card-body { color:var(--muted); font-size:12px; line-height:1.5; margin-bottom:8px; }
+  .card-footer { display:flex; justify-content:space-between; align-items:center; }
+  .card-time { color:var(--muted); font-size:11px; }
+  .card-tags { display:flex; gap:4px; }
+  .tag { background:#1f2937; color:var(--muted); padding:2px 8px; border-radius:10px; font-size:10px; }
+
+  .status { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; text-transform:uppercase; cursor:pointer; transition:opacity 0.15s; }
+  .status:hover { opacity:0.8; }
+  .status-todo { background:#1f2937; color:var(--accent); }
+  .status-in_progress { background:#2d1f00; color:var(--yellow); }
+  .status-done { background:#0d2818; color:var(--green); }
+  .status-blocked { background:#2d0f0f; color:var(--red); }
+  .status-cancelled { background:#1f1f1f; color:var(--muted); }
+
+  .source { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:12px 16px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; }
+  .source-name { font-weight:600; font-size:13px; }
+  .source-desc { color:var(--muted); font-size:12px; }
+  .source-paths { color:var(--accent); font-size:11px; }
+
+  .empty { color:var(--muted); font-size:13px; padding:24px; text-align:center; border:1px dashed var(--border); border-radius:8px; }
+
+  .handoff { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px; white-space:pre-wrap; font-size:12px; line-height:1.6; color:var(--muted); max-height:300px; overflow-y:auto; }
+
+  @media (max-width:600px) { .stats { grid-template-columns:repeat(2,1fr); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>Inbox Dashboard</h1>
+    <div class="meta" id="workspace">loading...</div>
+  </div>
+  <button class="refresh" onclick="loadAll()">Refresh</button>
+</div>
+
+<div class="stats" id="stats"></div>
+
+<div class="section">
+  <h2>Board</h2>
+  <div id="board"><div class="empty">Loading...</div></div>
+</div>
+
+<div class="section">
+  <h2>Sources</h2>
+  <div id="sources"><div class="empty">Loading...</div></div>
+</div>
+
+<div class="section">
+  <h2>Handoff</h2>
+  <div class="handoff" id="handoff">Loading...</div>
+</div>
+
+<script>
+async function loadJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(r.statusText);
+  return r.json();
+}
+
+function renderStats(data) {
+  const counts = {todo:0, in_progress:0, done:0, blocked:0, cancelled:0};
+  if (data.board) data.board.forEach(c => { if (counts[c.status] !== undefined) counts[c.status]++; });
+  document.getElementById('stats').innerHTML = `
+    <div class="stat todo"><div class="num">${counts.todo}</div><div class="label">Todo</div></div>
+    <div class="stat progress"><div class="num">${counts.in_progress}</div><div class="label">In Progress</div></div>
+    <div class="stat done"><div class="num">${counts.done}</div><div class="label">Done</div></div>
+    <div class="stat blocked"><div class="num">${counts.blocked}</div><div class="label">Blocked</div></div>
+    <div class="stat cancelled"><div class="num">${counts.cancelled}</div><div class="label">Cancelled</div></div>
+  `;
+}
+
+const STATUSES = ['todo','in_progress','done','blocked','cancelled'];
+
+function renderBoard(data) {
+  const el = document.getElementById('board');
+  if (!data.board || data.board.length === 0) { el.innerHTML = '<div class="empty">No cards yet</div>'; return; }
+  const order = ['in_progress','todo','blocked','done','cancelled'];
+  const sorted = [...data.board].sort((a,b) => order.indexOf(a.status) - order.indexOf(b.status));
+  el.innerHTML = sorted.map(c => `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-id">#${c.id}</span>
+        <span class="status status-${c.status}" onclick="cycleStatus(${c.id},'${c.status}')" title="Click to change status">${c.status.replace('_',' ')}</span>
+      </div>
+      <div class="card-title">${esc(c.title)}</div>
+      ${c.body ? `<div class="card-body">${esc(c.body)}</div>` : ''}
+      <div class="card-footer">
+        <span class="card-time">${(c.created_at||'').split('T')[0]}</span>
+        <div class="card-tags">${tagsHTML(c.tags)}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function cycleStatus(id, current) {
+  const idx = STATUSES.indexOf(current);
+  const next = STATUSES[(idx + 1) % STATUSES.length];
+  try {
+    await fetch('/api/board/update', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id, status: next})
+    });
+    loadAll();
+  } catch(e) { alert('Failed: ' + e.message); }
+}
+
+function tagsHTML(tags) {
+  if (!tags) return '';
+  const arr = Array.isArray(tags) ? tags : tags.split(',').map(t=>t.trim()).filter(Boolean);
+  return arr.map(t => `<span class="tag">${esc(t)}</span>`).join('');
+}
+
+function renderSources(data) {
+  const el = document.getElementById('sources');
+  const entries = data.sources ? Object.entries(data.sources) : [];
+  if (entries.length === 0) { el.innerHTML = '<div class="empty">No sources registered</div>'; return; }
+  el.innerHTML = entries.map(([name, s]) => `
+    <div class="source">
+      <div>
+        <div class="source-name">${esc(name)}</div>
+        <div class="source-desc">${esc(s.description || '')}</div>
+      </div>
+      <div class="source-paths">${esc((s.paths||[]).join(', '))}</div>
+    </div>
+  `).join('');
+}
+
+function renderHandoff(text) {
+  document.getElementById('handoff').textContent = text || 'No handoff data';
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+async function loadAll() {
+  try {
+    const [state, handoff] = await Promise.all([
+      loadJSON('/api/state'),
+      fetch('/api/handoff').then(r => r.text())
+    ]);
+    document.getElementById('workspace').textContent = `${state.project_name || '?'} — ${state.file_count || 0} files`;
+    renderStats(state);
+    renderBoard(state);
+    renderSources(state);
+    renderHandoff(handoff);
+  } catch(e) {
+    document.getElementById('workspace').textContent = 'Error: ' + e.message;
+  }
+}
+
+loadAll();
+setInterval(loadAll, 10000);
+</script>
+</body>
+</html>

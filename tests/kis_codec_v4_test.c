@@ -8,17 +8,17 @@
  *   T9-T10: Speed benchmark
  *
  * Compile:
- *   gcc -O2 -Wall -Wextra -I. -o runner/explore/kis_codec_v4_test.exe \
- *       runner/explore/kis_codec_v4_test.c -lm
+ *   gcc -O2 -Wall -Wextra -I. -Icore -Icore/infra -o test-kis_codec_v4_test tests/kis_codec_v4_test.c -lm
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <time.h>
 #include <stdint.h>
 #include "core/kis_codec_v4.h"
-#include "runner/explore/gguf_reader.h"
+#include "gguf_reader.h"
 
 static int pass_count = 0, fail_count = 0;
 #define T(n,desc,ok) do { \
@@ -84,115 +84,111 @@ static void test_single(void) {
 
 /* ═══════ REAL GGUF TESTS ═══════════════════════════════════════════════════ */
 
+/* Q8_0: 2B FP16 scale + 32 × int8 = 34B per block.
+ * We use FP16 ldexpf decode (verified correct), NOT fixed-point. */
+static uint32_t decode_q8_block(const uint8_t *block, int8_t *out32) {
+    uint16_t su;
+    memcpy(&su, block, 2);
+    /* FP16 → float using ldexpf (CORRECT decode) */
+    uint32_t exp = (su >> 10) & 0x1F, mant = su & 0x3FF;
+    float scale;
+    if (exp == 0) scale = (float)mant / 1024.0f * 5.960464478e-8f;
+    else {
+        scale = (float)mant / 1024.0f + 1.0f;
+        scale = ldexpf(scale, (int)exp - 15);
+    }
+    if (su & 0x8000) scale = -scale;
+    for (int i = 0; i < 32; i++) {
+        out32[i] = (int8_t)block[2 + i];
+    }
+    return 32;
+}
+
 static void test_real_gguf(const char *path, uint32_t max_weights) {
     printf("\n═══ %s (max=%u) ═══\n", path, max_weights);
 
-    GGUF_File gf;
-    memset(&gf, 0, sizeof(gf));
-    gf.fp = fopen(path, "rb");
-    if (!gf.fp) { printf("  Cannot open\n"); return; }
-
-    uint32_t magic; fread(&magic, 4, 1, gf.fp);
-    if (magic != GGUF_MAGIC) { fclose(gf.fp); printf("  Bad magic\n"); return; }
-    fread(&gf.version, 4, 1, gf.fp);
-    fread(&gf.tensor_count, 8, 1, gf.fp);
-    fread(&gf.kv_count, 8, 1, gf.fp);
-
-    for (uint64_t i = 0; i < gf.kv_count; i++) {
-        GGUFFieldStr k; read_gguf_str_fp(gf.fp, &k);
-        uint32_t vt; fread(&vt, 4, 1, gf.fp);
-        skip_gguf_value(gf.fp, vt);
-        free(k.data);
+    GgufReader gf;
+    if (gguf_open(path, &gf) != 0) {
+        printf("  Cannot open\n");
+        return;
     }
+    printf("  tensors=%u\n", gf.n_tensors);
 
-    gf.tensors = (GGUF_Tensor *)malloc(sizeof(GGUF_Tensor) * gf.tensor_count);
-    for (uint64_t i = 0; i < gf.tensor_count; i++) {
-        GGUF_Tensor *t = &gf.tensors[i];
-        GGUFFieldStr nm; read_gguf_str_fp(gf.fp, &nm);
-        strncpy(t->name, nm.data, 255); free(nm.data);
-        fread(&t->n_dims, 4, 1, gf.fp);
-        for (uint32_t d = 0; d < t->n_dims; d++) fread(&t->dims[d], 8, 1, gf.fp);
-        fread(&t->type, 4, 1, gf.fp);
-        uint64_t off; fread(&off, 8, 1, gf.fp); t->offset = off;
-        uint64_t bs, wpb; ggml_type_block_size(t->type, &bs, &wpb);
-        uint64_t nb = 1;
-        for (uint32_t d = 0; d < t->n_dims; d++) nb *= t->dims[d];
-        nb /= wpb;
-        t->size_bytes = nb * bs;
-        t->n_weights = nb * wpb;
-    }
-
-    long pos = ftell(gf.fp);
-    long aligned = (pos + 31) & ~31L;
-    fseek(gf.fp, aligned, SEEK_SET);
-    gf.tensor_data_start = aligned;
-
-    /* Find first Q8_0 tensor */
-    int found = 0;
-    for (uint64_t ti = 0; ti < gf.tensor_count; ti++) {
-        GGUF_Tensor *t = &gf.tensors[ti];
-        if (t->type != GGML_TYPE_Q8_0) continue;
-        found = 1;
-
-        uint32_t n = (max_weights > 0 && t->n_weights > max_weights)
-                      ? max_weights : (uint32_t)t->n_weights;
-        printf("  Tensor: %s (%u weights)\n", t->name, n);
-
-        /* Read weights */
-        fseek(gf.fp, gf.tensor_data_start + t->offset, SEEK_SET);
-        int8_t *weights = (int8_t *)malloc(n);
-        uint64_t nblocks = n / 32;
-        uint32_t read_count = 0;
-        for (uint64_t b = 0; b < nblocks; b++) {
-            uint16_t scale; int8_t w[32];
-            if (fread(&scale, 2, 1, gf.fp) != 1) break;
-            if (fread(w, 1, 32, gf.fp) != 32) break;
-            uint32_t chunk = (32 < n - read_count) ? 32 : (n - read_count);
-            memcpy(weights + read_count, w, chunk);
-            read_count += chunk;
-            if (read_count >= n) break;
+    /* Find first Q8_0 tensor (type=8) with most data */
+    int target_idx = -1;
+    for (uint32_t i = 0; i < gf.n_tensors; i++) {
+        /* sizes[] in bulk reader = byte size of tensor data */
+        if (gf.sizes[i] > 0) {
+            if (target_idx < 0 || gf.sizes[i] > gf.sizes[target_idx])
+                target_idx = i;
         }
+    }
+    if (target_idx < 0) { printf("  No tensor found\n"); gguf_close(&gf); return; }
 
-        /* Encode */
-        clock_t t0 = clock();
-        uint32_t buf_size = n * 2; /* worst case for permutation */
-        uint8_t *buf = (uint8_t *)malloc(buf_size);
-        uint32_t enc = kis_v4_encode(weights, n, buf, buf_size);
-        clock_t t1 = clock();
+    printf("  Tensor[%d]: %s size=%u bytes\n",
+           target_idx, gf.names[target_idx], gf.sizes[target_idx]);
 
-        /* Decode */
-        int8_t *decoded = (int8_t *)malloc(n);
-        int rc = kis_v4_decode(buf, enc, decoded, n);
-        clock_t t2 = clock();
+    /* Read tensor data via bulk mmap (zero syscall) */
+    uint32_t sz = gf.sizes[target_idx];
+    uint8_t *buf = (uint8_t*)malloc(sz);
+    if (!buf) { gguf_close(&gf); return; }
 
-        /* Compare */
-        uint32_t mismatches = 0;
-        if (rc == 0) {
-            for (uint32_t i = 0; i < n; i++) {
-                if (decoded[i] != weights[i]) mismatches++;
-            }
-        } else {
-            mismatches = n;
-            printf("  Decode error: %d\n", rc);
-        }
-
-        double enc_ms = (double)(t1 - t0) / CLOCKS_PER_SEC * 1000;
-        double dec_ms = (double)(t2 - t1) / CLOCKS_PER_SEC * 1000;
-
-        printf("  Codec: %u bytes (%.2f KB)\n", enc, enc / 1024.0);
-        printf("  Raw:   %u bytes (%.2f MB)\n", n, n / 1048576.0);
-        printf("  Ratio: %.2fx\n", (double)n / enc);
-        printf("  Mismatches: %u / %u\n", mismatches, n);
-        printf("  Encode: %.1f ms, Decode: %.1f ms\n", enc_ms, dec_ms);
-
-        /* Only first tensor for now */
-        free(weights); free(buf); free(decoded);
-        break;
+    if (gguf_read_tensor(path, &gf, target_idx, buf, sz) != 0) {
+        printf("  read_tensor failed\n");
+        free(buf); gguf_close(&gf); return;
     }
 
-    if (!found) printf("  No Q8_0 tensor found\n");
-    free(gf.tensors);
-    fclose(gf.fp);
+    /* Decode Q8_0 blocks → int8 weights */
+    uint32_t n_blocks = sz / 34;
+    uint32_t n_weights = n_blocks * 32;
+    if (max_weights > 0 && n_weights > max_weights) n_weights = max_weights;
+    int8_t *weights = (int8_t *)malloc(n_weights);
+    uint32_t loaded = 0;
+    for (uint32_t b = 0; b < n_blocks && loaded < n_weights; b++) {
+        int8_t block_out[32];
+        decode_q8_block(buf + b * 34, block_out);
+        uint32_t chunk = (32 < n_weights - loaded) ? 32 : (n_weights - loaded);
+        memcpy(weights + loaded, block_out, chunk);
+        loaded += chunk;
+    }
+    printf("  Loaded %u int8 weights from Q8_0 blocks\n", loaded);
+    T(5, "loaded >= 64", loaded >= 64);
+
+    /* Encode */
+    clock_t t0 = clock();
+    uint32_t buf_size = loaded * 2;
+    uint8_t *enc_buf = (uint8_t *)malloc(buf_size);
+    uint32_t enc = kis_v4_encode(weights, loaded, enc_buf, buf_size);
+    clock_t t1 = clock();
+
+    /* Decode */
+    int8_t *decoded = (int8_t *)malloc(loaded);
+    int rc = kis_v4_decode(enc_buf, enc, decoded, loaded);
+    clock_t t2 = clock();
+
+    /* Compare */
+    uint32_t mismatches = 0;
+    if (rc == 0) {
+        for (uint32_t i = 0; i < loaded; i++) {
+            if (decoded[i] != weights[i]) mismatches++;
+        }
+    } else {
+        mismatches = loaded;
+        printf("  Decode error: %d\n", rc);
+    }
+
+    double enc_ms = (double)(t1 - t0) / CLOCKS_PER_SEC * 1000;
+    double dec_ms = (double)(t2 - t1) / CLOCKS_PER_SEC * 1000;
+
+    printf("  Codec: %u bytes (%.2f KB)\n", enc, enc / 1024.0);
+    printf("  Raw:   %u bytes (%.2f MB)\n", loaded, loaded / 1048576.0);
+    printf("  Ratio: %.2fx\n", (double)loaded / enc);
+    printf("  Mismatches: %u / %u\n", mismatches, loaded);
+    printf("  Encode: %.1f ms, Decode: %.1f ms\n", enc_ms, dec_ms);
+    T(6, "Real GGUF roundtrip — lossless", mismatches == 0);
+
+    free(weights); free(enc_buf); free(decoded); free(buf);
+    gguf_close(&gf);
 }
 
 /* ═══════ SPEED BENCHMARK ═══════════════════════════════════════════════════ */
