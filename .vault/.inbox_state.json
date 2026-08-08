@@ -167,7 +167,14 @@
       "body": "geo_jump MOD default fixed: _jump_mod(mult=0) now uses GEO_MOD_STRIDE=5 (order 1728=MAX, 12 orbits=20736) instead of GEO_MOD_PRIME=162 (order 9, gcd≠1 collapse). GEO_MOD_PRIME kept as tower identity 128x162=20736. Synced module+dgls copies (h/src/py). make test 25/25 PASS.",
       "status": "todo",
       "created": "2026-08-09T02:46:27"
+    },
+    {
+      "id": 25,
+      "title": "4D frame-as-index + capo/seeker mix (Aug 10)",
+      "body": "Frame = index ชี้ข้อมูล 4D tesseract (12^4): frame 1728 slots 3D view, capo 12 layers = 20736 full. Composition capo+MOD(5)+octant roundtrip lossless (5^-1=16589). CORRECTION: MOD(5) real orbit = 128 (4 unit size-1728, 4 fixed pts 0/5184/10368/15552) — board '12 orbits' was capo LAYER count. Tests: frame_index_demo 6/6 + capo_seeker_mix 7/7 PASS, make test 25/25. Commit: <check git log>",
+      "status": "todo",
+      "created": "2026-08-09T03:44:48"
     }
   ],
-  "next_id": 25
+  "next_id": 26
 }
