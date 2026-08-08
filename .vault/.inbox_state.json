@@ -195,7 +195,14 @@
       "body": "KIS{x,y,z} บน pyramid carrier: x=i, y=i+1728, z=i+3456 ใช้ field 20736 เดียวกัน. hyp_shift(slot,shift)=slot×shift mod 20736, inverse 5=16589. 4-step protocol lossless ทั้ง 3 แกน (append→×5→×16589→verify), pyramid parity รอด drift. test 16/16 + make test 25/25. Commit ดู git log",
       "status": "todo",
       "created": "2026-08-09T05:23:04"
+    },
+    {
+      "id": 29,
+      "title": "Pyramid container on real GGUF (Aug 10)",
+      "body": "weight bytes จริง (Qwen2.5 Q8_0 output.weight 144MB): hyp_scatter ×47 mod 20736 → gather ×11471 → byte-identical. X bijection 20736 addr 0 collision, Y/Z offsets 1728/3456 ถูก, pyramid field decompose ครบ. test 7/7. commit ดู git log",
+      "status": "todo",
+      "created": "2026-08-09T05:36:00"
     }
   ],
-  "next_id": 29
+  "next_id": 30
 }
