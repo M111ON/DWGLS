@@ -181,14 +181,17 @@ static int batch_convert_all(BatchState *s) {
 
     s->elapsed_sec = now_sec() - t0;
 
-    /* Construct output path: <out_dir>/<model_name>.gcube */
+    /* Construct output path: <out_dir>/<model_name>.gcube
+     * Strip any .gguf extension from the model name FIRST,
+     * then append .gcube (memmove-based replace leaves
+     * ".gcubegcube" residue — old bug). */
     char out_path[1024];
+    char base_name[512];
+    snprintf(base_name, sizeof(base_name), "%s", s->cube.header.model_name);
+    char *gguf_dot = strstr(base_name, ".gguf");
+    if (gguf_dot) *gguf_dot = '\0';
     snprintf(out_path, sizeof(out_path), "%s/%s.gcube",
-             s->out_dir, s->cube.header.model_name);
-
-    /* Strip .gguf from model name in path */
-    char *dot = strstr(out_path, ".gguf.gcube");
-    if (dot) memmove(dot, ".gcube", 6);
+             s->out_dir, base_name);
 
     int wrc = gcube_write(&s->cube, out_path);
     if (wrc != 0) {
@@ -272,15 +275,11 @@ int main(int argc, char **argv) {
     const char *base = strrchr(gguf_path, '/');
     if (!base) base = strrchr(gguf_path, '\\');
     if (!base) base = gguf_path; else base++;
-    snprintf(out_path, sizeof(out_path), "%s/%s.gcube", out_dir, base);
-    /* Replace .gguf.gcube → .gcube */
-    char *dot_gguf = strstr(out_path, ".gguf.gcube");
-    if (dot_gguf) {
-        size_t remaining = strlen(dot_gguf);
-        memmove(dot_gguf, ".gcube", 6);
-        /* Zero out dangling "guf" */
-        memset(dot_gguf + 6, 0, remaining - 6);
-    }
+    char base_name[512];
+    snprintf(base_name, sizeof(base_name), "%s", base);
+    char *gguf_dot = strstr(base_name, ".gguf");
+    if (gguf_dot) *gguf_dot = '\0';
+    snprintf(out_path, sizeof(out_path), "%s/%s.gcube", out_dir, base_name);
 
     if (batch_convert_all(&s) != 0) {
         batch_close(&s);
