@@ -46,7 +46,7 @@
 B1 write           13.86 MB/s      B4 image save   16.22 MB/s
 B2 read (mem)      18.98 MB/s      B4 image load   21.49 MB/s
 B3 read (mmap)     18.65 MB/s      B5 rdh verify   2.37 ms (140 blocks)
-B6 scale cycle     0.04 ms         image / payload 1.29x overhead (never-expand; v1 was 4.05x)
+B6 scale cycle     0.04 ms         image / payload 1.215x overhead (v3 derived; v1 was 4.05x)
 ```
 
 **Next (Phase 1 remainder):**
@@ -107,11 +107,13 @@ bridges fired        12,060    gear cpu ops 12,060 (worlds=94)
 | BlockMeta 16 B (เก็บ current+delta) | 8 B (anchor only) | −1152 B |
 | Data 512 B × 144 = 73728 B fixed | **packed** Σ payload | variable |
 
-**ผลวัดจริง:**
-- ไฟล์ว่าง: 81,700 B → **5,796 B** (14x เล็กลง)
-- 1 file: 5,963 B · 56 files เต็ม: **25,956 B** (3.1x, หลัง never-expand fix 51,156→25,956)
-- Overhead ratio: 4.05x → 2.54x (packed) → **1.29x** (after codec never-expand fix):
-  fixed TOC 5,792 B เท่านั้นที่เหลือเป็น overhead — codec ห้ามขยายเกิน raw (RAW fallback)
+**ผลวัดจริง (v3, consensus round 1):**
+- ไฟล์ว่าง: 81,700 B (v1) → **4,332 B** (v3; v2 = 5,796)
+- 1 file 11 B: **4,476 B** · 56 files/140 blocks: **24,492 B** (v2 = 25,956)
+- Overhead ratio: 4.05x (v1) → 1.29x (v2) → **1.215x** (v3) — fixed TOC 4,328 B
+  คือ overhead เดียว (owners/e_sizes/header-redundancy ถูก derive หมด)
+- Codec unlock (commit เดียวกัน): BITPACK signed fix → Q4 signed block 96B/144B
+  = **0.667x lossless**; CODEBOOK ตัดออกจาก classify (พิสูจน์ว่าแพ้เสมอ)
 
 **Derived on parse:** `current_pos = home×scale`, `delta = current−home` —
 เก็บแค่ anchor (8B/block) ตาม insight

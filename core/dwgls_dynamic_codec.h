@@ -130,11 +130,15 @@ static inline void dyn_classify(const int8_t *data, uint32_t n,
     }
     prof->avg_abs_diff = (uint32_t)(sum_diff / (n > 1 ? n - 1 : 1));
 
-    /* ── Strategy Selection ──────────────────────────────────── */
+    /* ── Strategy Selection ────────────────────────────────────
+     * CODEBOOK removed from classify (Aug 10, 2026): byte-per-index
+     * codebook costs 4 + (1+varint)·nu + n ≥ n+5 > n — provably never
+     * smaller than raw. Worse, it sat FIRST for low-unique blocks and
+     * stole quant-shaped data (Q4-style: 16 unique values) away from
+     * BITPACK, which then never-expanded to RAW. DYN_STRAT_CODEBOOK
+     * stays for DECODE of older images only. */
     if (prof->sparsity >= (1.0f - DYN_SPARSE_THRESHOLD)) {
         prof->strategy = DYN_STRAT_SPARSE;
-    } else if (prof->unique_ratio <= DYN_CODEBOOK_THRESHOLD) {
-        prof->strategy = DYN_STRAT_CODEBOOK;
     } else if (prof->avg_abs_diff < (uint32_t)(prof->total_range * DYN_DELTA_THRESHOLD)) {
         prof->strategy = DYN_STRAT_DELTA;
     } else if (prof->unique_ratio <= DYN_BITPACK_THRESHOLD) {
@@ -271,37 +275,41 @@ static inline uint32_t dyn_encode_bitpack(const int8_t *data, uint32_t n,
 {
     if (n == 0) return 0;
 
-    /* Find bits needed per value */
-    uint8_t max_val = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        uint8_t v = (uint8_t)data[i];
-        if (v > max_val) max_val = v;
+    /* Signed-aware (Aug 10, 2026): map values to [0, range) via min offset.
+     * OLD BUG: (uint8_t)data[i] on negative quant weights (−3 → 253) blew
+     * max_val → bits=8 → payload always > raw → never-expand → RAW forever.
+     * BITPACK was dead on exactly the data it exists for. */
+    int32_t mn = data[0], mx = data[0];
+    for (uint32_t i = 1; i < n; i++) {
+        if (data[i] < mn) mn = data[i];
+        if (data[i] > mx) mx = data[i];
     }
+    uint32_t range = (uint32_t)(mx - mn) + 1u;
     uint8_t bits = 1;
-    while (bits < 8 && (1u << bits) <= max_val) bits++;
+    while (bits < 8 && (1u << bits) < range) bits++;
 
     uint32_t bm_bytes = (n + 7) / 8;
     uint32_t packed_bytes = (n * bits + 7) / 8;
-    uint32_t needed = 4 + bm_bytes + packed_bytes;
+    uint32_t needed = 4 + 1 + 1 + bm_bytes + packed_bytes; /* n + bits + min */
     if (needed > cap) return 0;
 
     uint32_t off = 0;
     memcpy(out + off, &n, 4); off += 4;
     out[off++] = bits;
+    out[off++] = (uint8_t)mn;   /* restore offset (signed, stored as byte) */
 
-    /* Write bitmap: which positions have non-zero values */
+    /* Write bitmap: which positions have non-zero MAPPED (data−min) values */
     memset(out + off, 0, bm_bytes);
-    for (uint32_t i = 0; i < n; i++) {
-        if (data[i] != 0) out[off + i / 8] |= (1u << (i % 8));
-    }
+    for (uint32_t i = 0; i < n; i++)
+        if (data[i] != mn) out[off + i / 8] |= (1u << (i % 8));
     off += bm_bytes;
 
-    /* Pack values */
+    /* Pack mapped values (data[i] − mn), little-endian bit stream */
     uint32_t bit_acc = 0;
     uint8_t  bit_count = 0;
     for (uint32_t i = 0; i < n; i++) {
-        uint8_t v = (uint8_t)data[i];
-        bit_acc |= ((uint32_t)v << bit_count);
+        uint32_t v = (uint32_t)((int32_t)data[i] - mn);
+        bit_acc |= (v << bit_count);
         bit_count += bits;
         while (bit_count >= 8) {
             out[off++] = (uint8_t)(bit_acc & 0xFF);
@@ -409,11 +417,12 @@ static inline int dyn_decode_delta(const uint8_t *payload, uint32_t payload_size
 static inline int dyn_decode_bitpack(const uint8_t *payload, uint32_t payload_size,
                                       int8_t *out, uint32_t n)
 {
-    if (payload_size < 5) return -1;
+    if (payload_size < 6) return -1;   /* n(4) + bits(1) + min(1) */
     uint32_t off = 0;
     uint32_t stored_n = 0;
     memcpy(&stored_n, payload + off, 4); off += 4;
     uint8_t bits = payload[off++];
+    int32_t mn = (int8_t)payload[off++];
 
     uint32_t bm_bytes = (stored_n + 7) / 8;
     if (off + bm_bytes > payload_size) return -2;
@@ -422,7 +431,7 @@ static inline int dyn_decode_bitpack(const uint8_t *payload, uint32_t payload_si
     const uint8_t *bitmap = payload + off;
     off += bm_bytes;
 
-    /* Unpack values */
+    /* Unpack values (mapped space) then restore min (signed-aware) */
     uint32_t bit_acc = 0;
     uint8_t  bit_count = 0;
     for (uint32_t i = 0; i < stored_n && i < n; i++) {
@@ -431,13 +440,13 @@ static inline int dyn_decode_bitpack(const uint8_t *payload, uint32_t payload_si
             bit_acc |= ((uint32_t)payload[off++] << bit_count);
             bit_count += 8;
         }
-        uint8_t val = (uint8_t)(bit_acc & ((1u << bits) - 1));
+        uint32_t mapped = bit_acc & ((1u << bits) - 1);
         bit_acc >>= bits;
         bit_count -= bits;
 
-        /* Zero if bitmap says so */
-        if (!(bitmap[i / 8] & (1u << (i % 8)))) val = 0;
-        out[i] = (int8_t)val;
+        /* 0 in mapped space = value is min (bitmap tracks mapped != 0) */
+        if (!(bitmap[i / 8] & (1u << (i % 8)))) mapped = 0;
+        out[i] = (int8_t)((int32_t)mapped + mn);
     }
     return 0;
 }

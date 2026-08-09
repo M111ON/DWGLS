@@ -133,11 +133,26 @@ static inline int bfs_write(BreathingFS *fs, const char *name,
     uint32_t n_blocks = (size + BFS_SLOTS_BLOCK - 1) / BFS_SLOTS_BLOCK;
     if (n_blocks > BFS_BLOCKS - fs->n_blocks_used) return -3;
 
+    /* CONTIGUOUS-RUN ALLOC (Aug 10, 2026 — consensus v3):
+     * a file owns a contiguous span [start, start+n_blocks) of the block
+     * address space — matches bfs_read (home_block+b) and the geometry
+     * DNA "file = contiguous address span". OLD first-free-scan left
+     * holes after any deletion that silently broke reads. O(n) run scan,
+     * zero malloc. Returns -4 if no run of n free blocks exists. */
     uint32_t blocks[BFS_BLOCKS];
-    blocks[0] = 0; /* silence warning; guard on line 134 ensures found >= n_blocks */
-    uint32_t found = 0;
-    for (uint32_t i = 0; i < BFS_BLOCKS && found < n_blocks; i++)
-        if (fs->block_owner[i] == 0xFFFFFFFF) blocks[found++] = i;
+    blocks[0] = 0; /* silence maybe-uninitialized; ok_start guard ensures real value */
+    uint32_t run_start = 0, found = 0, ok_start = BFS_BLOCKS;
+    for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
+        if (fs->block_owner[i] == 0xFFFFFFFF) {
+            if (found == 0) run_start = i;
+            found++;
+            if (found >= n_blocks) { ok_start = run_start; break; }
+        } else {
+            found = 0;
+        }
+    }
+    if (ok_start == BFS_BLOCKS) return -4;   /* fragmented: no run of n free */
+    for (uint32_t b = 0; b < n_blocks; b++) blocks[b] = ok_start + b;
 
     BFSFileEntry *fe = &fs->files[fs->n_files];
     memset(fe, 0, sizeof(*fe));

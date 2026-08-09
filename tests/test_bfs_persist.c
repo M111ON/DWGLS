@@ -37,17 +37,18 @@ int main(void)
     /* ── T1: versioned image geometry ── */
     printf("TEST 1: Image Geometry + Serialize/PARSE Roundtrip\n");
     {
-        printf("  layout: files_off=%u owner_off=%u meta_off=%u esize_off=%u\n"
-               "          eoff_off=%u data_off=%u min_size=%u max_size=%u\n",
-               (unsigned)BFS_IMG_FILES_OFF, (unsigned)BFS_IMG_OWNER_OFF,
-               (unsigned)BFS_IMG_META_OFF, (unsigned)BFS_IMG_ESIZE_OFF,
+        printf("  layout: files_off=%u meta_off=%u eoff_off=%u data_off=%u\n"
+               "          min_size=%u max_size=%u\n",
+               (unsigned)BFS_IMG_FILES_OFF, (unsigned)BFS_IMG_META_OFF,
                (unsigned)BFS_IMG_EOFF_OFF, (unsigned)BFS_IMG_DATA_OFF,
                (unsigned)BFS_IMG_MIN_SIZE, (unsigned)BFS_IMG_MAX_SIZE);
         CHECK(1, "min < max (variable size)", BFS_IMG_MIN_SIZE < BFS_IMG_MAX_SIZE);
         CHECK(1, "fixed offsets sane (data region after TOC)",
               BFS_IMG_DATA_OFF > BFS_IMG_EOFF_OFF);
-        CHECK(1, "v2 anchor meta = 8B (current/delta derived)",
-              BFS_IMG_META_ENT == 8u);
+        CHECK(1, "v3 meta = 4B (home15|strategy3; owners/e_sizes derived)",
+              BFS_IMG_META_ENT == 4u);
+        CHECK(1, "owners table gone (derived from file runs)",
+              BFS_IMG_META_OFF == BFS_IMG_FILES_OFF + BFS_IMG_FILES_BYT);
 
         BreathingFS fs; bfs_init(&fs);
         int8_t d[300]; fill_file(d, 300, 11);
@@ -162,12 +163,15 @@ int main(void)
         FILE *f = fopen("build/t_p1.img", "r+b");
         CHECK(5, "open image r+b", f != NULL);
         if (f) {
-            /* read header data_size (offset 36) to find where payloads live */
+            /* read header data_size (v3: u32 @ BFS_HDR_DATA_SIZE=20)
+             * to find where payloads live */
             uint8_t hdr[64];
             fseek(f, 0, SEEK_SET);
             fread(hdr, 1, 64, f);
-            uint32_t ds = (uint32_t)hdr[36] | ((uint32_t)hdr[37] << 8) |
-                          ((uint32_t)hdr[38] << 16) | ((uint32_t)hdr[39] << 24);
+            uint32_t ds = (uint32_t)hdr[BFS_HDR_DATA_SIZE] |
+                          ((uint32_t)hdr[BFS_HDR_DATA_SIZE + 1] << 8) |
+                          ((uint32_t)hdr[BFS_HDR_DATA_SIZE + 2] << 16) |
+                          ((uint32_t)hdr[BFS_HDR_DATA_SIZE + 3] << 24);
             uint32_t data_start = BFS_IMG_DATA_OFF;
             uint32_t data_end = data_start + ds;
             CHECK(5, "data region present", ds > 0 && data_end > data_start);
@@ -188,8 +192,10 @@ int main(void)
             uint8_t hdr[64];
             fseek(f, 0, SEEK_SET);
             fread(hdr, 1, 64, f);
-            uint32_t ds = (uint32_t)hdr[36] | ((uint32_t)hdr[37] << 8) |
-                          ((uint32_t)hdr[38] << 16) | ((uint32_t)hdr[39] << 24);
+            uint32_t ds = (uint32_t)hdr[BFS_HDR_DATA_SIZE] |
+                          ((uint32_t)hdr[BFS_HDR_DATA_SIZE + 1] << 8) |
+                          ((uint32_t)hdr[BFS_HDR_DATA_SIZE + 2] << 16) |
+                          ((uint32_t)hdr[BFS_HDR_DATA_SIZE + 3] << 24);
             fseek(f, BFS_IMG_DATA_OFF + ds, SEEK_SET);
             uint8_t b; fread(&b, 1, 1, f); b ^= 0xFF;
             fseek(f, BFS_IMG_DATA_OFF + ds, SEEK_SET);

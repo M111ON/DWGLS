@@ -1,23 +1,31 @@
 /*
  * bfs_persist.h — Breathing FS Storage Layer (v2: actually-smaller image)
  * ════════════════════════════════════════════════════════════════════
- * v2 changes vs v1 (Aug 10, 2026 — anchor insight implemented):
- *   1) DeltaLog region REMOVED (−1024 B)   — delta = home×(scale−1) derived
- *   2) BlockMeta 16 B → 8 B  (−1152 B)     — current_pos & delta are
- *      functions of (home_pos, header scale); NOT stored, derived on parse
- *   3) DataRegion PACKED (variable size)   — Σ encoded payloads only,
- *      absolute offsets tracked by EncOffset table (was fixed 512 B × 144)
- *   → real file size = TOC + Σ payloads + CRC, not a fixed 82 KB fortress
+ * v3 changes vs v2 (Aug 10, 2026 — consensus round 1):
+ *   4) OWNERS table REMOVED (−576 B)  — derived from file runs
+ *      (alloc is contiguous-run; bfs_read always assumed home_block+b)
+ *   5) E_SIZES table REMOVED (−288 B) — size[i] = next_used_off − off[i]
+ *      (data packed in block order; derive on parse, O(144²) trivial)
+ *   6) meta 8 B → 4 B (−576 B)        — u32: home_pos(15) | strategy(3);
+ *      payload_size & scale_at_write removed (duplicated / global scale)
+ *   7) header 64 B → 40 B (−24 B)     — static geometry fields dropped
+ *   → real file size = header + files + meta + offsets + Σ payloads + CRC
  *
- * IMAGE LAYOUT v2 (HEADER still fixed; DATA variable):
- *   [0]      header 64B: magic"BIMG" version=2 ... data_size(u32 @36)
- *   [64]     files     64 × 49B
- *   [3200]   owners    144 × u32
- *   [3776]   meta      144 × 8B     (home_pos strategy scale_at_write payload_size)
- *   [4928]   e_sizes   144 × u16
- *   [5216]   enc_offs  144 × u32    (absolute payload offset; 0 = empty)
- *   [5792]   data      data_size B  (PACKED — no fixed stride)
- *   [5792+data_size]   crc32 4B
+ * IMAGE LAYOUT v3 (HEADER fixed; DATA variable):
+ *   [0]      header 40B: magic"BIMG" version=3 n_files n_blocks_used
+ *                        total_bytes data_size(u32@20) scale(f64@24)
+ *                        current_pos(u32@32) home_pos(u32@36)
+ *   [40]     files     64 × 49B
+ *   [3176]   meta      144 × u32     (home_pos15 | strategy3 — derived rest)
+ *   [3752]   enc_offs  144 × u32     (absolute payload offset; 0 = empty)
+ *   [4328]   data      data_size B  (PACKED — no fixed stride)
+ *   [4328+data_size]   crc32 4B
+ *
+ * DERIVED ON PARSE (nothing stored twice):
+ *   owners     ← file runs (home_block + n_blocks, contiguous alloc)
+ *   e_sizes    ← enc_offs deltas (next used offset; last → data_end)
+ *   payload_size ← e_sizes (same value)
+ *   current_pos/delta ← home_pos × header scale
  *
  * CORE: zero-malloc hot path. All buffers static or caller-owned.
  * KEEP BFSMmapFS OUT OF THE STACK — it embeds BreathingFS (~95 KB).
@@ -30,30 +38,33 @@
 #include <stdio.h>
 #include "breathing_fs.h"
 
-/* ═══════════════ IMAGE GEOMETRY ═══════════════ */
+/* ═══════════════ IMAGE GEOMETRY (v3) ═══════════════ */
 #define BFS_IMG_MAGIC     0x474D4942u   /* "BIMG" */
-#define BFS_IMG_VERSION   2u
-#define BFS_IMG_HEADER_SZ 64u
+#define BFS_IMG_VERSION   3u
+#define BFS_IMG_HEADER_SZ 40u
 #define BFS_IMG_FILE_ENT  49u           /* serialized BFSFileEntry size */
-#define BFS_IMG_FILES_OFF 64u
+#define BFS_IMG_FILES_OFF 40u
 #define BFS_IMG_FILES_BYT (BFS_MAX_FILES * BFS_IMG_FILE_ENT)            /* 3136 */
-#define BFS_IMG_OWNER_OFF (BFS_IMG_FILES_OFF + BFS_IMG_FILES_BYT)       /* 3200 */
-#define BFS_IMG_OWNER_BYT (BFS_BLOCKS * 4u)                             /* 576 */
-#define BFS_IMG_META_OFF  (BFS_IMG_OWNER_OFF + BFS_IMG_OWNER_BYT)       /* 3776 */
-#define BFS_IMG_META_ENT  8u            /* home_pos u32 | strategy u8 | scale u8 | pload u16 */
-#define BFS_IMG_META_BYT  (BFS_BLOCKS * BFS_IMG_META_ENT)               /* 1152 */
-#define BFS_IMG_ESIZE_OFF (BFS_IMG_META_OFF + BFS_IMG_META_BYT)         /* 4928 */
-#define BFS_IMG_ESIZE_BYT (BFS_BLOCKS * 2u)                             /* 288 */
-#define BFS_IMG_EOFF_OFF  (BFS_IMG_ESIZE_OFF + BFS_IMG_ESIZE_BYT)       /* 5216 */
+#define BFS_IMG_META_OFF  (BFS_IMG_FILES_OFF + BFS_IMG_FILES_BYT)       /* 3176 */
+#define BFS_IMG_META_ENT  4u            /* u32: home_pos(15) | strategy(3) */
+#define BFS_IMG_META_BYT  (BFS_BLOCKS * BFS_IMG_META_ENT)               /* 576 */
+#define BFS_IMG_EOFF_OFF  (BFS_IMG_META_OFF + BFS_IMG_META_BYT)         /* 3752 */
 #define BFS_IMG_EOFF_BYT  (BFS_BLOCKS * 4u)                             /* 576 */
-#define BFS_IMG_DATA_OFF  (BFS_IMG_EOFF_OFF + BFS_IMG_EOFF_BYT)         /* 5792 */
+#define BFS_IMG_DATA_OFF  (BFS_IMG_EOFF_OFF + BFS_IMG_EOFF_BYT)         /* 4328 */
 #define BFS_IMG_ENC_MAX   512u
 #define BFS_IMG_MAX_DATA  (BFS_BLOCKS * BFS_IMG_ENC_MAX)                /* 73728 */
-#define BFS_IMG_MIN_SIZE  (BFS_IMG_DATA_OFF + 4u)                       /* 5796 */
-#define BFS_IMG_MAX_SIZE  (BFS_IMG_DATA_OFF + BFS_IMG_MAX_DATA + 4u)    /* 79524 */
+#define BFS_IMG_MIN_SIZE  (BFS_IMG_DATA_OFF + 4u)                       /* 4332 */
+#define BFS_IMG_MAX_SIZE  (BFS_IMG_DATA_OFF + BFS_IMG_MAX_DATA + 4u)    /* 78060 */
 
-/* Header field offsets (v2) */
-#define BFS_HDR_DATA_SIZE 36u   /* u32 — packed data region bytes */
+/* Header field offsets (v3) */
+#define BFS_HDR_DATA_SIZE 20u   /* u32 — packed data region bytes */
+#define BFS_HDR_SCALE     24u   /* f64 — global seeker scale       */
+#define BFS_HDR_CUR_POS   32u   /* u32 — seeker current position   */
+#define BFS_HDR_HOME_POS  36u   /* u32 — seeker home position      */
+
+/* meta packing: home_pos needs 15 bits (max 20735 < 2^15), strategy 3 (0-4) */
+#define BFS_META_HOME_MASK   0x7FFFu
+#define BFS_META_STRAT_SHIFT 15u
 
 /* ═══════════════ MVCC SNAPSHOT ═══════════════ */
 #define BFS_MVCC_MAX 8u
@@ -129,20 +140,16 @@ static inline uint32_t bfs_img_serialize(BreathingFS *fs, uint8_t *dst)
 {
     memset(dst, 0, BFS_IMG_MAX_SIZE);
 
-    /* header */
+    /* header (v3, 40B) — static geometry fields dropped (compile-time) */
     bfs_img_wu32(dst, 0,  BFS_IMG_MAGIC);
     bfs_img_wu32(dst, 4,  BFS_IMG_VERSION);
-    bfs_img_wu32(dst, 8,  BFS_IMG_HEADER_SZ);
-    bfs_img_wu32(dst, 12, BFS_SLOTS_BLOCK);
-    bfs_img_wu32(dst, 16, BFS_BLOCKS);
-    bfs_img_wu32(dst, 20, BFS_MAX_FILES);
-    bfs_img_wu32(dst, 24, fs->n_files);
-    bfs_img_wu32(dst, 28, fs->n_blocks_used);
-    bfs_img_wu32(dst, 32, fs->total_bytes);
-    bfs_img_wf64(dst, 40, fs->seeker.scale);
-    bfs_img_wu32(dst, 48, fs->seeker.current_pos);
-    bfs_img_wu32(dst, 52, fs->seeker.home_pos);
-    bfs_img_wu32(dst, 56, 0);                     /* no delta log (derived) */
+    bfs_img_wu32(dst, 8,  fs->n_files);
+    bfs_img_wu32(dst, 12, fs->n_blocks_used);
+    bfs_img_wu32(dst, 16, fs->total_bytes);
+    bfs_img_wu32(dst, 20, 0);                     /* data_size filled at end */
+    bfs_img_wf64(dst, 24, fs->seeker.scale);
+    bfs_img_wu32(dst, 32, fs->seeker.current_pos);
+    bfs_img_wu32(dst, 36, fs->seeker.home_pos);
 
     /* files */
     for (uint32_t i = 0; i < BFS_MAX_FILES; i++) {
@@ -154,24 +161,19 @@ static inline uint32_t bfs_img_serialize(BreathingFS *fs, uint8_t *dst)
         memcpy(dst + o + 44, fs->files[i].strategies, 4);
         dst[o + 48] = fs->files[i].valid;
     }
-    /* owners */
-    for (uint32_t i = 0; i < BFS_BLOCKS; i++)
-        bfs_img_wu32(dst, BFS_IMG_OWNER_OFF + i * 4, fs->block_owner[i]);
-    /* meta 8B: home_pos | strategy | scale_at_write | payload_size
-     * current_pos & delta NOT stored — derived from home×scale on parse */
+    /* meta 4B: home_pos(15) | strategy(3) — owners/e_sizes/current/delta
+     * NOT stored: owners from file runs, sizes from offset deltas,
+     * current/delta from home × global header scale (derived on parse) */
     for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
-        uint32_t o = BFS_IMG_META_OFF + i * BFS_IMG_META_ENT;
         const BFSBlockMeta *bm = &fs->block_meta[i];
-        bfs_img_wu32(dst, o + 0, bm->home_pos);
-        dst[o + 4] = bm->strategy;
-        dst[o + 5] = bm->scale_at_write;
-        bfs_img_wu16(dst, o + 6, bm->payload_size);
+        uint32_t packed = (bm->home_pos & BFS_META_HOME_MASK)
+                        | ((uint32_t)(bm->strategy & 0x7u) << BFS_META_STRAT_SHIFT);
+        bfs_img_wu32(dst, BFS_IMG_META_OFF + i * 4, packed);
     }
-    /* e_sizes + packed payloads + enc_offs */
+    /* enc_offs + packed payloads (sizes derivable; no e_sizes table) */
     uint32_t packed = 0;
     for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
         uint16_t esz = fs->block_encoded_size[i];
-        bfs_img_wu16(dst, BFS_IMG_ESIZE_OFF + i * 2, esz);
         if (esz > 0) {
             uint32_t p_off = BFS_IMG_DATA_OFF + packed;
             memcpy(dst + p_off, fs->block_encoded[i], esz);
@@ -201,7 +203,8 @@ static inline int bfs_img_parse(const uint8_t *m, size_t size, BreathingFS *fs,
     if (!m || !fs || size < BFS_IMG_MIN_SIZE) return -1;
     if (bfs_img_u32(m, 0) != BFS_IMG_MAGIC) return -1;
     if (bfs_img_u32(m, 4) != BFS_IMG_VERSION) return -2;
-    if (bfs_img_u32(m, 12) != BFS_SLOTS_BLOCK || bfs_img_u32(m, 16) != BFS_BLOCKS) return -3;
+    /* v3: static geometry (slots/blocks/max_files) is compile-time;
+     * BFS_SLOTS_BLOCK no longer stored in the header */
 
     uint32_t data_size = bfs_img_u32(m, BFS_HDR_DATA_SIZE);
     uint32_t data_end = BFS_IMG_DATA_OFF + data_size;
@@ -214,12 +217,12 @@ static inline int bfs_img_parse(const uint8_t *m, size_t size, BreathingFS *fs,
     memset(fs, 0, sizeof(*fs));
     fs->magic = BFS_MAGIC;
     fs->version = BFS_VERSION;
-    fs->n_files = bfs_img_u32(m, 24);
-    fs->n_blocks_used = bfs_img_u32(m, 28);
-    fs->total_bytes = bfs_img_u32(m, 32);
-    fs->seeker.scale = bfs_img_f64(m, 40);
-    fs->seeker.current_pos = bfs_img_u32(m, 48);
-    fs->seeker.home_pos = bfs_img_u32(m, 52);
+    fs->n_files = bfs_img_u32(m, 8);
+    fs->n_blocks_used = bfs_img_u32(m, 12);
+    fs->total_bytes = bfs_img_u32(m, 16);
+    fs->seeker.scale = bfs_img_f64(m, 24);
+    fs->seeker.current_pos = bfs_img_u32(m, 32);
+    fs->seeker.home_pos = bfs_img_u32(m, 36);
     fs->seeker.space_size = (uint32_t)(BFS_TOTAL_SLOTS * fs->seeker.scale);
     if (fs->seeker.space_size < 1) fs->seeker.space_size = 1;
     fs->seeker.window = (uint32_t)((double)BFS_SEEKER_K / fs->seeker.scale);
@@ -235,33 +238,58 @@ static inline int bfs_img_parse(const uint8_t *m, size_t size, BreathingFS *fs,
         memcpy(fs->files[i].strategies, m + o + 44, 4);
         fs->files[i].valid = m[o + 48];
     }
-    /* owners + meta (8B) + e_sizes + enc_offs */
+
+    /* meta (4B packed) + enc_offs — read once into locals, derive the rest */
+    uint32_t eoff[BFS_BLOCKS];
+    uint32_t sum_blocks = 0;
     for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
-        uint32_t o = BFS_IMG_META_OFF + i * BFS_IMG_META_ENT;
-        fs->block_owner[i] = bfs_img_u32(m, BFS_IMG_OWNER_OFF + i * 4);
-        fs->block_meta[i].home_pos = bfs_img_u32(m, o + 0);
-        fs->block_meta[i].strategy = m[o + 4];
-        fs->block_meta[i].scale_at_write = m[o + 5];
-        fs->block_meta[i].payload_size = bfs_img_u16(m, o + 6);
-        fs->block_encoded_size[i] = bfs_img_u16(m, BFS_IMG_ESIZE_OFF + i * 2);
-        if (enc_off_out)
-            enc_off_out[i] = bfs_img_u32(m, BFS_IMG_EOFF_OFF + i * 4);
-        /* DERIVE current_pos & delta from anchor (home_pos × scale) —
-         * v2 stores only the anchor; positions are a pure function. */
+        uint32_t om = bfs_img_u32(m, BFS_IMG_META_OFF + i * 4);
+        fs->block_meta[i].home_pos = om & BFS_META_HOME_MASK;
+        fs->block_meta[i].strategy = (uint8_t)((om >> BFS_META_STRAT_SHIFT) & 0x7u);
+        fs->block_meta[i].scale_at_write = 0;   /* global header scale used */
+        fs->block_meta[i].payload_size = 0;     /* derived below           */
+        if (enc_off_out) enc_off_out[i] = 0;
+        eoff[i] = bfs_img_u32(m, BFS_IMG_EOFF_OFF + i * 4);
+        if (enc_off_out) enc_off_out[i] = eoff[i];
+        /* DERIVE current_pos & delta from anchor (home_pos × scale) */
         double shifted = (double)fs->block_meta[i].home_pos * fs->seeker.scale;
-        uint32_t cur = ((uint32_t)shifted) % fs->seeker.space_size;
+        uint32_t cur = shifted > 0.0
+                     ? ((uint32_t)shifted) % fs->seeker.space_size
+                     : 0u;
         fs->block_meta[i].current_pos = cur;
         fs->block_meta[i].delta = (int32_t)cur - (int32_t)fs->block_meta[i].home_pos;
     }
-    /* payloads: copy so plain bfs_read works (load path); mmap uses enc_off */
+
+    /* DERIVE owners from file runs (contiguous-run alloc invariant v3) */
+    for (uint32_t i = 0; i < BFS_BLOCKS; i++) fs->block_owner[i] = 0xFFFFFFFF;
+    for (uint32_t f = 0; f < BFS_MAX_FILES; f++) {
+        const BFSFileEntry *fe = &fs->files[f];
+        if (!fe->valid || fe->n_blocks == 0) continue;
+        sum_blocks += fe->n_blocks;
+        for (uint32_t b = 0; b < fe->n_blocks; b++)
+            fs->block_owner[fe->home_block + b] = f;
+    }
+    /* integrity: file table must tile exactly the used blocks */
+    if (sum_blocks != fs->n_blocks_used) return -4;
+
+    /* DERIVE sizes: size[i] = next_used_off − off[i] (last → data_end) */
+    for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
+        if (eoff[i] == 0) { fs->block_encoded_size[i] = 0; continue; }
+        uint32_t end = data_end;
+        for (uint32_t j = i + 1; j < BFS_BLOCKS; j++)
+            if (eoff[j] != 0) { end = eoff[j]; break; }
+        uint32_t sz = end - eoff[i];
+        if (sz > BFS_IMG_ENC_MAX) return -4;   /* corrupt offset chain */
+        fs->block_encoded_size[i] = (uint16_t)sz;
+        fs->block_meta[i].payload_size = (uint16_t)sz;
+    }
+
+    /* payloads: copy so plain bfs_read works (load path); mmap uses eoff */
     for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
         uint32_t esz = fs->block_encoded_size[i];
-        uint32_t p_off = enc_off_out ? enc_off_out[i]
-                                     : bfs_img_u32(m, BFS_IMG_EOFF_OFF + i * 4);
         if (esz > 0) {
-            if (esz > BFS_IMG_ENC_MAX || p_off < BFS_IMG_DATA_OFF ||
-                p_off + esz > data_end) return -4;
-            memcpy(fs->block_encoded[i], m + p_off, esz);
+            if (eoff[i] < BFS_IMG_DATA_OFF || eoff[i] + esz > data_end) return -4;
+            memcpy(fs->block_encoded[i], m + eoff[i], esz);
         }
     }
     return 0;
