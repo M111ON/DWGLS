@@ -9,12 +9,37 @@ __pycache__/
 *.pyc
 *.pyo
 
+# Compiler intermediates
+*.i
+*.s
+
 # Tooling
 .hermes/
 
 # PDF samples (regenerable)
 dropbag/PDF_sample/
 output/
-*.exe
-build/
-__pycache__/
+
+# Test artifacts
+*.img
+*.bin
+hello.txt
+out.txt
+hello_out.txt
+large.txt
+test_data.txt
+run_bfs.sh
+bench.bin
+
+# Debug test files (keep only production tests)
+tests/check2.c
+tests/check_size.c
+tests/minimal_read.c
+tests/test_args.c
+tests/test_bfs_args.c
+tests/test_chk.c
+tests/test_chk2.c
+tests/test_cli_full.c
+tests/test_cli_minimal.c
+tests/test_size.c
+tests/test_verify.c
