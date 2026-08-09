@@ -499,6 +499,17 @@ static inline int dyn_encode(DynContainer *dc,
 
     if (dc->payload_size == 0) return -2;  /* encode failed */
 
+    /* NEVER-EXPAND GUARANTEE (Aug 10, 2026):
+     * A codec must never store more bytes than the raw input. Strategy
+     * payloads (esp. CODEBOOK's byte-per-index) can outgrow raw on
+     * incompressible data — if so, fall back to RAW so the container
+     * always stores the SMALLEST representation. Previously an expanded
+     * payload was persisted as-is (324B for 144B random → overhead 2.54x). */
+    if (dc->payload_size > n) {
+        dc->payload_size = dyn_encode_raw(data, n, out, cap);
+        dc->header.strategy = DYN_STRAT_RAW;
+    }
+
     dc->header.payload_size = dc->payload_size;
     dc->header.checksum = dyn_crc32(dc->payload, dc->payload_size);
     return 0;

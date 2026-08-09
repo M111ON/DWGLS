@@ -31,9 +31,12 @@ data**, not reserved address space:
 
 - empty image: 5,796 B (was 81,700 B) — **14x smaller**
 - 1 file: 5,963 B
-- 56 files (140 blocks full): 51,156 B (was 81,700 B) — **1.6x smaller**
+- 56 files (140 blocks full): 25,956 B (was 81,700 B) — **3.1x smaller**
+  (Aug-10 never-expand fix: codec falls back to RAW when a strategy would
+  expand; before the fix this was 51,156 B / 2.54x)
 
-Overhead vs payload drops from 4.05x → 2.54x on the full-file bench.
+Overhead vs payload drops from 4.05x → 1.29x on the full-file bench
+(fixed TOC 5,792 B is now the only overhead — the codec never inflates).
 
 ## Layout (v2)
 

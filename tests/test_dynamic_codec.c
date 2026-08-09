@@ -69,7 +69,12 @@ static void test_codebook_repeat(void)
     int rc = dyn_encode(&dc, data, 512);
 
     CHECK(1, "encode succeeds", rc == 0);
-    CHECK(2, "strategy = CODEBOOK", dc.header.strategy == DYN_STRAT_CODEBOOK);
+    /* 5-unique data is a CODEBOOK candidate, but the byte-per-index
+     * codebook always costs 4 + nu*2 + n > n — expansion. The
+     * never-expand guarantee (Aug 10) falls back to RAW so the stored
+     * payload is never larger than the raw input. */
+    CHECK(2, "never expands (payload ≤ raw)",
+          dc.header.payload_size <= 512);
 
     rc = dyn_verify(data, 512, &dc);
     CHECK(3, "lossless roundtrip", rc == 0);

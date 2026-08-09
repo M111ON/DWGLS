@@ -46,7 +46,7 @@
 B1 write           13.86 MB/s      B4 image save   16.22 MB/s
 B2 read (mem)      18.98 MB/s      B4 image load   21.49 MB/s
 B3 read (mmap)     18.65 MB/s      B5 rdh verify   2.37 ms (140 blocks)
-B6 scale cycle     0.04 ms         image / payload 2.54x overhead (v2 packed; v1 was 4.05x)
+B6 scale cycle     0.04 ms         image / payload 1.29x overhead (never-expand; v1 was 4.05x)
 ```
 
 **Next (Phase 1 remainder):**
@@ -109,8 +109,9 @@ bridges fired        12,060    gear cpu ops 12,060 (worlds=94)
 
 **ผลวัดจริง:**
 - ไฟล์ว่าง: 81,700 B → **5,796 B** (14x เล็กลง)
-- 1 file: 5,963 B · 56 files เต็ม: **51,156 B** (1.6x)
-- Overhead ratio: 4.05x → 2.54x (packed)
+- 1 file: 5,963 B · 56 files เต็ม: **25,956 B** (3.1x, หลัง never-expand fix 51,156→25,956)
+- Overhead ratio: 4.05x → 2.54x (packed) → **1.29x** (after codec never-expand fix):
+  fixed TOC 5,792 B เท่านั้นที่เหลือเป็น overhead — codec ห้ามขยายเกิน raw (RAW fallback)
 
 **Derived on parse:** `current_pos = home×scale`, `delta = current−home` —
 เก็บแค่ anchor (8B/block) ตาม insight
