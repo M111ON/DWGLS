@@ -37,7 +37,9 @@ TIER1 := \
   test_geo_fs \
   test_monitor \
   test_phi_microscope \
-  test_safetensors_reader
+  test_safetensors_reader \
+  test_bfs_persist \
+  test_geo_bfs_hub
 
 # ── Tier 2: need gguf_reader.h or geo_frame_seek.h ────
 # (removed: kis_codec_v5_test, kis_codec_v6_test, kis_map_roundtrip,

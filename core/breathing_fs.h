@@ -244,6 +244,10 @@ static inline void bfs_move_seeker(BreathingFS *fs, double new_scale) {
 
 static inline void bfs_go_home(BreathingFS *fs) {
     if (!fs) return;
+    /* seeker must physically return to home_pos — lossless read is defined
+     * at home (delta=0). seeker_scale keeps current_pos; restore it here. */
+    fs->seeker.home_pos = fs->seeker.home_pos % BFS_TOTAL_SLOTS;
+    fs->seeker.current_pos = fs->seeker.home_pos;
     seeker_scale(&fs->seeker, 1.0);
     for (uint32_t b = 0; b < BFS_BLOCKS; b++) {
         if (fs->block_owner[b] != 0xFFFFFFFF) {

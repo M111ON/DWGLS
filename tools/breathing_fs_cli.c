@@ -1,54 +1,17 @@
-/* breathing_fs_cli.c — Breathing FS CLI Tool */
+/* breathing_fs_cli.c — Breathing FS CLI Tool
+ * Phase 1: versioned image + mmap + RDH verify + MVCC
+ * Commands: create/write/get/list/info/scale/home/chk/demo/mmap/verify/write-map
+ *   (rename: read->get, vc->chk — avoid Windows/bash builtin conflicts) */
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
-#include "breathing_fs.h"
-
-static int save_image(const char *path, const BreathingFS *fs) {
-    FILE *f = fopen(path, "wb");
-    if (!f) { perror("save"); return -1; }
-    fwrite(&fs->magic, 4, 1, f);
-    fwrite(&fs->version, 4, 1, f);
-    fwrite(&fs->n_files, 4, 1, f);
-    fwrite(&fs->n_blocks_used, 4, 1, f);
-    fwrite(&fs->total_bytes, 4, 1, f);
-    fwrite(&fs->seeker, sizeof(BreathingSeeker), 1, f);
-    fwrite(fs->files, sizeof(BFSFileEntry), BFS_MAX_FILES, f);
-    fwrite(fs->block_owner, 4, BFS_BLOCKS, f);
-    fwrite(fs->block_meta, sizeof(BFSBlockMeta), BFS_BLOCKS, f);
-    fwrite(fs->block_encoded_size, 2, BFS_BLOCKS, f);
-    for (uint32_t i = 0; i < BFS_BLOCKS; i++)
-        if (fs->block_encoded_size[i] > 0)
-            fwrite(fs->block_encoded[i], 1, fs->block_encoded_size[i], f);
-    fclose(f);
-    return 0;
-}
-
-static int load_image(const char *path, BreathingFS *fs) {
-    FILE *f = fopen(path, "rb");
-    if (!f) { perror("load"); return -1; }
-    fread(&fs->magic, 4, 1, f);
-    fread(&fs->version, 4, 1, f);
-    fread(&fs->n_files, 4, 1, f);
-    fread(&fs->n_blocks_used, 4, 1, f);
-    fread(&fs->total_bytes, 4, 1, f);
-    if (fs->magic != BFS_MAGIC) { fclose(f); return -1; }
-    fread(&fs->seeker, sizeof(BreathingSeeker), 1, f);
-    fread(fs->files, sizeof(BFSFileEntry), BFS_MAX_FILES, f);
-    fread(fs->block_owner, 4, BFS_BLOCKS, f);
-    fread(fs->block_meta, sizeof(BFSBlockMeta), BFS_BLOCKS, f);
-    fread(fs->block_encoded_size, 2, BFS_BLOCKS, f);
-    for (uint32_t i = 0; i < BFS_BLOCKS; i++)
-        if (fs->block_encoded_size[i] > 0)
-            fread(fs->block_encoded[i], 1, fs->block_encoded_size[i], f);
-    fclose(f);
-    return 0;
-}
+#include "bfs_persist.h"
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        printf("Breathing FS — create/write/get/list/info/scale/home/chk/demo\n");
+        printf("Breathing FS — create/write/get/list/info/scale/home/chk/demo/mmap/verify/write-map\n");
+        printf("  Phase 1 storage: versioned image + mmap + RDH bijection + MVCC\n");
         return 1;
     }
     const char *cmd = argv[1];
@@ -57,14 +20,16 @@ int main(int argc, char **argv) {
         const char *p = argc > 2 ? argv[2] : "bfs.img";
         BreathingFS *fs = (BreathingFS *)calloc(1, sizeof(BreathingFS));
         bfs_init(fs);
-        int r = save_image(p, fs); free(fs);
-        if (r == 0) printf("Created: %s\n", p);
+        int r = bfs_save_img(p, fs); free(fs);
+        if (r == 0) printf("Created: %s (v%u, %u B, %u slots, %u blocks)\n",
+                           p, BFS_IMG_VERSION, BFS_IMG_SIZE, BFS_TOTAL_SLOTS, BFS_BLOCKS);
+        else printf("Create error: %d\n", r);
         return r;
     }
 
     if (strcmp(cmd, "write") == 0 && argc >= 4) {
         BreathingFS *fs = (BreathingFS *)calloc(1, sizeof(BreathingFS));
-        if (load_image(argv[2], fs) != 0) { free(fs); return -1; }
+        if (bfs_load_img(argv[2], fs) != 0) { free(fs); return -1; }
         FILE *f = fopen(argv[3], "rb");
         if (!f) { perror(argv[3]); free(fs); return -1; }
         fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
@@ -73,14 +38,34 @@ int main(int argc, char **argv) {
         if (!nm) nm = strrchr(argv[3], '\\');
         if (nm) nm++; else nm = argv[3];
         int rc = bfs_write(fs, nm, data, (uint32_t)sz); free(data);
-        if (rc == 0) { save_image(argv[2], fs); printf("Wrote: %s (%ld bytes)\n", nm, sz); }
+        if (rc == 0) { bfs_save_img(argv[2], fs); printf("Wrote: %s (%ld bytes)\n", nm, sz); }
         else printf("Write error: %d\n", rc);
         free(fs); return rc;
     }
 
+    if (strcmp(cmd, "write-map") == 0 && argc >= 4) {
+        /* write-through via mmap — in-place, no re-serialize */
+        BFSMmapFS mfs;
+        if (bfs_mmap_open(argv[2], &mfs) != 0) { printf("open error\n"); return -1; }
+        FILE *f = fopen(argv[3], "rb");
+        if (!f) { perror(argv[3]); bfs_mmap_close(&mfs); return -1; }
+        fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+        int8_t *data = (int8_t *)malloc(sz); fread(data, 1, sz, f); fclose(f);
+        const char *nm = strrchr(argv[3], '/');
+        if (!nm) nm = strrchr(argv[3], '\\');
+        if (nm) nm++; else nm = argv[3];
+        int rc = bfs_write(&mfs.fs, nm, data, (uint32_t)sz); free(data);
+        if (rc == 0) {
+            bfs_mmap_sync(&mfs);
+            printf("Wrote (mmap): %s (%ld bytes)\n", nm, sz);
+        } else printf("Write error: %d\n", rc);
+        bfs_mmap_close(&mfs);
+        return rc;
+    }
+
     if (strcmp(cmd, "get") == 0 && argc >= 5) {
         BreathingFS *fs = (BreathingFS *)calloc(1, sizeof(BreathingFS));
-        if (load_image(argv[2], fs) != 0) { free(fs); return -1; }
+        if (bfs_load_img(argv[2], fs) != 0) { free(fs); return -1; }
         int8_t *data = (int8_t *)calloc(1, 20736);
         uint32_t actual = 0;
         int rc = bfs_read(fs, argv[3], data, 20736, &actual);
@@ -95,49 +80,48 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "list") == 0) {
         const char *p = argc > 2 ? argv[2] : "bfs.img";
         BreathingFS *fs = (BreathingFS *)calloc(1, sizeof(BreathingFS));
-        if (load_image(p, fs) != 0) { free(fs); return -1; }
+        if (bfs_load_img(p, fs) != 0) { free(fs); return -1; }
         bfs_print_dir(fs); free(fs); return 0;
     }
 
     if (strcmp(cmd, "info") == 0) {
         const char *p = argc > 2 ? argv[2] : "bfs.img";
         BreathingFS *fs = (BreathingFS *)calloc(1, sizeof(BreathingFS));
-        if (load_image(p, fs) != 0) { free(fs); return -1; }
+        if (bfs_load_img(p, fs) != 0) { free(fs); return -1; }
         seeker_print(&fs->seeker);
         bfs_delta_stats(fs);
-        printf("Files: %u | Blocks: %u/%u\n", fs->n_files, fs->n_blocks_used, BFS_BLOCKS);
+        printf("Files: %u | Blocks: %u/%u | Image: %u B (v%u)\n",
+               fs->n_files, fs->n_blocks_used, BFS_BLOCKS, BFS_IMG_SIZE, BFS_IMG_VERSION);
         free(fs); return 0;
     }
 
     if (strcmp(cmd, "scale") == 0 && argc >= 4) {
         BreathingFS *fs = (BreathingFS *)calloc(1, sizeof(BreathingFS));
-        if (load_image(argv[2], fs) != 0) { free(fs); return -1; }
+        if (bfs_load_img(argv[2], fs) != 0) { free(fs); return -1; }
         printf("Before: "); seeker_print(&fs->seeker);
         bfs_move_seeker(fs, atof(argv[3]));
         printf("After:  "); seeker_print(&fs->seeker);
         bfs_delta_stats(fs);
-        save_image(argv[2], fs); free(fs); return 0;
+        bfs_save_img(argv[2], fs); free(fs); return 0;
     }
 
     if (strcmp(cmd, "home") == 0) {
         const char *p = argc > 2 ? argv[2] : "bfs.img";
         BreathingFS *fs = (BreathingFS *)calloc(1, sizeof(BreathingFS));
-        if (load_image(p, fs) != 0) { free(fs); return -1; }
+        if (bfs_load_img(p, fs) != 0) { free(fs); return -1; }
         printf("Before: "); seeker_print(&fs->seeker);
         bfs_go_home(fs);
         printf("After:  "); seeker_print(&fs->seeker);
-        save_image(p, fs); free(fs); return 0;
+        bfs_save_img(p, fs); free(fs); return 0;
     }
 
     if (strcmp(cmd, "chk") == 0 && argc >= 5) {
         BreathingFS *fs = (BreathingFS *)calloc(1, sizeof(BreathingFS));
-        if (load_image(argv[2], fs) != 0) { free(fs); return -1; }
+        if (bfs_load_img(argv[2], fs) != 0) { free(fs); return -1; }
         FILE *f = fopen(argv[4], "rb");
         if (!f) { perror(argv[4]); free(fs); return -1; }
         fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
         int8_t *data = (int8_t *)malloc(sz); fread(data, 1, sz, f); fclose(f);
-        /* Inline verify: read from image, compare to original */
-        /* recon must be >= total_blocks * BFS_SLOTS_BLOCK for dyn_decode */
         uint32_t nbl = (uint32_t)((sz + BFS_SLOTS_BLOCK - 1) / BFS_SLOTS_BLOCK);
         int8_t *recon = (int8_t *)calloc(1, (size_t)nbl * BFS_SLOTS_BLOCK);
         uint32_t actual = 0;
@@ -148,6 +132,32 @@ int main(int argc, char **argv) {
         free(recon); free(data); free(fs);
         printf("%s: %s\n", argv[3], match ? "LOSSLESS" : "FAIL");
         return match ? 0 : 1;
+    }
+
+    if (strcmp(cmd, "mmap") == 0) {
+        const char *p = argc > 2 ? argv[2] : "bfs.img";
+        BFSMmapFS mfs;
+        int rc = bfs_mmap_open(p, &mfs);
+        if (rc != 0) { printf("mmap open error: %d\n", rc); return rc; }
+        printf("Mapped: %s (%u B) — zero-copy ready\n", p, (unsigned)mfs.map_size);
+        printf("  files=%u blocks=%u scale=%.4f pos=%u home=%u\n",
+               mfs.fs.n_files, mfs.fs.n_blocks_used,
+               mfs.fs.seeker.scale, mfs.fs.seeker.current_pos, mfs.fs.seeker.home_pos);
+        int v = bfs_rdh_verify_all(&mfs);
+        printf("  RDH verify: %d blocks bijection-verified\n", v);
+        bfs_mmap_close(&mfs);
+        return v < 0 ? 1 : 0;
+    }
+
+    if (strcmp(cmd, "verify") == 0) {
+        const char *p = argc > 2 ? argv[2] : "bfs.img";
+        BFSMmapFS mfs;
+        int rc = bfs_mmap_open(p, &mfs);
+        if (rc != 0) { printf("verify error: %d (CRC/magic check failed)\n", rc); return rc; }
+        int v = bfs_rdh_verify_all(&mfs);
+        printf("%s: %s (%d blocks)\n", p, v >= 0 ? "INTEGRITY-OK" : "CORRUPT", v);
+        bfs_mmap_close(&mfs);
+        return v < 0 ? 1 : 0;
     }
 
     if (strcmp(cmd, "demo") == 0) {
