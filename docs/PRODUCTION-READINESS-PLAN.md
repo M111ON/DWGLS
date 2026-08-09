@@ -31,7 +31,7 @@
 
 | Item | Status | Artifact |
 |------|--------|----------|
-| **Versioned .img header** | ✅ DONE | `core/bfs_persist.h` — fixed-offset layout (82,000 B), magic `BIMG`, v1, CRC32 trailer over whole image |
+| **Versioned .img header** | ✅ DONE | `core/bfs_persist.h` — **v2 packed layout** (`BFS_IMG_MIN_SIZE` 5,796 / `MAX` 79,524 B), magic `BIMG`, CRC32 trailer |
 | **mmap path** | ✅ DONE | `bfs_mmap_open/close` — Windows `MapViewOfFile` + Linux `mmap`, zero-copy `bfs_mmap_read` decodes straight from mapping |
 | **Plain save/load** | ✅ DONE | `bfs_save_img` / `bfs_load_img` — portable, CRC-checked |
 | **RDH bijection verify** | ✅ DONE | `bfs_rdh_verify_all` — encode(decode(x))==x per block, 140/140 blocks verified |
@@ -39,14 +39,14 @@
 | **Bug found+fixed** | ✅ DONE | `bfs_go_home()` never returned seeker to home_pos — lossless invariant broken; fixed in `breathing_fs.h` |
 | **CLI upgrade** | ✅ DONE | `tools/breathing_fs_cli.c` — old ad-hoc binary I/O replaced by versioned image; new `mmap` + `verify` commands |
 | **Benchmark** | ✅ DONE | `bench/fs_bench.c` — 6 paths, all lossless-verified (LMDB deferred: zero-external-deps policy) |
-| **Test** | ✅ DONE | `tests/test_bfs_persist.c` — 52/52 PASS, registered in Makefile TIER1 |
+| **Test** | ✅ DONE | `tests/test_bfs_persist.c` — **65/65 PASS** (v2), registered in Makefile TIER1 |
 
 **Benchmark numbers (56 files, avg 2.5 blocks/file):**
 ```
 B1 write           13.86 MB/s      B4 image save   16.22 MB/s
 B2 read (mem)      18.98 MB/s      B4 image load   21.49 MB/s
-B3 read (mmap)     17.90 MB/s      B5 rdh verify   2.37 ms (140 blocks)
-B6 scale cycle     0.04 ms         image / payload 4.05x overhead
+B3 read (mmap)     18.65 MB/s      B5 rdh verify   2.37 ms (140 blocks)
+B6 scale cycle     0.04 ms         image / payload 2.54x overhead (v2 packed; v1 was 4.05x)
 ```
 
 **Next (Phase 1 remainder):**
@@ -93,7 +93,59 @@ bridges fired        12,060    gear cpu ops 12,060 (worlds=94)
 
 ---
 
-## 📋 Gap Analysis — What's Missing
+## ✅ Anchor-Based Delta Seeker (Aug 10, 2026) — user insight implemented
+
+**User insight:** "hyperbolic delta มี pattern ชัดเจนคาดเดาได้ — ใช้ frame seek เก็บแค่ anchor ก็เพียงพอ"
+
+**ความจริงที่พิสูจน์แล้ว:** `delta = home_pos × (scale − 1)` — เป็น **pure function** ไม่ใช่ข้อมูล
+
+### ✅ v2: ทำให้ไฟล์หดได้จริง (implemented)
+
+| v1 (was) | v2 (now) | ผล |
+|----------|----------|-----|
+| DeltaLog 1024 B | ✂️ removed (derived) | −1024 B |
+| BlockMeta 16 B (เก็บ current+delta) | 8 B (anchor only) | −1152 B |
+| Data 512 B × 144 = 73728 B fixed | **packed** Σ payload | variable |
+
+**ผลวัดจริง:**
+- ไฟล์ว่าง: 81,700 B → **5,796 B** (14x เล็กลง)
+- 1 file: 5,963 B · 56 files เต็ม: **51,156 B** (1.6x)
+- Overhead ratio: 4.05x → 2.54x (packed)
+
+**Derived on parse:** `current_pos = home×scale`, `delta = current−home` —
+เก็บแค่ anchor (8B/block) ตาม insight
+
+**Files:** `core/bfs_persist.h` v2, `docs/FS_FORMAT_SPEC.md` v2
+**Tests:** persist 65/65 + hub 56/56 + anchor 51/51 → `make test` 28/28, zero warnings
+**v1→v2:** breaking change (ไม่มี production images — ไม่ต้อง migrate)
+
+---
+
+## ✅ Continuous Auto-Compress Delta Engine (Aug 10, 2026) — user vision
+
+**User insight:** "ระบบเคลื่อนไปมาอยู่ตลอด — หาจุดยึดเป็น constrain มา scope ขนาด
+delta คล้ายที่ seeker ทำ — compress delta เกิดขึ้นเองได้ตลอด ขนานกับอีกฝั่ง"
+
+**กลไก (implemented):** `core/bfs_breath.h`
+- ระบบหายใจตลอด (scale oscillate) ทุก breath ทุก block ได้ delta = home×(scale−1)
+- **KEY: anchor เป็น constraint เคลื่อนที่** — พอ |Δ| เกิน `BFS_BREATH_BOUND=127`
+  → re-anchor (anchor ตามไปที่ตำแหน่งปัจจุบัน, Δ กลับเป็น 0) → **bounded ถาวร**
+- bounded Δ → encode int8 (4x เล็กกว่า int32 v1)
+- เกิดอัตโนมัติทุก tick **เป็น side channel ขนานกับ main path** (payload ไม่ถูกแตะ)
+
+**ผลพิสูจน์ (test 22/22, 5,000 breaths):**
+- ทุก breath |stored Δ| ≤ 127 — bounded by construction
+- re-anchor 26 ครั้งใน long-run — anchor ตามการเคลื่อนที่จริง
+- main path อ่าน lossless ตลอดขณะหายใจขนาน (500 interleaved reads)
+- delta layer: 4 B (int8) vs 16 B (int32) = **4x smaller**
+- encode/decode int8 exact + clamp
+
+**เส้นเชื่อมกับ seeker:** window = K/scale scope ADDRESS SPACE; anchor scope DELTA —
+constraint → scope → bounded → compact (ตระกูลเดียวกัน)
+
+`make test` 29/29 (TIER1 26 + TIER2 3) · zero warnings
+
+---
 
 ### 1. Breathing FS — Storage Layer (Priority: CRITICAL)
 
