@@ -35,3 +35,12 @@ square (4) → spike → pyramid (5) → seal → square (4) → loop
 ## ถัดไป (ตาม T8)
 - Hyperbolic: s(n+1) = s(n)×k — k=9 per pair ใช้ได้แล้วใน test
 - ต่อได้: capo/octant ภายใน pyramid addressing, ผูกกับ frame_seek
+
+## Impact Analysis (Aug 10) — ผลกระทบต่อระบบเดิม
+**ZERO — pyramid เป็นเลเยอร์แยก ไม่แตะ core เดิม:**
+- 0 macro clash — compile รวมกับ codec_v4/frame_seek/projection/tess/param_grid/gguf/
+  gear_lock/fibo_spine ใน TU เดียวผ่าน (0 error, ทดสอบจริง)
+- 0 ไฟล์เดิมถูกแก้ — เพิ่มแค่ geo_pyramid_carrier.h + 3 tests
+- make test 25/25 regression ผ่าน
+- **ข้อควรระวัง**: ยังไม่แทนที่ kis_layer (ICO 20 / DEC 12) หรือ dwgls_codec_* (10 ไฟล์ 20736)
+  — ถ้าจะแทนที่จริง = แตะ container/format ชั้นลึก ในจุดนั้น impact จะเกิด
