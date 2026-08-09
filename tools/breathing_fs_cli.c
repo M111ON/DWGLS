@@ -22,7 +22,7 @@ int main(int argc, char **argv) {
         bfs_init(fs);
         int r = bfs_save_img(p, fs); free(fs);
         if (r == 0) printf("Created: %s (v%u, %u B, %u slots, %u blocks)\n",
-                           p, BFS_IMG_VERSION, BFS_IMG_SIZE, BFS_TOTAL_SLOTS, BFS_BLOCKS);
+                                   p, BFS_IMG_VERSION, BFS_IMG_MIN_SIZE, BFS_TOTAL_SLOTS, BFS_BLOCKS);
         else printf("Create error: %d\n", r);
         return r;
     }
@@ -90,8 +90,9 @@ int main(int argc, char **argv) {
         if (bfs_load_img(p, fs) != 0) { free(fs); return -1; }
         seeker_print(&fs->seeker);
         bfs_delta_stats(fs);
-        printf("Files: %u | Blocks: %u/%u | Image: %u B (v%u)\n",
-               fs->n_files, fs->n_blocks_used, BFS_BLOCKS, BFS_IMG_SIZE, BFS_IMG_VERSION);
+        printf("Files: %u | Blocks: %u/%u | Image: %u B (v%u, packed)\n",
+                       fs->n_files, fs->n_blocks_used, BFS_BLOCKS,
+                       bfs_img_size_of(fs), BFS_IMG_VERSION);
         free(fs); return 0;
     }
 

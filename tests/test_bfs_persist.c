@@ -38,33 +38,38 @@ int main(void)
     printf("TEST 1: Image Geometry + Serialize/PARSE Roundtrip\n");
     {
         printf("  layout: files_off=%u owner_off=%u meta_off=%u esize_off=%u\n"
-               "          eoff_off=%u data_off=%u crc_off=%u img_size=%u\n",
+               "          eoff_off=%u data_off=%u min_size=%u max_size=%u\n",
                (unsigned)BFS_IMG_FILES_OFF, (unsigned)BFS_IMG_OWNER_OFF,
                (unsigned)BFS_IMG_META_OFF, (unsigned)BFS_IMG_ESIZE_OFF,
                (unsigned)BFS_IMG_EOFF_OFF, (unsigned)BFS_IMG_DATA_OFF,
-               (unsigned)BFS_IMG_CRC_OFF, (unsigned)BFS_IMG_SIZE);
-        CHECK(1, "CRC_OFF < IMG_SIZE", BFS_IMG_CRC_OFF + 4 == BFS_IMG_SIZE);
+               (unsigned)BFS_IMG_MIN_SIZE, (unsigned)BFS_IMG_MAX_SIZE);
+        CHECK(1, "min < max (variable size)", BFS_IMG_MIN_SIZE < BFS_IMG_MAX_SIZE);
         CHECK(1, "fixed offsets sane (data region after TOC)",
               BFS_IMG_DATA_OFF > BFS_IMG_EOFF_OFF);
+        CHECK(1, "v2 anchor meta = 8B (current/delta derived)",
+              BFS_IMG_META_ENT == 8u);
 
         BreathingFS fs; bfs_init(&fs);
         int8_t d[300]; fill_file(d, 300, 11);
         bfs_write(&fs, "alpha.bin", d, 300);
 
-        static uint8_t buf[BFS_IMG_SIZE];
-        bfs_img_serialize(&fs, buf);
+        static uint8_t buf[BFS_IMG_MAX_SIZE];
+        uint32_t n = bfs_img_serialize(&fs, buf);
+        CHECK(1, "serialized size < max (packed)",
+              n < BFS_IMG_MAX_SIZE && n == bfs_img_size_of(&fs));
+        printf("  serialized: %u B (max would be %u B)\n", n, (unsigned)BFS_IMG_MAX_SIZE);
         BreathingFS fs2; uint32_t eoff[BFS_BLOCKS];
-        int rc = bfs_img_parse(buf, BFS_IMG_SIZE, &fs2, eoff);
+        int rc = bfs_img_parse(buf, n, &fs2, eoff);
         CHECK(1, "parse succeeds", rc == 0);
         CHECK(1, "n_files preserved", fs2.n_files == 1);
         CHECK(1, "total_bytes preserved", fs2.total_bytes == 300);
         CHECK(1, "seeker scale preserved", fs2.seeker.scale == 1.0);
         CHECK(1, "file name preserved", strcmp(fs2.files[0].name, "alpha.bin") == 0);
         CHECK(1, "block owner preserved", fs2.block_owner[0] == 0);
-        CHECK(1, "payload enc_off points into data region",
-              eoff[0] >= BFS_IMG_DATA_OFF);
-        CHECK(1, "bad magic rejected",
-              bfs_img_parse(buf, BFS_IMG_SIZE, &fs2, eoff) == 0); /* sanity first */
+        CHECK(1, "current_pos derived (home×scale)", fs2.block_meta[0].current_pos == 0);
+        CHECK(1, "delta derived = 0 at scale 1.0", fs2.block_meta[0].delta == 0);
+        CHECK(1, "payload enc_off within data region",
+              eoff[0] >= BFS_IMG_DATA_OFF && eoff[0] + 512 <= BFS_IMG_DATA_OFF + 73728);
     }
 
     /* ── T2: plain save/load + lossless ── */
@@ -108,7 +113,8 @@ int main(void)
         int rc = bfs_mmap_open("build/t_p1.img", &mfs);
         CHECK(3, "mmap open ok", rc == 0);
         CHECK(3, "map_ptr non-null", mfs.map_ptr != NULL);
-        CHECK(3, "mapped size == IMG_SIZE", mfs.map_size == BFS_IMG_SIZE);
+        CHECK(3, "mapped size = actual file size (variable, packed)",
+              mfs.map_size == (size_t)bfs_img_size_of(&fs));
         CHECK(3, "TOC parsed from mapping", mfs.fs.n_files == 1);
 
         int8_t r[432]; uint32_t act = 0;
@@ -145,7 +151,9 @@ int main(void)
     /* ── T5: CRC corruption detection ── */
     printf("\nTEST 5: CRC Integrity — Corruption Detected\n");
     {
-        /* Build a fresh image, then flip bytes in the data region */
+        /* Build a fresh image, then flip a byte in the DATA region.
+         * Data is packed now, so find the actual data area via
+         * the u32 data_size stored at offset 36 of the header. */
         BreathingFS fs; bfs_init(&fs);
         int8_t d[144]; fill_file(d, 144, 3);
         bfs_write(&fs, "x.bin", d, 144);
@@ -154,23 +162,37 @@ int main(void)
         FILE *f = fopen("build/t_p1.img", "r+b");
         CHECK(5, "open image r+b", f != NULL);
         if (f) {
-            fseek(f, BFS_IMG_DATA_OFF + 10, SEEK_SET);
+            /* read header data_size (offset 36) to find where payloads live */
+            uint8_t hdr[64];
+            fseek(f, 0, SEEK_SET);
+            fread(hdr, 1, 64, f);
+            uint32_t ds = (uint32_t)hdr[36] | ((uint32_t)hdr[37] << 8) |
+                          ((uint32_t)hdr[38] << 16) | ((uint32_t)hdr[39] << 24);
+            uint32_t data_start = BFS_IMG_DATA_OFF;
+            uint32_t data_end = data_start + ds;
+            CHECK(5, "data region present", ds > 0 && data_end > data_start);
+            /* flip a byte in the middle of the payload area */
+            fseek(f, data_start + ds / 2, SEEK_SET);
             uint8_t b; fread(&b, 1, 1, f); b ^= 0xFF;
-            fseek(f, BFS_IMG_DATA_OFF + 10, SEEK_SET);
+            fseek(f, data_start + ds / 2, SEEK_SET);
             fwrite(&b, 1, 1, f);
             fclose(f);
 
             BFSMmapFS mfs;
             int rc = bfs_mmap_open("build/t_p1.img", &mfs);
-            CHECK(5, "corrupted payload detected (parse fails)", rc != 0);
-            /* payload corruption: CRC lives AFTER data → must catch */
+            CHECK(5, "corrupted payload detected (CRC fails)", rc == -4);
         }
-        /* Now corrupt the CRC trailer itself */
+        /* Now corrupt the CRC trailer itself: it sits right after data */
         f = fopen("build/t_p1.img", "r+b");
         if (f) {
-            fseek(f, BFS_IMG_CRC_OFF, SEEK_SET);
+            uint8_t hdr[64];
+            fseek(f, 0, SEEK_SET);
+            fread(hdr, 1, 64, f);
+            uint32_t ds = (uint32_t)hdr[36] | ((uint32_t)hdr[37] << 8) |
+                          ((uint32_t)hdr[38] << 16) | ((uint32_t)hdr[39] << 24);
+            fseek(f, BFS_IMG_DATA_OFF + ds, SEEK_SET);
             uint8_t b; fread(&b, 1, 1, f); b ^= 0xFF;
-            fseek(f, BFS_IMG_CRC_OFF, SEEK_SET);
+            fseek(f, BFS_IMG_DATA_OFF + ds, SEEK_SET);
             fwrite(&b, 1, 1, f);
             fclose(f);
 

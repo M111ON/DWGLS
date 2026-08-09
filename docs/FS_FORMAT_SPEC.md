@@ -1,120 +1,153 @@
-# BIMG Image Format Spec — Breathing FS Storage Layer
+# Breathing FS Image Format Spec (BIMG v2)
 
-**Version**: 1 (2026-08-10) · **Header**: `core/bfs_persist.h` · **Tests**: `tests/test_bfs_persist.c`
+**Status**: Implemented — `core/bfs_persist.h` (v2, Aug 10 2026)
+**Test**: `tests/test_bfs_persist.c` 65/65 PASS + hub 56/56 + anchor 51/51, `make test` 28/28
 
-## Purpose
+---
 
-BIMG is the persistent container of the Breathing FS. It is a **fixed-size,
-fixed-offset binary image** that holds the complete 20736-slot address space
-(144 blocks × 144 slots) plus all TOC metadata, seeker state, and delta log.
+## Overview
 
-- **Fixed offsets** → no TOC walk, O(1) region lookup
-- **mmap-friendly** → decode payloads straight from the mapping (zero-copy)
-- **CRC-32 trailer** → whole-image integrity at open
+BIMG is the persistent on-disk format of the Breathing FS geometric
+filesystem. **v2 makes the image actually small** — three removals
+based on the anchor insight (delta = home×(scale−1) is a pure function):
 
-## Layout (82,000 bytes total)
+| v1 (was) | v2 (now) | Saved |
+|----------|----------|-------|
+| DeltaLog 256×u32 = 1024 B | ✂️ removed (derived) | −1024 B |
+| BlockMeta 16 B/block (stored current+delta) | 8 B/block (anchor only, derived on parse) | −1152 B |
+| Data region fixed 512 B × 144 = 73728 B | **packed** — Σ actual encoded payloads | variable |
 
-| Offset | Size | Region |
-|--------|------|--------|
-| 0 | 64 | Header |
-| 64 | 3136 | FileTable (64 entries × 49 B) |
-| 3200 | 576 | BlockOwner (144 × u32, 0xFFFFFFFF = free) |
-| 3776 | 2304 | BlockMeta (144 × 16 B) |
-| 6080 | 288 | EncodedSize (144 × u16) |
-| 6368 | 1024 | DeltaLog (256 × u32) |
-| 7392 | 576 | EncOffset (144 × u32 — payload offset in mapping) |
-| 7968 | 73728 | DataRegion (144 × 512 B fixed stride) |
-| 81696 | 4 | CRC-32 trailer (of bytes [0, 81696)) |
+Magic: `0x474D4942` ("BIMG") · Version: **2** · Size: **variable**,
+`= 5792 + data_size + 4` bytes. Max 79,524 B (all 144 blocks full).
 
-## Header (64 B)
+All integers little-endian.
 
-| Off | Type | Field | Meaning |
-|-----|------|-------|---------|
-| 0 | u32 | magic | `BFS_IMG_MAGIC` = 0x474D4942 ("BIMG") |
-| 4 | u32 | version | `BFS_IMG_VERSION` = 1 |
+## Why packed (v2 core change)
+
+v1 was a fixed 82 KB fortress — every block reserved 512 B even when
+empty or tiny. v2 packs payloads contiguously and tracks each block's
+absolute offset in the EncOffset table. File size now reflects **actual
+data**, not reserved address space:
+
+- empty image: 5,796 B (was 81,700 B) — **14x smaller**
+- 1 file: 5,963 B
+- 56 files (140 blocks full): 51,156 B (was 81,700 B) — **1.6x smaller**
+
+Overhead vs payload drops from 4.05x → 2.54x on the full-file bench.
+
+## Layout (v2)
+
+```
+Offset       Size     Region
+────────────────────────────────────────────────────────────
+0            64       ImageHeader (data_size @36)
+64           3136     FileTable   (64 × 49 B)
+3200         576      OwnerMap    (144 × u32)
+3776         1152     BlockMeta   (144 × 8 B)   ← anchor only
+4928         288      EncodedSize (144 × u16)
+5216         576      EncOffset   (144 × u32)   ← absolute offsets
+5792         data_size  DataRegion (PACKED payloads)
+5792+data_size 4      CRC32 trailer (of bytes [0, data_end))
+────────────────────────────────────────────────────────────
+```
+
+## ImageHeader (64 B)
+
+| Offset | Type | Field | Meaning |
+|--------|------|-------|---------|
+| 0 | u32 | magic | 0x474D4942 ("BIMG") |
+| 4 | u32 | version | 2 |
 | 8 | u32 | header_size | 64 |
-| 12 | u32 | block_size | 144 (slots per block) |
+| 12 | u32 | block_size | 144 |
 | 16 | u32 | block_count | 144 |
 | 20 | u32 | max_files | 64 |
-| 24 | u32 | n_files | live file count |
+| 24 | u32 | n_files | live files |
 | 28 | u32 | n_blocks_used | allocated blocks |
 | 32 | u32 | total_bytes | logical payload bytes |
-| 36 | u32 | reserved | 0 |
+| **36** | **u32** | **data_size** | **packed data region bytes (v2)** |
 | 40 | f64 | scale | seeker scale |
 | 48 | u32 | seek_pos | seeker current_pos |
 | 52 | u32 | home_pos | seeker home_pos |
-| 56 | u32 | delta_count | delta log entries |
+| 56 | u32 | delta_count | **0 (delta_log removed — derived)** |
 | 60 | u32 | reserved | 0 |
 
-## FileTable entry (49 B × 64)
+## BlockMeta entry (8 B × 144) — ANCHOR ONLY
 
-| Off | Size | Field |
-|-----|------|-------|
-| 0 | 32 | name (char[32]) |
-| 32 | 4 | n_blocks |
-| 36 | 4 | home_block |
-| 40 | 4 | total_bytes |
-| 44 | 4 | strategies[4] (u8 count per strategy) |
-| 48 | 1 | valid |
+| Offset | Type | Field |
+|--------|------|-------|
+| 0 | u32 | home_pos |
+| 4 | u8  | strategy |
+| 5 | u8  | scale_at_write |
+| 6 | u16 | payload_size |
 
-## BlockMeta entry (16 B × 144)
-
-| Off | Size | Field |
-|-----|------|-------|
-| 0 | 4 | home_pos |
-| 4 | 4 | current_pos |
-| 8 | 4 | delta (i32) |
-| 12 | 1 | strategy |
-| 13 | 1 | scale_at_write |
-| 14 | 2 | payload_size |
+**Derived on parse** (never stored):
+```
+current_pos = home_pos × header.scale   (mod space_size)
+delta       = current_pos − home_pos    = home_pos × (scale − 1)
+```
+This is the v2 proof: positions are a *function* of the anchor, so
+storing them (v1) was redundant.
 
 ## EncOffset (144 × u32)
 
-Absolute byte offset of each block's encoded payload **within the mapped
-image** (0 = block free/empty). Enables zero-copy decode via
-`bfs_mmap_read` — `dyn_decode` reads `map_ptr + enc_off[b]`.
+Absolute byte offset of each block's payload inside the image
+(0 = empty). Packed layout: `enc_off[i] = DATA_OFF + Σ(payloads before i)`.
+Zero-copy decode uses `map_ptr + enc_off[block]`.
 
-## Integrity
+## CRC
 
-- **CRC-32 trailer** at offset 81696 over `[0, 81696)` — detects any
-  bit-rot / truncation at open (return -4)
-- **RDH bijection verify** (`bfs_rdh_verify_all`) — for every used block:
-  decode → re-encode → compare strategy + payload bytes.
-  `encode(decode(x)) == x` ⟺ lossless bijection at that coordinate.
-- Magic/version/geometry checks at parse (return -1/-2/-3)
+CRC32 (dyn_crc32) over all bytes `[0, data_end)` where
+`data_end = 5792 + data_size`. Trailer sits at `data_end`.
 
-## API (all header-only, static inline, zero-malloc hot path)
+| Failure | Code |
+|---------|------|
+| size < 5,796 or null args | -1 |
+| bad magic | -1 |
+| bad version (≠2) | -2 |
+| bad block geometry | -3 |
+| CRC mismatch | -4 |
 
-| Function | Purpose |
-|----------|---------|
-| `bfs_img_serialize(fs, buf)` | BreathingFS → 82 KB byte image |
-| `bfs_img_parse(buf, size, fs, enc_off)` | validate + parse → BreathingFS |
-| `bfs_save_img(path, fs)` | fwrite serialized image |
-| `bfs_load_img(path, fs)` | fread + parse (payloads copied in) |
-| `bfs_mmap_open(path, mfs)` | MapViewOfFile/mmap + parse (zero-copy) |
-| `bfs_mmap_close(mfs)` | unmap + close handles |
-| `bfs_mmap_read(mfs, name, out, n, actual)` | zero-copy decode from mapping |
-| `bfs_mmap_sync(mfs)` | write-through: serialize into mapping + flush |
-| `bfs_rdh_verify_all(mfs)` | RDH bijection verify, returns verified count |
+## v1 → v2 compatibility
 
-## Error Codes
+v2 is a **breaking format change** (dropped regions + packed data).
+Old v1 images fail the version check at open. Regenerate with
+`create` + `write` (or await a migration tool — not needed yet since
+no production images exist).
 
-| Code | Meaning |
-|------|---------|
-| -1 | bad magic / null args / file too small |
-| -2 | bad version |
-| -3 | bad geometry (block_size/count mismatch) |
-| -4 | CRC mismatch |
-| -5 | mmap view failed |
+## Access semantics
 
-## Windows / Linux mmap
+### Plain load (`bfs_load_img`)
+1. ftell for actual size, fread into max-size static buffer
+2. `bfs_img_parse`: validate magic → version → geometry → CRC
+3. Regions parsed; payloads copied into `block_encoded[]`; current/delta derived
 
-```c
-#if defined(_WIN32)
-  CreateFileA → CreateFileMappingA → MapViewOfFile   (PAGE_READWRITE)
-  FlushViewOfFile → UnmapViewOfFile → CloseHandle
-#else
-  open(O_RDWR) → fstat → mmap(MAP_SHARED, PROT_READ|WRITE)
-  msync(MS_SYNC) → munmap → close
-#endif
-```
+### mmap open (`bfs_mmap_open`)
+1. Map the whole (variable-size) file
+2. Same parse; payloads stay in mapping (zero-copy)
+3. `bfs_mmap_read` decodes from `map_ptr + enc_off[block]`
+
+### Write-through (`bfs_mmap_sync`)
+1. Serialize to temp buffer; if new size > mapping → remap/grow file
+2. memcpy into mapping, flush, refresh CRC, re-parse TOC
+
+### Integrity (`bfs_rdh_verify_all`)
+decode → re-encode → compare per used block (bijection proof), plus
+CRC gate at open catches any bit-rot in packed data.
+
+## Portability
+
+- byte-by-byte serialization (no struct dumps — no padding drift)
+- platform mmap behind `#if defined(_WIN32)`
+- header-only, static inline, zero-malloc hot path
+
+## Constants (sacred, unchanged)
+
+| Constant | Value |
+|----------|-------|
+| BFS_TOTAL_SLOTS | 20736 |
+| BFS_BLOCKS | 144 |
+| BFS_SLOTS_BLOCK | 144 |
+| BFS_SEEKER_K | 5184 |
+| BFS_MAX_FILES | 64 |
+| BFS_IMG_MIN_SIZE | 5796 |
+| BFS_IMG_MAX_SIZE | 79524 |

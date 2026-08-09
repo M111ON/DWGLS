@@ -140,9 +140,9 @@ int main(int argc, char **argv)
            tv, verified);
     printf("  B6 scale cycle %8.2f ms   (50 moves + 10 restore, MVCC ring=%u)\n",
            tsc, mv.n);
-    printf("  image size     %8u B  (%.3f x raw payload)\n",
-           (unsigned)BFS_IMG_SIZE,
-           (double)BFS_IMG_SIZE / (double)total_b);
+    printf("  image size     %8u B  (%.3f x raw payload, packed)\n",
+           (unsigned)bfs_img_size_of(&fs),
+           (double)bfs_img_size_of(&fs) / (double)total_b);
     printf("═══════════════════════════════════════════════════════════\n");
     printf("All paths lossless-verified (read == original).\n");
     printf("(LMDB/sqlite comparison deferred: zero external deps policy;\n");
