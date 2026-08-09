@@ -134,6 +134,7 @@ static inline int bfs_write(BreathingFS *fs, const char *name,
     if (n_blocks > BFS_BLOCKS - fs->n_blocks_used) return -3;
 
     uint32_t blocks[BFS_BLOCKS];
+    blocks[0] = 0; /* silence warning; guard on line 134 ensures found >= n_blocks */
     uint32_t found = 0;
     for (uint32_t i = 0; i < BFS_BLOCKS && found < n_blocks; i++)
         if (fs->block_owner[i] == 0xFFFFFFFF) blocks[found++] = i;
