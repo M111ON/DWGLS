@@ -19,12 +19,6 @@ typedef struct {
     uint64_t *sizes;
 } GGUFTensorIndex;
 
-static int cmp_u64_desc(const void *a, const void *b) {
-    uint64_t x = *(const uint64_t*)a;
-    uint64_t y = *(const uint64_t*)b;
-    return (x > y) ? -1 : (x < y) ? 1 : 0;
-}
-
 /* ── Skip a GGUF value (recursive, type 0-12) ── */
 static int skip_gguf_value(FILE *fp, uint32_t type) {
     switch (type) {

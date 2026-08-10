@@ -51,7 +51,8 @@ TIER1 := \
 TIER2 := \
   kis_codec_v4_test \
   test_geo_tensor_hub \
-  test_geo_zerocopy
+  test_geo_zerocopy \
+  test_geo_rail_hub
 
 # ── Tier 2 include dir (gguf_reader.h moved here) ────
 TIER2_CFLAGS := $(CFLAGS) -Icore

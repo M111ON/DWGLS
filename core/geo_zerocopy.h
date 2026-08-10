@@ -107,10 +107,17 @@ static inline int geo_zerocopy_open(GeoZeroCopy *z, const char *path) {
     /* ── Parse header from mapped memory ────────────────── */
     uint8_t *p = z->base;
 
-    /* File header: magic (4B) + version (4B) + n_tensors (4B) + ... */
+    /* File header: magic (4B) + version (1B) + ... */
     if (memcmp(p, GCUBE_MAGIC, 4) != 0) {
         geo_zerocopy_close(z);
         return -4;  /* bad magic */
+    }
+    /* FIX (Aug 10): mappped loader must reject mismatched format version
+     * (currently v2) — reading a v1 layout with v2 entry sizes silently
+     * corrupts the index (mirrors gcube_read's -4). */
+    if (p[4] != GCUBE_VERSION) {
+        geo_zerocopy_close(z);
+        return -5;  /* version mismatch */
     }
 
     GCubeContainer *cube = &z->cube;
