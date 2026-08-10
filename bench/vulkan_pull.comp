@@ -1,0 +1,28 @@
+#version 450
+/* vulkan_pull.comp — puller kernel: read chunk @ workgroup-indexed offset, XOR-checksum.
+ * XOR is REQUIRED (lesson #16): pure-pull lets the compiler eliminate loads.
+ * Each workgroup pulls one 1024B chunk (256 uints). */
+layout(local_size_x = 256) in;
+shared uint smem[256];          /* workgroup reduce buffer (top-level scope) */
+
+layout(std430, binding = 0) readonly buffer Src  { uint data[]; };
+layout(std430, binding = 1) buffer   Dst  { uint sums[]; };
+
+layout(push_constant) uniform PC { uint chunk_uints; }; /* 256 */
+
+void main() {
+    uint chunk = gl_WorkGroupID.x;          /* which chunk this workgroup pulls */
+    uint base  = chunk * chunk_uints;       /* offset into src */
+    uint acc   = 0u;
+    for (uint i = gl_LocalInvocationIndex; i < chunk_uints; i += 256) {
+        acc ^= data[base + i];              /* real read — cannot be eliminated */
+    }
+    /* workgroup reduce via shared memory (each chunk = exactly 1 workgroup) */
+    smem[gl_LocalInvocationIndex] = acc;
+    barrier();
+    if (gl_LocalInvocationIndex == 0u) {
+        uint red = 0u;
+        for (uint i = 0u; i < 256u; i++) red ^= smem[i];
+        sums[chunk] = red;
+    }
+}
