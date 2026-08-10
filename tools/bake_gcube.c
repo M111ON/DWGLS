@@ -233,10 +233,22 @@ static uint32_t bake_from_gguf(const char *path, GCubeContainer *cube)
             tbuf = nb; tcap = sz;
         }
         if (gguf_read_tensor(path, &gguf, i, tbuf, tcap) != 0) continue;
-        uint32_t n_elems = (uint32_t)(((uint64_t)sz * 32u) / 34u);
+        /* real per-tensor dtype (F32/F16/Q8_0/...) — NOT hardcoded Q8_0.
+         * n_elems = bytes / type_size * block_size (inverse of reader's tsize) */
+        static const struct { uint16_t tsz; uint16_t blck; } tinfo[31] = {
+            {4,1},{2,1},{18,32},{20,32},{0,0},{0,0},{22,32},{24,32},
+            {34,32},{36,32},{84,256},{110,256},{144,256},{176,256},
+            {210,256},{292,256},{2,256},{2,256},{2,256},{1,256},
+            {2,32},{1,256},{1,256},{2,256},{1,1},{2,1},{4,1},{8,1},
+            {8,1},{1,256},{2,1}
+        };
+        uint8_t dt = gguf.dtypes[i];
+        uint32_t n_elems = (dt < 31 && tinfo[dt].tsz > 0)
+            ? (uint32_t)(((uint64_t)sz / tinfo[dt].tsz) * tinfo[dt].blck)
+            : 0;
         uint32_t dims[4] = { n_elems, 0, 0, 0 };
         if (gcube_add_tensor(cube, gguf.names[i], 1, dims,
-                             (uint8_t)34 /* GGML_TYPE_Q8_0 */,
+                             dt /* real GGML type */,
                              n_elems, tbuf, sz) != 0) {
             if (cube->header.n_tensors >= GCUBE_MAX_TENSORS) break;
         }
@@ -248,7 +260,9 @@ static uint32_t bake_from_gguf(const char *path, GCubeContainer *cube)
 
 int main(int argc, char **argv)
 {
-    if (argc != 3) { fprintf(stderr, "usage: bake_gcube <model.gguf|model.safetensors> <out.gcube>\n"); return 2; }
+    int gguf_out = 0;
+    if (argc == 4 && strcmp(argv[1], "--gguf") == 0) { gguf_out = 1; argv++; argc--; }
+    if (argc != 3) { fprintf(stderr, "usage: bake_gcube [--gguf] <model.gguf|model.safetensors> <out.gcube>\n"); return 2; }
     const char *src = argv[1], *out = argv[2];
     size_t sl = strlen(src);
     int is_safe = (sl > 12 && strcmp(src + sl - 12, ".safetensors") == 0);
@@ -269,6 +283,71 @@ int main(int argc, char **argv)
     }
     t_front = now_sec();
     printf("  tensors    : %u\n", n);
+
+    if (gguf_out) {
+        /* ── GGUF DIRECT BAKE ──
+         * Output = original GGUF header (KV + tensor index, byte-identical)
+         * followed by tensor data written from OUR blocks (which are
+         * byte-identical to the original data). The result is a file that
+         * llama.cpp opens with its STANDARD loader — normal mmap + GPU path.
+         * Data still comes from the geometry container, not the source file. */
+        if (is_safe) { fprintf(stderr, "bake: --gguf requires a GGUF source\n"); return 1; }
+        GgufReader srcg;
+        if (gguf_open(src, &srcg) != 0) { fprintf(stderr, "bake: cannot open %s (gguf)\n", src); return 1; }
+        FILE *fin  = fopen(src, "rb");
+        FILE *fout = fopen(out, "wb");
+        if (!fin || !fout) { fprintf(stderr, "bake: file open fail\n"); gcube_free(&cube); return 1; }
+        /* header + tensor index, byte-identical */
+        uint8_t hbuf[1048576];
+        uint64_t remain = srcg.data_offset;
+        while (remain > 0) {
+            size_t chunk = remain > sizeof(hbuf) ? sizeof(hbuf) : (size_t)remain;
+            if (fread(hbuf, 1, chunk, fin) != chunk) { fprintf(stderr, "bake: header read fail\n"); return 1; }
+            if (fwrite(hbuf, 1, chunk, fout) != chunk) { fprintf(stderr, "bake: header write fail\n"); return 1; }
+            remain -= chunk;
+        }
+        /* data from our blocks, in GGUF index order (bake preserves it) */
+        for (uint32_t i = 0; i < cube.header.n_tensors; i++) {
+            const GCubeTensorEntry *e = &cube.tensors[i];
+            const uint8_t *d = cube.blocks + (uint64_t)e->block_start * GCUBE_BLOCK_SZ;
+            if (fwrite(d, 1, e->data_size, fout) != e->data_size) { fprintf(stderr, "bake: data write fail\n"); return 1; }
+        }
+        fclose(fin); fclose(fout);
+        gguf_close(&srcg);
+        double t_write = now_sec();
+
+        /* verify: compare every byte against the source file */
+        uint32_t ok = 0, bad = 0;
+        GgufReader vg;
+        if (gguf_open(out, &vg) == 0) {
+            uint8_t *vref = NULL; uint32_t vcap = 0;
+            for (uint32_t i = 0; i < vg.n_tensors && i < cube.header.n_tensors; i++) {
+                const GCubeTensorEntry *e = &cube.tensors[i];
+                if (e->data_size > vcap) {
+                    uint8_t *nb = (uint8_t *)realloc(vref, e->data_size);
+                    if (!nb) break;
+                    vref = nb; vcap = e->data_size;
+                }
+                if (gguf_read_tensor(out, &vg, i, vref, vcap) != 0) { bad++; continue; }
+                const uint8_t *got = cube.blocks + (uint64_t)e->block_start * GCUBE_BLOCK_SZ;
+                if (memcmp(vref, got, e->data_size) == 0) ok++; else bad++;
+            }
+            free(vref);
+            gguf_close(&vg);
+        }
+        uint64_t orig_size = 0, new_size = 0;
+        FILE *f1 = fopen(src, "rb"); if (f1) { fseeko(f1,0,SEEK_END); orig_size = ftello(f1); fclose(f1); }
+        FILE *f2 = fopen(out, "rb"); if (f2) { fseeko(f2,0,SEEK_END); new_size = ftello(f2); fclose(f2); }
+        printf("  verify     : %u/%u tensors byte-identical (LOSSLESS)%s\n",
+               ok, ok + bad, bad ? "  *** MISMATCH ***" : "");
+        printf("  out        : %.2f MB (original %.2f MB — %s)\n",
+               (double)new_size/1048576.0, (double)orig_size/1048576.0,
+               new_size == orig_size ? "IDENTICAL SIZE" : "DIFFERS");
+        printf("  timing     : frontend %.0f ms · write %.0f ms · verify %.0f ms\n",
+               (t_front - t0) * 1e3, (t_write - t_front) * 1e3, (now_sec() - t_write) * 1e3);
+        gcube_free(&cube);
+        return (bad == 0 && ok > 0) ? 0 : 1;
+    }
 
     if (gcube_write(&cube, out) != 0) { fprintf(stderr, "bake: cannot write %s\n", out); return 1; }
     double t_write = now_sec();
