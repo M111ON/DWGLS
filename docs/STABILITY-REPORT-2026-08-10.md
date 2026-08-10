@@ -57,14 +57,24 @@ formula vs breath bound).
 
 ## 3. Static analysis
 
-- GCC `-fanalyzer` (16.1.0) on the full BFS stack: 0 real findings
-  (only `-Wanalyzer-too-complex` path truncation on deep inlined codecs).
-- Constraint honesty: ASAN/UBSAN runtimes are NOT installed in this MSYS2
-  (gcc 16.1 + clang 22.1 both lack libasan/libubsan; compiler-rt package
-  ships headers only) — anomaly coverage comes from canary runtime proof
-  (F1), analyzer, and bounds audits instead. **Recommend** running the
-  suite under ASAN once on a Linux box (WSL) for the same 5 test binaries
-  (harness: `build/san_sweep.sh`).
+- GCC `-fanalyzer` (16.1.0): 0 real findings on the full BFS stack.
+- **ASAN+UBSAN+LeakSanitizer (WSL Linux, gcc 11.4) — COMPLETE (run via
+  `build/san_sweep_wsl.sh`)**: all five BFS/codec test binaries +
+  stress monitor under `-fsanitize=address,undefined`, leak detection on,
+  halt-on-error:
+
+  | binary | ASAN result |
+  |---|---|
+  | test_bfs_persist | CLEAN — 66/66 |
+  | test_bfs_stability (F1 canary) | CLEAN — 17/17 |
+  | test_bfs_seek_anchor | CLEAN — 51/51 |
+  | test_bfs_breath | CLEAN — 22/22 |
+  | test_geo_bfs_hub | CLEAN — 56/56 |
+  | stress_monitor (50 rounds) | CLEAN — 4,880 checks, 0 failures |
+
+  No heap leaks, no UB traps, no buffer overruns across the whole stack
+  (this includes the float-cast overflow F2 — UBSan traps it if present).
+  Residual risk #1: RESOLVED.
 
 ## 4. Regression (fresh, zero warnings)
 
@@ -79,7 +89,8 @@ CLI cycle (v3)           create 4,332 → write 4,476 → INTEGRITY-OK → mmap
 
 ## 5. Residual risks (honest)
 
-1. ASAN not run here (see §3) — WSL run recommended before Phase 2.
+1. ~~ASAN not run here~~ — RESOLVED: full ASAN+UBSAN+LSAN sweep clean on
+   WSL (gcc 11.4), all 5 binaries + stress monitor (see §3).
 2. `bfs_verify_file` uses malloc (diagnostic/CLI helper only, not hot
    path). If strict no-malloc is wanted, convert to a static 20,736-byte
    buffer — but it's not on the read/write path.
