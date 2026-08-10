@@ -39,6 +39,7 @@ TIER1 := \
   test_phi_microscope \
   test_safetensors_reader \
   test_bfs_persist \
+  test_bfs_stability \
   test_geo_bfs_hub \
   test_bfs_seek_anchor \
   test_bfs_breath

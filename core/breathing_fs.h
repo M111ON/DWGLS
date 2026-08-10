@@ -45,6 +45,10 @@ static inline void seeker_init(BreathingSeeker *s) {
 
 static inline void seeker_scale(BreathingSeeker *s, double ns) {
     if (!s || ns <= 0.0) return;
+    /* STABILITY FIX (Aug 10, 2026): window = K/ns overflows uint32 at
+     * ns < ~1.2e-6 (float-cast UB). Floor the scale at 1e-6 — hyperbolic
+     * behavior (window > space) still activates for any ns < 1.0. */
+    if (ns < 1e-6) ns = 1e-6;
     s->scale = ns;
     s->space_size = (uint32_t)(BFS_TOTAL_SLOTS * ns);
     if (s->space_size < 1) s->space_size = 1;
@@ -235,7 +239,11 @@ static inline int bfs_read(const BreathingFS *fs, const char *name,
         uint32_t bsz = BFS_SLOTS_BLOCK;
         if (offset + bsz > fe->total_bytes) bsz = fe->total_bytes - offset;
 
-        int rc = dyn_decode(&_bfs_dc, out + offset, BFS_SLOTS_BLOCK);
+        /* STABILITY FIX (Aug 10, 2026): decode only bsz real bytes, not the
+         * full 144-slot block. dyn_decode(..., BFS_SLOTS_BLOCK) wrote past
+         * the caller's buffer whenever a file's LAST block was partial
+         * (total_bytes % 144 != 0) — out_size contract was ≥ total_bytes. */
+        int rc = dyn_decode(&_bfs_dc, out + offset, bsz);
         if (rc != 0) return -5;
     }
     return 0;

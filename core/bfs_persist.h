@@ -427,7 +427,8 @@ static inline int bfs_mmap_read(const BFSMmapFS *mfs, const char *name,
         uint32_t offset = b * BFS_SLOTS_BLOCK;
         uint32_t bsz = BFS_SLOTS_BLOCK;
         if (offset + bsz > fe->total_bytes) bsz = fe->total_bytes - offset;
-        int rc = dyn_decode(&dc, out + offset, BFS_SLOTS_BLOCK);
+        /* STABILITY FIX: same partial-last-block guard as bfs_read */
+        int rc = dyn_decode(&dc, out + offset, bsz);
         if (rc != 0) return -5;
     }
     return 0;
