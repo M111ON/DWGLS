@@ -51,12 +51,13 @@
    ═══════════════════════════════════════════════════════════════ */
 
 #define GCUBE_MAGIC         "GCB\0"
-#define GCUBE_VERSION       1
+#define GCUBE_VERSION       2
 #define GCUBE_FILE_HDR_SZ   64u
-#define GCUBE_TENSOR_HDR_SZ 80u
 #define GCUBE_BLOCK_SZ      64u     /* DiamondBlock = 64 bytes */
 #define GCUBE_MAX_TENSORS   512u
-#define GCUBE_MAX_NAME      48u
+#define GCUBE_MAX_NAME      96u     /* longest GGUF/HF tensor names fit
+                                     * model.vision_model.encoder.layers.10.
+                                     * self_attn.q_proj.weight = 60 chars */
 #define GCUBE_MAX_MODEL     32u
 
 /* ═══════════════════════════════════════════════════════════════
@@ -93,6 +94,11 @@ typedef struct {
     uint32_t block_count;           /* number of blocks */
 } GCubeTensorEntry;
 #pragma pack(pop)
+
+/* FIX (Aug 10): TENSOR_HDR_SZ must equal sizeof(GCubeTensorEntry) —
+ * a hardcoded 80 vs real 84 made block_count drop on every (de)serialize
+ * (write/read use only 80B). Derived from the struct so it can never drift. */
+#define GCUBE_TENSOR_HDR_SZ  ((uint32_t)sizeof(GCubeTensorEntry))
 
 /* ═══════════════════════════════════════════════════════════════
    IN-MEMORY CONTAINER

@@ -45,7 +45,7 @@ int main(void) {
         gcube_init(&c);
 
         CHECK(1, "magic = GCB\\0", memcmp(c.header.magic, GCUBE_MAGIC, 4) == 0);
-        CHECK(2, "version = 1", c.header.version == 1);
+        CHECK(2, "version = GCUBE_VERSION", c.header.version == GCUBE_VERSION);
         CHECK(3, "n_tensors = 0", c.header.n_tensors == 0);
         CHECK(4, "total_blocks = 0", c.header.total_blocks == 0);
         printf("\n");
