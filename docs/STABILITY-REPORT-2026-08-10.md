@@ -75,6 +75,23 @@ formula vs breath bound).
   No heap leaks, no UB traps, no buffer overruns across the whole stack
   (this includes the float-cast overflow F2 — UBSan traps it if present).
   Residual risk #1: RESOLVED.
+- **Valgrind memcheck 3.18.1 (WSL, `tools/valgrind_sweep.sh`)** —
+  same binaries, `--leak-check=full --show-leak-kinds=all
+  --track-origins=yes`, `--error-exitcode=99`:
+
+  | binary | valgrind |
+  |---|---|
+  | test_bfs_persist | 0 errors — 66/66 |
+  | test_bfs_stability (F1 canary) | 0 errors — 17/17 |
+  | test_bfs_seek_anchor | 0 errors — 51/51 |
+  | test_bfs_breath | 0 errors — 22/22 |
+  | test_geo_bfs_hub | 0 errors — 56/56 |
+  | stress_monitor (100 rounds) | 0 errors — 9,540 checks, 0 fail |
+
+  Covers the classes ASAN misses: uninitialised-value reads (origin
+  tracking on) and definite/indirect/possible leaks. The F1 overrun —
+  before the fix — is an invalid-write that both tools classify; the
+  canary test now pins it green under every checker.
 
 ## 4. Regression (fresh, zero warnings)
 
