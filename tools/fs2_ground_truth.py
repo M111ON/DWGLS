@@ -154,8 +154,14 @@ def main():
         print(f"    saved → {stem}.{{mel.npy,dur.npy,pitch.npy,energy.npy,phn.txt}}")
         if vocoder is not None:
             wav = vocoder.decode_batch(mel)
-            import torchaudio
-            torchaudio.save(stem + ".wav", wav.squeeze(1), 22050)
+            try:
+                import torchaudio
+                torchaudio.save(stem + ".wav", wav.squeeze(1), 22050)
+            except ImportError:
+                import scipy.io.wavfile as wf
+                x = wav.squeeze().numpy()          # (N,) — drop all leading 1s
+                x = np.clip(x, -1.0, 1.0)
+                wf.write(stem + ".wav", 22050, (x * 32767).astype(np.int16))
             print(f"    wav  → {stem}.wav (22050 Hz)")
 
 
