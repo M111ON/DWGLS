@@ -136,6 +136,11 @@ int parse_sentence(const char *sentence, char words[][MAX_WORD_LEN]) {
 
 // Align words proportionally across speech span [s0, s1]
 // (Exclude leading/trailing silence: use energy threshold to find speech span)
+// PAD sweep proved clean cuts (PAD=0) discriminate BEST:
+//   PAD=0:0.2546 > PAD=1:0.2401 > PAD=2:0.2213 > PAD=3:0.207 > PAD=4:0.195
+// Padding contaminates timbre with neighbour-word spectra.
+#define PAD_PRE  0
+#define PAD_POST 0
 int align_words(const char *sentence, const double *energy, int nf,
                 AlignedWord *out) {
     // Find speech span: frames above threshold
@@ -163,9 +168,13 @@ int align_words(const char *sentence, const double *energy, int nf,
     for (int i = 0; i < nw; i++) {
         int len = (int)((double)chars[i] / total_chars * span);
         if (i == nw-1) len = span - (pos - s0);  // last word takes remainder
-        out[i].start_frame = pos;
-        out[i].end_frame = pos + len - 1;
-        if (out[i].end_frame > s1) out[i].end_frame = s1;
+        // Apply padding: capture boundary transitions instead of sharp cut
+        int ps = pos - PAD_PRE;
+        int pe = pos + len - 1 + PAD_POST;
+        if (ps < s0) ps = s0;
+        if (pe > s1) pe = s1;
+        out[i].start_frame = ps;
+        out[i].end_frame = pe;
         strncpy(out[i].word, words[i], MAX_WORD_LEN-1);
         out[i].word[MAX_WORD_LEN-1] = 0;
         pos += len;
@@ -240,33 +249,54 @@ double pattern_jaccard(const uint8_t *a, const uint8_t *b) {
 // Usage: geo_audio_v12.exe -- s1.wav "The quick..." s2.wav "The cat..."
 // ═══════════════════════════════════════════════════════════
 int main(int argc, char **argv) {
-    if (argc < 4) {
-        printf("Usage: %s -- <wav1> \"sentence1\" <wav2> \"sentence2\" ...\n", argv[0]);
-        printf("Example: geo_audio_v12 -- s1.wav \"The quick brown fox\" s2.wav \"The cat sat\"\n");
-        return 1;
+    // v12b: --batch mode reads tools/tts_data/s*.wav + tts_sentences_50.txt
+    int batch = 0;
+    if (argc >= 2 && strcmp(argv[1], "--batch") == 0) batch = 1;
+
+    const char *paths[50];
+    char sentences[50][1024];
+    int n_files = 0;
+
+    if (batch) {
+        FILE *sf = fopen("tts_sentences_50.txt", "r");
+        if (!sf) { printf("Error: tts_sentences_50.txt not found (run from tools/)\n"); return 1; }
+        char line[1024];
+        while (n_files < 50 && fgets(line, sizeof line, sf)) {
+            line[strcspn(line, "\r\n")] = 0;
+            if (strlen(line) == 0) continue;
+            snprintf(sentences[n_files], 1024, "%s", line);
+            static char pbuf[50][128];
+            snprintf(pbuf[n_files], 128, "tts_data/s%d.wav", n_files+1);
+            paths[n_files] = pbuf[n_files];
+            n_files++;
+        }
+        fclose(sf);
+    } else {
+        n_files = (argc - 1) / 2;
+        if (n_files > 50) n_files = 50;
+        int idx = 1;
+        if (strcmp(argv[1], "--") == 0) idx = 2;
+        for (int i = 0; i < n_files; i++) {
+            paths[i] = argv[idx + i*2];
+            snprintf(sentences[i], 1024, "%s", argv[idx + i*2 + 1]);
+        }
     }
     init_all();
-    
-    // Parse: pairs of (wav, sentence)
-    int n_files = (argc - 1) / 2;
-    if (n_files > 10) n_files = 10;
-    int idx = 1;
-    if (strcmp(argv[1], "--") == 0) idx = 2;
-    
-    printf("=== Known-Text Aligned Timbre v12 ===\n\n");
-    
-    double (*mel[10])[N_MELS];
-    int frames[10];
-    AlignedWord words[10][MAX_WORDS];
-    int nwords[10];
-    uint8_t (*patterns[10][MAX_WORDS]);
-    uint32_t (*trajs[10][MAX_WORDS]);
-    int traj_frames[10][MAX_WORDS];
-    
+
+    printf("=== Known-Text Aligned Timbre v12%s ===\n\n", batch ? " BATCH" : "");
+
+    double (*mel[50])[N_MELS];
+    int frames[50];
+    AlignedWord words[50][MAX_WORDS];
+    int nwords[50];
+    uint8_t (*patterns[50][MAX_WORDS]);
+    uint32_t (*trajs[50][MAX_WORDS]);
+    int traj_frames[50][MAX_WORDS];
+
     for (int fi = 0; fi < n_files; fi++) {
-        const char *wavpath = argv[idx + fi*2];
-        const char *sentence = argv[idx + fi*2 + 1];
-        
+        const char *wavpath = paths[fi];
+        const char *sentence = sentences[fi];
+
         int ns;
         int16_t *s = read_wav(wavpath, &ns);
         if (!s) { printf("Error: %s\n", wavpath); return 1; }
@@ -274,7 +304,7 @@ int main(int argc, char **argv) {
         if (mf > MAX_FRAMES) mf = MAX_FRAMES;
         mel[fi] = malloc(sizeof(double) * mf * N_MELS);
         frames[fi] = compute_mel(s, ns, mel[fi]);
-        
+
         double *energy = malloc(sizeof(double) * frames[fi]);
         for (int f = 0; f < frames[fi]; f++) {
             double sum = 0;
@@ -286,9 +316,10 @@ int main(int argc, char **argv) {
             energy[f] = sqrt(sum / N_FFT);
         }
         free(s);
-        
+
         nwords[fi] = align_words(sentence, energy, frames[fi], words[fi]);
-        
+        free(energy);
+
         printf("File %d: %s (%d frames)\n", fi+1, wavpath, frames[fi]);
         printf("  Aligned %d words: ", nwords[fi]);
         for (int w = 0; w < nwords[fi]; w++)
@@ -303,7 +334,6 @@ int main(int argc, char **argv) {
             build_timbre(mel[fi], words[fi][w].start_frame, words[fi][w].end_frame,
                          patterns[fi][w], trajs[fi][w], &traj_frames[fi][w], TOP_K);
         }
-        free(energy);
     }
     
     // ═══ Same-word matching ═══

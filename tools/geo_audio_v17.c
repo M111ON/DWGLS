@@ -325,29 +325,54 @@ double maze_confidence(const MazePattern *a, const MazePattern *b, int fl) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 4) {
-        printf("Usage: %s -- <wav1> \"sentence1\" <wav2> \"sentence2\" ...\n", argv[0]);
-        return 1;
+    // v17b: --batch mode reads tools/tts_data/s*.wav + tts_sentences_50.txt
+    int batch = 0;
+    if (argc >= 2 && strcmp(argv[1], "--batch") == 0) batch = 1;
+
+    double (*mel[50])[N_MELS];
+    int frames[50];
+    AlignedWord words[50][MAX_WORDS];
+    int nwords[50];
+    const char *paths[50];
+    char sentences[50][1024];
+    int n_files = 0;
+
+    if (batch) {
+        // Read sentences file
+        FILE *sf = fopen("tts_sentences_50.txt", "r");
+        if (!sf) { printf("Error: tts_sentences_50.txt not found (run from tools/)\n"); return 1; }
+        char line[1024];
+        while (n_files < 50 && fgets(line, sizeof line, sf)) {
+            line[strcspn(line, "\r\n")] = 0;
+            if (strlen(line) == 0) continue;
+            snprintf(sentences[n_files], 1024, "%s", line);
+            static char pbuf[50][128];
+            snprintf(pbuf[n_files], 128, "tts_data/s%d.wav", n_files+1);
+            paths[n_files] = pbuf[n_files];
+            n_files++;
+        }
+        fclose(sf);
+    } else {
+        n_files = (argc - 1) / 2;
+        if (n_files > 50) n_files = 50;
+        int idx = 1;
+        if (strcmp(argv[1], "--") == 0) idx = 2;
+        for (int i = 0; i < n_files; i++) {
+            paths[i] = argv[idx + i*2];
+            snprintf(sentences[i], 1024, "%s", argv[idx + i*2 + 1]);
+        }
     }
+
     init_all();
 
-    int n_files = (argc - 1) / 2;
-    if (n_files > 10) n_files = 10;
-    int idx = 1;
-    if (strcmp(argv[1], "--") == 0) idx = 2;
-
-    printf("=== MAZE FIELD SWITCH v17 — hilbert = structure, not walker ===\n");
+    printf("=== MAZE FIELD SWITCH v17%s — hilbert = structure, not walker ===\n",
+           batch ? " BATCH" : "");
     printf("Floors: 0° | INVERT | MIRROR-Y | MIRROR-X (static, INVERT family)\n");
     printf("Structure: walk-3 skip-1 → switch cells + skip value ports\n\n");
 
-    double (*mel[10])[N_MELS];
-    int frames[10];
-    AlignedWord words[10][MAX_WORDS];
-    int nwords[10];
-
     for (int fi = 0; fi < n_files; fi++) {
-        const char *wavpath = argv[idx + fi*2];
-        const char *sentence = argv[idx + fi*2 + 1];
+        const char *wavpath = paths[fi];
+        const char *sentence = sentences[fi];
         int ns;
         int16_t *s = read_wav(wavpath, &ns);
         if (!s) { printf("Error: %s\n", wavpath); return 1; }
@@ -359,8 +384,8 @@ int main(int argc, char **argv) {
         frame_rms(s, ns, energy, &(int){frames[fi]});
         nwords[fi] = align_words(sentence, energy, frames[fi], words[fi]);
         free(energy); free(s);
-        printf("File %d: %s (%d frames, %d words)\n", fi+1, wavpath, frames[fi], nwords[fi]);
     }
+    printf("Files loaded: %d\n", n_files);
 
     MazePattern (*patterns)[MAX_WORDS] =
         malloc(sizeof(MazePattern) * n_files * MAX_WORDS);
