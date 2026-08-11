@@ -67,12 +67,13 @@ def mel_to_geometric_vec(mel_all):
 
 def bpe_tokenize(text, merges):
     merged = list(text.replace(' ', 'Ġ'))
-    ms = {m: i for i, m in enumerate(merges)}
+    # merges are "a b" strings; build tuple-key dict for lookup
+    ms = {tuple(m.split(' ', 1)): i for i, m in enumerate(merges)}
     for _ in range(50):
         best = None
         for i in range(len(merged)-1):
             p = (merged[i], merged[i+1])
-            if p in ms and (best is None or ms[p] < ms[best]):
+            if p in ms and (best is None or ms[p] < best[1]):
                 best = (i, ms[p])
         if best is None: break
         i = best[0]; a, b = merged[i], merged[i+1]
@@ -110,7 +111,7 @@ def main():
     tok2id = {t: i for i, t in enumerate(tokens)}
     print(f'vocab: {len(tokens)}')
 
-    with open('I:/DWGLS/tools/tts_sentences.txt') as f:
+    with open('I:/DWGLS/tools/tts_sentences_50.txt') as f:
         sentences = [l.strip() for l in f if l.strip()]
 
     X_list, Y_list = [], []
@@ -148,9 +149,10 @@ def main():
     print(f'X variance: {X.var():.8f}')
     print(f'Y variance: {Y.var():.8f}')
 
-    # Train/test split: 8 train, 2 test
+    # Train/test split: 40 train, 10 test
     perm = np.random.RandomState(42).permutation(len(X))
-    train_idx, test_idx = perm[:8], perm[8:]
+    n_train = min(40, len(X) - 5)
+    train_idx, test_idx = perm[:n_train], perm[n_train:]
 
     Xtr, Ytr = X[train_idx], Y[train_idx]
     Xte, Yte = X[test_idx], Y[test_idx]
