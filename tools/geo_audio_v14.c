@@ -1,0 +1,454 @@
+// geo_audio_v14.c — Hilbert PARALLEL TICK (4 floors = same moment, 4 rotations)
+// 
+// Concept (user correction): 4 floors are NOT a long path through time.
+// Each tick = same moment slammed into 4 Hilbert grids simultaneously.
+//   - 64 channels (frequency bins) → 1 position per Hilbert grid
+//   - 4 floors = 4 rotated Hilbert views of the SAME tick (0°,90°,180°,270°)
+//   - 81 tower = amplitude quantized
+//   - Total per tick: 64 × 4 × 81 = 20736
+// Pattern per tick = 4 parallel snapshots; word = sequence of ticks.
+//
+// Build: gcc -O2 -Wall -o tools/geo_audio_v14.exe tools/geo_audio_v14.c -lm
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <stdint.h>
+
+#define SAMPLE_RATE  16000
+#define N_FFT        400
+#define HOP_SIZE     160
+#define N_MELS       128
+#define N_CHANNELS   64        // frequency channels (downsample 128 mel → 64)
+#define N_FLOORS     4         // 4 Hilbert rotations (parallel views)
+#define TOWER        81        // 9×9 amplitude quantization
+#define GEO_FULL     (N_CHANNELS * N_FLOORS * TOWER)  // 20736
+#define MAX_FRAMES   2000
+#define MAX_WORDS    60
+#define MAX_WORD_LEN 64
+
+static double g_win[N_FFT];
+static double g_mel_filter[N_MELS][N_FFT/2+1];
+
+static inline uint32_t hilbert_idx(uint32_t x, uint32_t y, uint32_t n) {
+    uint32_t d = 0;
+    for (uint32_t s = n >> 1; s > 0; s >>= 1) {
+        uint32_t rx = (x & s) > 0;
+        uint32_t ry = (y & s) > 0;
+        d = (d << 2) | ((3u * rx) ^ ry);
+        if (ry == 0) {
+            if (rx == 1) { x = n - 1u - x; y = n - 1u - y; }
+            uint32_t t = x; x = y; y = t;
+        }
+    }
+    return d;
+}
+
+// 4 rotated Hilbert maps: channel → hilbert position (8×8 = 64)
+// Each floor = Hilbert curve rotated 90°CW progressively (4 start corners)
+static uint8_t h_map[N_FLOORS][N_CHANNELS];
+
+void init_all(void) {
+    for (int i = 0; i < N_FFT; i++)
+        g_win[i] = 0.5 * (1.0 - cos(2.0*M_PI*i/N_FFT));
+    for (int f = 0; f < N_FLOORS; f++) {
+        for (uint32_t i = 0; i < N_CHANNELS; i++) {
+            uint32_t x = i % 8, y = i / 8;
+            uint32_t tx = x, ty = y;
+            switch (f) {
+                case 0: /* 0°    */ break;
+                case 1: /* 90°CW */ tx = 7 - y; ty = x;     break;
+                case 2: /* 180°  */ tx = 7 - x; ty = 7 - y; break;
+                case 3: /* 270°  */ tx = y;     ty = 7 - x; break;
+            }
+            h_map[f][i] = (uint8_t)hilbert_idx(tx, ty, 8);
+        }
+    }
+    double sr = SAMPLE_RATE;
+    double mel_lo = 2595.0 * log10(1.0 + 0.0/700.0);
+    double mel_hi = 2595.0 * log10(1.0 + sr/2.0/700.0);
+    for (int m = 0; m < N_MELS; m++) {
+        double mc = mel_lo + (mel_hi - mel_lo) * (m + 0.5) / N_MELS;
+        double fc = 700.0 * (pow(10.0, mc/2595.0) - 1.0);
+        double bc = fc * N_FFT / sr;
+        double wd = (mel_hi - mel_lo) / N_MELS * N_FFT / sr;
+        for (int k = 0; k < N_FFT/2+1; k++) {
+            double d = fabs(k - bc);
+            g_mel_filter[m][k] = (d < wd) ? 1.0 - d/wd : 0.0;
+        }
+    }
+}
+
+int compute_mel(const int16_t *samples, int n_samples, double mel[][N_MELS]) {
+    int nf = (n_samples - N_FFT) / HOP_SIZE;
+    if (nf > MAX_FRAMES) nf = MAX_FRAMES;
+    for (int f = 0; f < nf; f++) {
+        int off = f * HOP_SIZE;
+        double re[N_FFT], im[N_FFT];
+        for (int i = 0; i < N_FFT; i++) {
+            re[i] = samples[off+i] * g_win[i] / 32768.0;
+            im[i] = 0.0;
+        }
+        double pow_[N_FFT/2+1];
+        for (int k = 0; k < N_FFT/2+1; k++) {
+            double r = 0, ii = 0;
+            for (int n = 0; n < N_FFT; n++) {
+                double a = 2.0*M_PI*k*n/N_FFT;
+                r += re[n]*cos(a) + im[n]*sin(a);
+                ii += -re[n]*sin(a) + im[n]*cos(a);
+            }
+            pow_[k] = (r*r + ii*ii) / N_FFT;
+        }
+        for (int m = 0; m < N_MELS; m++) {
+            double s = 0;
+            for (int k = 0; k < N_FFT/2+1; k++)
+                s += pow_[k] * g_mel_filter[m][k];
+            mel[f][m] = log10(fmax(s, 1e-10));
+        }
+    }
+    return nf;
+}
+
+int16_t* read_wav(const char *path, int *n_samples) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    char riff[4], wave[4];
+    uint32_t sz;
+    fread(riff,1,4,f); fread(&sz,4,1,f); fread(wave,1,4,f);
+    if (memcmp(riff,"RIFF",4)!=0 || memcmp(wave,"WAVE",4)!=0) { fclose(f); return NULL; }
+    int16_t *data = NULL; int count = 0;
+    while (!feof(f)) {
+        char id[4]; uint32_t s;
+        if (fread(id,1,4,f) != 4) break;
+        fread(&s,4,1,f);
+        if (memcmp(id,"data",4)==0) {
+            data = malloc(s); count = (int)fread(data,2,s/2,f); break;
+        } else fseek(f, s, SEEK_CUR);
+    }
+    fclose(f);
+    *n_samples = count;
+    return data;
+}
+
+typedef struct { int start_frame, end_frame; char word[MAX_WORD_LEN]; } AlignedWord;
+
+void frame_rms(const int16_t *samples, int n_samples, double *energy, int *n_frames) {
+    int nf = (n_samples - N_FFT) / HOP_SIZE;
+    *n_frames = nf;
+    for (int f = 0; f < nf; f++) {
+        double sum = 0;
+        int off = f * HOP_SIZE;
+        for (int i = 0; i < N_FFT && off+i < n_samples; i++) {
+            double v = samples[off+i] * g_win[i] / 32768.0;
+            sum += v*v;
+        }
+        energy[f] = sqrt(sum / N_FFT);
+    }
+}
+
+int parse_sentence(const char *sentence, char words[][MAX_WORD_LEN]) {
+    int n = 0;
+    char buf[1024];
+    strncpy(buf, sentence, 1023); buf[1023] = 0;
+    char *tok = strtok(buf, " \t\n.,!?;:");
+    while (tok && n < MAX_WORDS) {
+        strncpy(words[n], tok, MAX_WORD_LEN-1);
+        words[n][MAX_WORD_LEN-1] = 0;
+        n++;
+        tok = strtok(NULL, " \t\n.,!?;:");
+    }
+    return n;
+}
+
+int align_words(const char *sentence, const double *energy, int n_frames,
+                AlignedWord *out) {
+    double thr = 0.01;
+    int s0 = 0, s1 = n_frames-1;
+    for (int f = 0; f < n_frames; f++) if (energy[f] > thr) { s0 = f; break; }
+    for (int f = n_frames-1; f >= 0; f--) if (energy[f] > thr) { s1 = f; break; }
+    if (s1 <= s0) return 0;
+    
+    char words[MAX_WORDS][MAX_WORD_LEN];
+    int nw = parse_sentence(sentence, words);
+    if (nw == 0) return 0;
+    
+    int chars[MAX_WORDS];
+    int total_chars = 0;
+    for (int i = 0; i < nw; i++) {
+        chars[i] = (int)strlen(words[i]);
+        total_chars += chars[i];
+    }
+    
+    int span = s1 - s0 + 1;
+    int pos = s0;
+    for (int i = 0; i < nw; i++) {
+        int len = (int)((double)chars[i] / total_chars * span);
+        if (i == nw-1) len = span - (pos - s0);
+        out[i].start_frame = pos;
+        out[i].end_frame = pos + len - 1;
+        strncpy(out[i].word, words[i], MAX_WORD_LEN-1);
+        out[i].word[MAX_WORD_LEN-1] = 0;
+        pos += len;
+    }
+    return nw;
+}
+
+// ═══════════════════════════════════════════════════════════
+// PARALLEL TICK: each frame = one moment
+//   - 64 frequency channels (normalize mel)
+//   - Each channel value → lights 4 Hilbert positions (one per floor rotation)
+//   - Amplitude → tower (81 levels)
+//   - Pattern per frame = 4×64 lights (parallel snapshots)
+//
+// Word fingerprint = SUM of parallel snapshots over its frames
+// ═══════════════════════════════════════════════════════════
+typedef struct {
+    uint32_t hits[N_FLOORS][N_CHANNELS];   // how often each (floor,pos) lit
+    uint32_t tower_hist[N_FLOORS][N_CHANNELS][TOWER];  // amplitude distribution
+    int n_frames;
+} TickPattern;
+
+// Build parallel-tick pattern over a word's frames
+void build_tick_pattern(const double mel[][N_MELS], int start, int end,
+                        TickPattern *p) {
+    memset(p, 0, sizeof(TickPattern));
+    p->n_frames = end - start + 1;
+    
+    for (int f = start; f <= end; f++) {
+        // Normalize frame
+        double mn = 1e10, mx = -1e10;
+        for (int m = 0; m < N_MELS; m++) {
+            if (mel[f][m] < mn) mn = mel[f][m];
+            if (mel[f][m] > mx) mx = mel[f][m];
+        }
+        double rg = mx - mn;
+        if (rg < 1e-10) rg = 1.0;
+        
+        // Downsample 128 mel → 64 channels (avg pairs)
+        double ch[64];
+        for (int c = 0; c < 64; c++)
+            ch[c] = 0.5*(mel[f][c*2] + mel[f][c*2+1]);
+        
+        // Normalize channels → amplitude 0..1 FIRST (log values are negative
+        // so raw thresholding is nonsense)
+        double ch_min = 1e10, ch_max = -1e10;
+        for (int c = 0; c < 64; c++) {
+            if (ch[c] < ch_min) ch_min = ch[c];
+            if (ch[c] > ch_max) ch_max = ch[c];
+        }
+        double ch_rg = ch_max - ch_min;
+        if (ch_rg < 1e-10) ch_rg = 1.0;
+        double amp_ch[64];
+        for (int c = 0; c < 64; c++)
+            amp_ch[c] = (ch[c] - ch_min) / ch_rg;   // 0..1
+        
+        // STANDOUT: TOP-K channels only (sparse — harmonic signature)
+        // "เสียงจุดไหน stand out ก็ trigger switch"
+        // K = 8 (LFM 8 codebooks / 8 harmonic bands)
+        const int TOP_K = 8;
+        int top_idx[8] = {0};
+        double top_val[8] = {-1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0};
+        for (int c = 0; c < 64; c++) {
+            for (int k = 0; k < TOP_K; k++) {
+                if (amp_ch[c] > top_val[k]) {
+                    for (int j = TOP_K-1; j > k; j--) {
+                        top_idx[j] = top_idx[j-1];
+                        top_val[j] = top_val[j-1];
+                    }
+                    top_idx[k] = c;
+                    top_val[k] = amp_ch[c];
+                    break;
+                }
+            }
+        }
+        
+        // Parallel slam Top-K into 4 Hilbert grids (same tick!)
+        for (int k = 0; k < TOP_K; k++) {
+            int c = top_idx[k];
+            if (top_val[k] < 0) break;
+            double amp = top_val[k];
+            int tower = (int)(amp * (TOWER-1));
+            if (tower > TOWER-1) tower = TOWER-1;
+            if (tower < 0) tower = 0;
+            
+            for (int fl = 0; fl < N_FLOORS; fl++) {
+                uint8_t pos = h_map[fl][c];
+                p->hits[fl][pos]++;
+                p->tower_hist[fl][pos][tower]++;
+            }
+        }
+    }
+}
+
+// Compare two tick patterns
+// 1. Cosine of hit-count vector (weighted: how OFTEN each position lit)
+// 2. Tower profile similarity (cosine of amplitude hist per shared position)
+double tick_hit_cos(const TickPattern *a, const TickPattern *b, int floor) {
+    double dot = 0, na = 0, nb = 0;
+    for (int c = 0; c < N_CHANNELS; c++) {
+        dot += (double)a->hits[floor][c] * b->hits[floor][c];
+        na += (double)a->hits[floor][c] * a->hits[floor][c];
+        nb += (double)b->hits[floor][c] * b->hits[floor][c];
+    }
+    return (sqrt(na)*sqrt(nb) > 0) ? dot / (sqrt(na)*sqrt(nb)) : 0.0;
+}
+
+double tower_cos(const TickPattern *a, const TickPattern *b, int floor) {
+    double dot = 0, na = 0, nb = 0;
+    for (int c = 0; c < N_CHANNELS; c++) {
+        if (!a->hits[floor][c] || !b->hits[floor][c]) continue;
+        for (int t = 0; t < TOWER; t++) {
+            dot += (double)a->tower_hist[floor][c][t] * b->tower_hist[floor][c][t];
+            na += (double)a->tower_hist[floor][c][t] * a->tower_hist[floor][c][t];
+            nb += (double)b->tower_hist[floor][c][t] * b->tower_hist[floor][c][t];
+        }
+    }
+    return (sqrt(na)*sqrt(nb) > 0) ? dot / (sqrt(na)*sqrt(nb)) : 0.0;
+}
+
+double tick_confidence(const TickPattern *a, const TickPattern *b, int floor) {
+    double j = tick_hit_cos(a, b, floor);      // weighted light agreement
+    double tc = tower_cos(a, b, floor);        // amplitude profile
+    return 0.6*j + 0.4*tc;
+}
+
+int main(int argc, char **argv) {
+    if (argc < 4) {
+        printf("Usage: %s -- <wav1> \"sentence1\" <wav2> \"sentence2\" ...\n", argv[0]);
+        return 1;
+    }
+    init_all();
+    
+    int n_files = (argc - 1) / 2;
+    if (n_files > 10) n_files = 10;
+    int idx = 1;
+    if (strcmp(argv[1], "--") == 0) idx = 2;
+    
+    printf("=== Hilbert PARALLEL TICK v14 ===\n");
+    printf("4 floors = 4 rotated views of SAME tick (0/90/180/270)\n");
+    printf("Per tick: %d ch × %d floors × %d tower = %d\n\n",
+           N_CHANNELS, N_FLOORS, TOWER, GEO_FULL);
+    
+    double (*mel[10])[N_MELS];
+    int frames[10];
+    AlignedWord words[10][MAX_WORDS];
+    int nwords[10];
+    
+    for (int fi = 0; fi < n_files; fi++) {
+        const char *wavpath = argv[idx + fi*2];
+        const char *sentence = argv[idx + fi*2 + 1];
+        
+        int ns;
+        int16_t *s = read_wav(wavpath, &ns);
+        if (!s) { printf("Error: %s\n", wavpath); return 1; }
+        int mf = (ns - N_FFT) / HOP_SIZE;
+        if (mf > MAX_FRAMES) mf = MAX_FRAMES;
+        mel[fi] = malloc(sizeof(double) * mf * N_MELS);
+        frames[fi] = compute_mel(s, ns, mel[fi]);
+        
+        double *energy = malloc(sizeof(double) * frames[fi]);
+        frame_rms(s, ns, energy, &(int){frames[fi]});
+        nwords[fi] = align_words(sentence, energy, frames[fi], words[fi]);
+        free(energy); free(s);
+        
+        printf("File %d: %s (%d frames, %d words)\n", fi+1, wavpath, frames[fi], nwords[fi]);
+    }
+    
+    // ═══ Same-word vs diff-word ═══
+    printf("\n═══ SAME-WORD Matching (per floor view) ═══\n");
+    int same_pairs = 0;
+    double same_c[4] = {0,0,0,0}, same_j[4] = {0,0,0,0};
+    
+    // Heap: TickPattern per word (each is ~84KB: 4×64×81 uint32)
+    TickPattern (*patterns)[MAX_WORDS] = malloc(sizeof(TickPattern) * n_files * MAX_WORDS);
+    if (!patterns) { printf("OOM\n"); return 1; }
+    
+    for (int fi = 0; fi < n_files; fi++) {
+        for (int w = 0; w < nwords[fi]; w++) {
+            TickPattern *p = &patterns[fi][w];
+            memset(p, 0, sizeof(TickPattern));
+            build_tick_pattern(mel[fi], words[fi][w].start_frame,
+                               words[fi][w].end_frame, p);
+        }
+    }
+    
+    for (int fa = 0; fa < n_files; fa++) {
+        for (int wa = 0; wa < nwords[fa]; wa++) {
+            for (int fb = fa+1; fb < n_files; fb++) {
+                for (int wb = 0; wb < nwords[fb]; wb++) {
+                    if (strcmp(words[fa][wa].word, words[fb][wb].word) != 0) continue;
+                    same_pairs++;
+                    for (int fl = 0; fl < 4; fl++) {
+                        same_c[fl] += tick_confidence(&patterns[fa][wa], &patterns[fb][wb], fl);
+                        same_j[fl] += tick_hit_cos(&patterns[fa][wa], &patterns[fb][wb], fl);
+                    }
+                }
+            }
+        }
+    }
+    
+    printf("═══ DIFFERENT-WORD Baseline ═══\n");
+    int diff_pairs = 0;
+    double diff_c[4] = {0,0,0,0}, diff_j[4] = {0,0,0,0};
+    
+    for (int fa = 0; fa < n_files; fa++) {
+        for (int wa = 0; wa < nwords[fa]; wa++) {
+            for (int fb = fa+1; fb < n_files; fb++) {
+                for (int wb = 0; wb < nwords[fb]; wb++) {
+                    if (strcmp(words[fa][wa].word, words[fb][wb].word) == 0) continue;
+                    if (abs(wa - wb) > 2) continue;
+                    diff_pairs++;
+                    for (int fl = 0; fl < 4; fl++) {
+                        diff_c[fl] += tick_confidence(&patterns[fa][wa], &patterns[fb][wb], fl);
+                        diff_j[fl] += tick_hit_cos(&patterns[fa][wa], &patterns[fb][wb], fl);
+                    }
+                }
+            }
+        }
+    }
+    
+    printf("\n═══ SUMMARY ═══\n");
+    printf("  Same-word pairs: %d, Diff-word pairs: %d\n", same_pairs, diff_pairs);
+    for (int fl = 0; fl < 4; fl++) {
+        double sm = same_pairs ? same_c[fl]/same_pairs : 0;
+        double df = diff_pairs ? diff_c[fl]/diff_pairs : 0;
+        double smj = same_pairs ? same_j[fl]/same_pairs : 0;
+        double dfj = diff_pairs ? diff_j[fl]/diff_pairs : 0;
+        printf("  Floor %d: same C=%.4f (J=%.4f) | diff C=%.4f (J=%.4f) | gap=%.4f\n",
+               fl, sm, smj, df, dfj, sm - df);
+    }
+    
+    // Cross-view consensus: same word = 4 views agree (low variance)
+    printf("\n  Cross-view consensus:\n");
+    double cons_same = 0, cons_diff = 0;
+    int cs = 0, cd = 0;
+    for (int fa = 0; fa < n_files; fa++) {
+        for (int wa = 0; wa < nwords[fa]; wa++) {
+            for (int fb = fa+1; fb < n_files; fb++) {
+                for (int wb = 0; wb < nwords[fb]; wb++) {
+                    int is_same = (strcmp(words[fa][wa].word, words[fb][wb].word) == 0);
+                    if (abs(wa - wb) > 2 && !is_same) continue;
+                    double c[4];
+                    for (int fl = 0; fl < 4; fl++)
+                        c[fl] = tick_confidence(&patterns[fa][wa], &patterns[fb][wb], fl);
+                    double mean = 0;
+                    for (int fl = 0; fl < 4; fl++) mean += c[fl];
+                    mean /= 4.0;
+                    double var = 0;
+                    for (int fl = 0; fl < 4; fl++) var += (c[fl]-mean)*(c[fl]-mean);
+                    var /= 4.0;
+                    double cons = mean - var;
+                    if (is_same) { cons_same += cons; cs++; }
+                    else { cons_diff += cons; cd++; }
+                }
+            }
+        }
+    }
+    printf("  Same-word consensus: %.4f | Diff-word consensus: %.4f | gap=%.4f\n",
+           cs ? cons_same/cs : 0, cd ? cons_diff/cd : 0,
+           (cs ? cons_same/cs : 0) - (cd ? cons_diff/cd : 0));
+    
+    for (int fi = 0; fi < n_files; fi++) free(mel[fi]);
+    return 0;
+}
