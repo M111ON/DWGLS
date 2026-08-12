@@ -47,20 +47,27 @@ static inline uint32_t hilbert_idx(uint32_t x, uint32_t y, uint32_t n) {
 }
 
 // Hilbert switch map: channel → hilbert position (8×8 = 64)
-// Each FLOOR uses a DIFFERENT rotation/shift of the ruler (4 perspectives)
+// Each FLOOR = Hilbert curve ROTATED 90° — different start corner (user rule:
+// flip/rotate between floors, every floor starts at a different corner)
+//   Floor 0: 0°     start corner A (identity)
+//   Floor 1: 90°CW  start corner B
+//   Floor 2: 180°   start corner C
+//   Floor 3: 270°CW start corner D
+// Same data lands at 4 DIFFERENT maze positions per floor (4 perspectives)
 static uint8_t h_map[4][N_CHANNELS];
 
 void init_hilbert(void) {
-    // Floor 0: identity. Floor f: rotate channel order (fold ×2)
     for (int f = 0; f < 4; f++) {
         for (uint32_t i = 0; i < N_CHANNELS; i++) {
-            // channel → grid coordinate, then apply permutation per floor
-            uint32_t c = i;
-            if (f == 1) c = (i * 3) % 64;        // stride 3 (coprime)
-            if (f == 2) c = (i * 5) % 64;        // stride 5 (coprime)
-            if (f == 3) c = (i * 7) % 64;        // stride 7 (coprime)
-            uint32_t x = c % 8, y = c / 8;
-            h_map[f][i] = (uint8_t)hilbert_idx(x, y, 8);
+            uint32_t x = i % 8, y = i / 8;
+            uint32_t tx = x, ty = y;
+            switch (f) {
+                case 0: /* identity */               break;
+                case 1: /* rotate  90° CW */ tx = 7 - y; ty = x;     break;
+                case 2: /* rotate 180°    */ tx = 7 - x; ty = 7 - y; break;
+                case 3: /* rotate 270° CW */ tx = y;     ty = 7 - x; break;
+            }
+            h_map[f][i] = (uint8_t)hilbert_idx(tx, ty, 8);
         }
     }
     for (int i = 0; i < 400; i++)
@@ -388,6 +395,44 @@ int main(int argc, char **argv) {
         printf("  Floor %d: same C=%.4f (J=%.4f) | diff C=%.4f (J=%.4f) | gap=%.4f\n",
                fl, sm, smj, df, dfj, sm - df);
     }
+    
+    // Cross-floor consensus: same word must agree across all 4 rotated views
+    // (variance across floors LOW for same word, HIGH for different)
+    printf("\n  Cross-floor consensus (4 rotated views):\n");
+    double cons_same = 0, cons_diff = 0;
+    int cs = 0, cd = 0;
+    
+    for (int fa = 0; fa < n_files; fa++) {
+        for (int wa = 0; wa < nwords[fa]; wa++) {
+            for (int fb = fa+1; fb < n_files; fb++) {
+                for (int wb = 0; wb < nwords[fb]; wb++) {
+                    int is_same = (strcmp(words[fa][wa].word, words[fb][wb].word) == 0);
+                    if (abs(wa - wb) > 2 && !is_same) continue;
+                    
+                    // Per-floor confidence
+                    double c[4];
+                    for (int fl = 0; fl < 4; fl++)
+                        c[fl] = confidence(&grids[fa][wa], &grids[fb][wb], fl);
+                    
+                    // Mean + variance
+                    double mean = 0;
+                    for (int fl = 0; fl < 4; fl++) mean += c[fl];
+                    mean /= 4.0;
+                    double var = 0;
+                    for (int fl = 0; fl < 4; fl++) var += (c[fl]-mean)*(c[fl]-mean);
+                    var /= 4.0;
+                    
+                    // Consensus = mean − variance penalty (agree = high, stable)
+                    double cons = mean - var;
+                    if (is_same) { cons_same += cons; cs++; }
+                    else { cons_diff += cons; cd++; }
+                }
+            }
+        }
+    }
+    printf("  Same-word consensus: %.4f | Diff-word consensus: %.4f | gap=%.4f\n",
+           cs ? cons_same/cs : 0, cd ? cons_diff/cd : 0,
+           (cs ? cons_same/cs : 0) - (cd ? cons_diff/cd : 0));
     
     return 0;
 }
