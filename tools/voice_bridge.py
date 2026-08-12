@@ -164,6 +164,25 @@ def extract_speaker_fingerprint(audio_path):
     }
 
 
+def fft_pitch_shift(wav, sr, semitones):
+    """FFT-based pitch shift."""
+    factor = 2 ** (semitones / 12.0)
+    fft = np.fft.rfft(wav)
+    freqs = np.fft.rfftfreq(len(wav), 1/sr)
+    shifted_freqs = freqs * factor
+    magnitudes = np.abs(fft)
+    phases = np.angle(fft)
+    new_fft = np.zeros_like(fft)
+    for i, f in enumerate(shifted_freqs):
+        if f < sr/2:
+            idx = int(f * len(wav) / sr)
+            if idx < len(new_fft):
+                new_fft[idx] = fft[i]
+    shifted = np.fft.irfft(new_fft)
+    shifted = shifted / np.max(np.abs(shifted)) * np.max(np.abs(wav))
+    return shifted[:len(wav)]
+
+
 def generate_tts(text, output_path):
     """Generate TTS using FastSpeech2 + HiFi-GAN."""
     print("  [3/4] Generating TTS with FastSpeech2...")
@@ -222,7 +241,39 @@ def generate_tts(text, output_path):
         "energy": energy.numpy(),
         "phonemes": phonemes,
         "word_bounds": word_bounds,
+        "wav": x,  # Return wav for pitch shifting
     }
+
+
+def apply_speaker_fingerprint(tts_wav, fp_original, sr=SAMPLE_RATE):
+    """Apply speaker's pitch fingerprint to TTS output via FFT pitch shift."""
+    import scipy.signal
+    print("  [Applying speaker fingerprint...]")
+
+    # Get TTS pitch
+    tts_16k = scipy.signal.resample(tts_wav, int(len(tts_wav) * 16000 / sr)).astype(np.float32)
+    frame_len, hop = 320, 160
+    tts_pitches = []
+    for i in range((len(tts_16k) - frame_len) // hop):
+        frame = tts_16k[i*hop:i*hop+frame_len]
+        e = np.sqrt(np.mean(frame**2))
+        if e > 0.01:
+            corr = np.correlate(frame, frame, mode='full')[len(frame)-1:]
+            d = np.diff(corr); zeros = np.where(d > 0)[0]
+            if len(zeros) > 1:
+                peak = zeros[0] + np.argmax(corr[zeros[0]:zeros[0]+100])
+                if 20 < peak < 200: tts_pitches.append(16000/peak)
+    tts_mean = np.mean(tts_pitches) if tts_pitches else 200.9
+
+    # Compute semitones needed
+    orig_mean = fp_original["mean_pitch"]
+    if orig_mean > 0 and tts_mean > 0:
+        semitones = 12 * np.log2(orig_mean / tts_mean)
+        print(f"    TTS pitch: {tts_mean:.1f}Hz → target: {orig_mean:.1f}Hz ({semitones:+.2f} semitones)")
+        return fft_pitch_shift(tts_wav, sr, semitones)
+    else:
+        print(f"    Skipping pitch shift (no valid pitch)")
+        return tts_wav
 
 
 def compare_fingerprints(fp_original, fp_tts):
@@ -293,13 +344,24 @@ def main():
     print()
     tts_result = generate_tts(text, args.output)
 
-    # Step 4: Extract TTS fingerprint and compare
-    print("\n  [4/4] Comparing speaker fingerprints...")
+    # Step 4: Apply speaker fingerprint (pitch shift)
+    print("\n  [4/4] Applying speaker fingerprint...")
+    tts_wav = tts_result["wav"]
+    tts_shifted = apply_speaker_fingerprint(tts_wav, fp_original)
+
+    # Save shifted output
+    import scipy.io.wavfile as wf
+    x_shifted = np.clip(tts_shifted, -1.0, 1.0)
+    wf.write(args.output, SAMPLE_RATE, (x_shifted * 32767).astype(np.int16))
+    print(f"    saved: {args.output}")
+
+    # Step 5: Compare fingerprints
+    print("\n  [5/5] Comparing speaker fingerprints...")
     fp_tts = extract_speaker_fingerprint(args.output)
     comparison = compare_fingerprints(fp_original, fp_tts)
 
-    print(f"    TTS mean pitch: {comparison['tts_mean_pitch']:.1f} Hz")
-    print(f"    TTS mean energy: {comparison['tts_mean_energy']:.4f}")
+    print(f"    Original pitch: {comparison['original_mean_pitch']:.1f}Hz")
+    print(f"    TTS pitch: {comparison['tts_mean_pitch']:.1f}Hz")
     print(f"    pitch correlation: {comparison['pitch_correlation']:.4f}")
     print(f"    energy correlation: {comparison['energy_correlation']:.4f}")
 
