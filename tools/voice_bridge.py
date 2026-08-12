@@ -1,32 +1,43 @@
 #!/usr/bin/env python3
-"""voice_bridge.py — Integrated voice translation wrapper
-Combines: Whisper ASR → Speaker Fingerprint → FS2 TTS → HiFi-GAN output
+"""voice_bridge.py — Production Voice Translation Wrapper
+
+Pipeline: Input Audio → Whisper ASR → Speaker Fingerprint → FS2 TTS → FFT Pitch Shift → Output
 
 Usage:
-  python tools/voice_bridge.py --input "path/to/audio.wav" --output "path/to/output.wav"
-  python tools/voice_bridge.py --input "path/to/audio.wav" --text "custom text to speak"
+  python tools/voice_bridge.py --input "path/to/audio.wav"
+  python tools/voice_bridge.py --input "path/to/audio.wav" --output "output.wav"
+  python tools/voice_bridge.py --input "path/to/audio.wav" --text "custom text"
+  python tools/voice_bridge.py --input "path/to/audio.wav" --no-pitch-shift
 
-Pipeline:
-  1. Whisper: transcribe input audio (get text + timestamps)
-  2. Mel analysis: extract speaker fingerprint (pitch, energy, timbre)
-  3. FS2 TTS: generate speech from text
-  4. HiFi-GAN: convert mel to waveform
-  5. Output: translated audio with speaker's voice characteristics
+Requirements:
+  - torch, transformers, scipy, numpy
+  - speechbrain (pip install speechbrain)
+  - whisper.cpp (I:/whisper.cpp/build_cuda7/bin/whisper-cli.exe)
+  - FastSpeech2 + HiFi-GAN models (auto-downloaded)
+
+Author: DWGLS Project
 """
-import argparse, os, sys, subprocess, warnings
+import argparse
+import os
+import sys
+import subprocess
+import warnings
 import numpy as np
 
 warnings.filterwarnings("ignore")
 
-# ── Configuration ──────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+# Configuration
+# ═══════════════════════════════════════════════════════════════════
 WHISPER_CLI = "I:/whisper.cpp/build_cuda7/bin/whisper-cli.exe"
 WHISPER_MODEL = "I:/whisper.cpp/models/ggml-base.bin"
 FS2_MODEL = "speechbrain/tts-fastspeech2-ljspeech"
 HIFIGAN_MODEL = "speechbrain/tts-hifigan-ljspeech"
 SAMPLE_RATE = 22050  # FS2 output sample rate
-HOP_SIZE = 256       # FS2 hop size
 
-# ── CMU-style mini lexicon (for FS2 phoneme input) ────────────
+# ═══════════════════════════════════════════════════════════════════
+# CMU-style mini lexicon (for FS2 phoneme input)
+# ═══════════════════════════════════════════════════════════════════
 LEXICON = {
     "the": "DH AH", "quick": "K W IH K", "brown": "B R AW N",
     "fox": "F AA K S", "jumps": "JH AH M P S", "over": "OW V ER",
@@ -68,47 +79,12 @@ LEXICON = {
     "changes": "CH EY N JH IH Z", "economy": "IH K AA N AH M IY",
     "require": "R IH K W AY ER", "long": "L AO NG",
     "term": "T ER M", "plastic": "P L AE S T IH K",
-    "today's": "T UW D EY Z",
 }
 
 
-def text_to_phonemes(text):
-    """Convert text to phonemes using mini lexicon."""
-    words = text.lower().split()
-    all_phonemes = []
-    word_boundaries = []  # (start_idx, end_idx, word)
-    for w in words:
-        w2 = w.strip(".,!?;:'\"-()'")
-        start = len(all_phonemes)
-        if w2 in LEXICON:
-            phs = LEXICON[w2].split()
-        else:
-            print(f"  [lexicon miss: '{w2}' → spn]", file=sys.stderr)
-            phs = ["spn"]
-        all_phonemes.extend(phs)
-        word_boundaries.append((start, len(all_phonemes), w))
-    return all_phonemes, word_boundaries
-
-
-def run_whisper(audio_path):
-    """Run Whisper ASR and return transcription."""
-    print("  [1/4] Running Whisper ASR...")
-    result = subprocess.run(
-        [WHISPER_CLI, "-m", WHISPER_MODEL, "-f", audio_path, "-np", "--no-timestamps"],
-        capture_output=True, text=True, timeout=120
-    )
-    # Extract transcription from output (between blank line and last line)
-    lines = result.stdout.strip().split("\n")
-    # Find the transcription line (after the blank line)
-    text = ""
-    for line in lines:
-        line = line.strip()
-        if line and not line.startswith("[") and not line.startswith("whisper"):
-            text = line
-            break
-    return text
-
-
+# ═══════════════════════════════════════════════════════════════════
+# Speaker Fingerprint Extraction
+# ═══════════════════════════════════════════════════════════════════
 def extract_speaker_fingerprint(audio_path):
     """Extract speaker fingerprint from audio (pitch contour, energy envelope)."""
     import scipy.io.wavfile as wf
@@ -121,7 +97,6 @@ def extract_speaker_fingerprint(audio_path):
 
     audio = data.astype(np.float32) / 32768.0
 
-    # Simple pitch estimation via autocorrelation
     frame_len = 320  # 20ms at 16kHz
     hop = 160  # 10ms
     n_frames = (len(audio) - frame_len) // hop
@@ -132,20 +107,17 @@ def extract_speaker_fingerprint(audio_path):
         start = i * hop
         frame = audio[start:start + frame_len]
 
-        # Energy
         energy = np.sqrt(np.mean(frame ** 2))
         energies.append(energy)
 
-        # Pitch via autocorrelation
-        if energy > 0.01:  # Only for voiced frames
+        if energy > 0.01:
             corr = np.correlate(frame, frame, mode='full')
             corr = corr[len(corr)//2:]
-            # Find first peak after zero crossing
             d = np.diff(corr)
             zeros = np.where(d > 0)[0]
             if len(zeros) > 1:
                 peak = zeros[0] + np.argmax(corr[zeros[0]:zeros[0]+100])
-                if 20 < peak < 200:  # 80-800 Hz pitch range
+                if 20 < peak < 200:
                     pitch = 16000 / peak
                 else:
                     pitch = 0
@@ -164,14 +136,15 @@ def extract_speaker_fingerprint(audio_path):
     }
 
 
+# ═══════════════════════════════════════════════════════════════════
+# FFT Pitch Shift
+# ═══════════════════════════════════════════════════════════════════
 def fft_pitch_shift(wav, sr, semitones):
     """FFT-based pitch shift."""
     factor = 2 ** (semitones / 12.0)
     fft = np.fft.rfft(wav)
     freqs = np.fft.rfftfreq(len(wav), 1/sr)
     shifted_freqs = freqs * factor
-    magnitudes = np.abs(fft)
-    phases = np.angle(fft)
     new_fft = np.zeros_like(fft)
     for i, f in enumerate(shifted_freqs):
         if f < sr/2:
@@ -183,12 +156,53 @@ def fft_pitch_shift(wav, sr, semitones):
     return shifted[:len(wav)]
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Text to Phonemes
+# ═══════════════════════════════════════════════════════════════════
+def text_to_phonemes(text):
+    """Convert text to phonemes using mini lexicon."""
+    words = text.lower().split()
+    all_phonemes = []
+    word_boundaries = []
+    for w in words:
+        w2 = w.strip(".,!?;:'\"-()'")
+        start = len(all_phonemes)
+        if w2 in LEXICON:
+            phs = LEXICON[w2].split()
+        else:
+            print(f"  [lexicon miss: '{w2}' → spn]", file=sys.stderr)
+            phs = ["spn"]
+        all_phonemes.extend(phs)
+        word_boundaries.append((start, len(all_phonemes), w))
+    return all_phonemes, word_boundaries
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Whisper ASR
+# ═══════════════════════════════════════════════════════════════════
+def run_whisper(audio_path):
+    """Run Whisper ASR and return transcription."""
+    result = subprocess.run(
+        [WHISPER_CLI, "-m", WHISPER_MODEL, "-f", audio_path, "-np", "--no-timestamps"],
+        capture_output=True, text=True, timeout=120
+    )
+    lines = result.stdout.strip().split("\n")
+    text = ""
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith("[") and not line.startswith("whisper"):
+            text = line
+            break
+    return text
+
+
+# ═══════════════════════════════════════════════════════════════════
+# FastSpeech2 TTS
+# ═══════════════════════════════════════════════════════════════════
 def generate_tts(text, output_path):
     """Generate TTS using FastSpeech2 + HiFi-GAN."""
-    print("  [3/4] Generating TTS with FastSpeech2...")
-
     # Stub speechbrain integrations
-    import sys, types
+    import types
     _mk = lambda n: sys.modules.setdefault(n, types.ModuleType(n))
     _mk("speechbrain.integrations.huggingface.wordemb.util").expand_to_chars = \
         lambda emb, seq, seq_len, ws: emb
@@ -214,41 +228,35 @@ def generate_tts(text, output_path):
         savedir="models/tts-hifigan-ljspeech"
     )
 
-    # Convert text to phonemes
     phonemes, word_bounds = text_to_phonemes(text)
-    print(f"    phonemes: {len(phonemes)} tokens")
 
-    # Generate mel + durations + pitch + energy
     mel, dur, pitch, energy = fs2.encode_phoneme(
         [phonemes], pace=1.0
     )
-    print(f"    mel: {tuple(mel.shape)} | dur sum: {dur.sum().item():.1f} frames")
 
-    # Decode to waveform
     wav = vocoder.decode_batch(mel)
 
-    # Save as WAV
     import scipy.io.wavfile as wf
     x = wav.squeeze().numpy()
     x = np.clip(x, -1.0, 1.0)
-    wf.write(output_path, SAMPLE_RATE, (x * 32767).astype(np.int16))
-    print(f"    saved: {output_path}")
 
     return {
+        "wav": x,
         "mel": mel.numpy(),
         "durations": dur.numpy(),
         "pitch": pitch.numpy(),
         "energy": energy.numpy(),
         "phonemes": phonemes,
         "word_bounds": word_bounds,
-        "wav": x,  # Return wav for pitch shifting
     }
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Speaker Fingerprint Application
+# ═══════════════════════════════════════════════════════════════════
 def apply_speaker_fingerprint(tts_wav, fp_original, sr=SAMPLE_RATE):
     """Apply speaker's pitch fingerprint to TTS output via FFT pitch shift."""
     import scipy.signal
-    print("  [Applying speaker fingerprint...]")
 
     # Get TTS pitch
     tts_16k = scipy.signal.resample(tts_wav, int(len(tts_wav) * 16000 / sr)).astype(np.float32)
@@ -269,16 +277,18 @@ def apply_speaker_fingerprint(tts_wav, fp_original, sr=SAMPLE_RATE):
     orig_mean = fp_original["mean_pitch"]
     if orig_mean > 0 and tts_mean > 0:
         semitones = 12 * np.log2(orig_mean / tts_mean)
-        print(f"    TTS pitch: {tts_mean:.1f}Hz → target: {orig_mean:.1f}Hz ({semitones:+.2f} semitones)")
         return fft_pitch_shift(tts_wav, sr, semitones)
     else:
-        print(f"    Skipping pitch shift (no valid pitch)")
         return tts_wav
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Fingerprint Comparison
+# ═══════════════════════════════════════════════════════════════════
 def compare_fingerprints(fp_original, fp_tts):
     """Compare speaker fingerprints between original and TTS."""
-    # Align lengths
+    import scipy.signal
+
     min_len = min(len(fp_original["pitches"]), len(fp_tts["pitches"]))
 
     orig_p = fp_original["pitches"][:min_len]
@@ -286,7 +296,6 @@ def compare_fingerprints(fp_original, fp_tts):
     orig_e = fp_original["energies"][:min_len]
     tts_e = fp_tts["energies"][:min_len]
 
-    # Filter voiced frames for pitch comparison
     voiced = (orig_p > 0) & (tts_p > 0)
     if voiced.sum() > 10:
         pitch_corr = np.corrcoef(orig_p[voiced], tts_p[voiced])[0, 1]
@@ -305,76 +314,88 @@ def compare_fingerprints(fp_original, fp_tts):
     }
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════════════════════════
 def main():
-    ap = argparse.ArgumentParser(description="Voice Bridge: ASR → Speaker Fingerprint → TTS")
-    ap.add_argument("--input", required=True, help="Input audio file")
-    ap.add_argument("--output", default=None, help="Output audio file (default: input_stem_output.wav)")
+    ap = argparse.ArgumentParser(
+        description="Voice Bridge: ASR → Speaker Fingerprint → TTS → Pitch Shift",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --input recording.wav
+  %(prog)s --input recording.wav --output translated.wav
+  %(prog)s --input recording.wav --text "Hello world"
+  %(prog)s --input recording.wav --no-pitch-shift
+        """
+    )
+    ap.add_argument("--input", required=True, help="Input audio file (WAV)")
+    ap.add_argument("--output", default=None, help="Output audio file (default: input_stem_bridge.wav)")
     ap.add_argument("--text", default=None, help="Custom text to speak (skip ASR)")
+    ap.add_argument("--no-pitch-shift", action="store_true", help="Skip pitch shift (keep FS2 default)")
     args = ap.parse_args()
 
     if args.output is None:
         stem = os.path.splitext(args.input)[0]
         args.output = f"{stem}_bridge.wav"
 
-    print("=== Voice Bridge: Integrated Wrapper ===")
-    print(f"  input:  {args.input}")
-    print(f"  output: {args.output}")
+    print("╔══════════════════════════════════════════════════════════════╗")
+    print("║           Voice Bridge: ASR → Fingerprint → TTS            ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+    print(f"  Input:  {args.input}")
+    print(f"  Output: {args.output}")
+    print()
 
-    # Step 1: ASR (or use provided text)
+    # Step 1: ASR
     if args.text:
         text = args.text
-        print(f"\n  [1/4] Using provided text: {text}")
+        print(f"[1/4] Using provided text")
     else:
-        print()
+        print("[1/4] Running Whisper ASR...")
         text = run_whisper(args.input)
-        print(f"    transcription: {text}")
+        print(f"  → {text}")
 
     if not text.strip():
         print("  ERROR: No text to synthesize")
-        return
+        return 1
 
-    # Step 2: Extract speaker fingerprint from original
-    print("\n  [2/4] Extracting speaker fingerprint...")
+    # Step 2: Speaker Fingerprint
+    print("\n[2/4] Extracting speaker fingerprint...")
     fp_original = extract_speaker_fingerprint(args.input)
-    print(f"    mean pitch: {fp_original['mean_pitch']:.1f} Hz")
-    print(f"    mean energy: {fp_original['mean_energy']:.4f}")
-    print(f"    pitch std: {fp_original['pitch_std']:.1f} Hz")
+    print(f"  → pitch: {fp_original['mean_pitch']:.1f} Hz, energy: {fp_original['mean_energy']:.4f}")
 
     # Step 3: Generate TTS
-    print()
+    print("\n[3/4] Generating TTS...")
     tts_result = generate_tts(text, args.output)
 
-    # Step 4: Apply speaker fingerprint (pitch shift)
-    print("\n  [4/4] Applying speaker fingerprint...")
-    tts_wav = tts_result["wav"]
-    tts_shifted = apply_speaker_fingerprint(tts_wav, fp_original)
+    # Step 4: Apply Speaker Fingerprint
+    if args.no_pitch_shift:
+        print("\n[4/4] Skipping pitch shift (--no-pitch-shift)")
+        tts_wav = tts_result["wav"]
+    else:
+        print("\n[4/4] Applying speaker fingerprint (FFT pitch shift)...")
+        tts_wav = apply_speaker_fingerprint(tts_result["wav"], fp_original)
 
-    # Save shifted output
+    # Save output
     import scipy.io.wavfile as wf
-    x_shifted = np.clip(tts_shifted, -1.0, 1.0)
-    wf.write(args.output, SAMPLE_RATE, (x_shifted * 32767).astype(np.int16))
-    print(f"    saved: {args.output}")
+    x = np.clip(tts_wav, -1.0, 1.0)
+    wf.write(args.output, SAMPLE_RATE, (x * 32767).astype(np.int16))
+    print(f"  → saved: {args.output}")
 
-    # Step 5: Compare fingerprints
-    print("\n  [5/5] Comparing speaker fingerprints...")
+    # Compare fingerprints
+    print("\n[Comparison]")
     fp_tts = extract_speaker_fingerprint(args.output)
     comparison = compare_fingerprints(fp_original, fp_tts)
+    print(f"  Original pitch: {comparison['original_mean_pitch']:.1f} Hz")
+    print(f"  TTS pitch:      {comparison['tts_mean_pitch']:.1f} Hz")
+    print(f"  Error:          {abs(comparison['original_mean_pitch'] - comparison['tts_mean_pitch']):.1f} Hz")
+    print(f"  Correlation:    pitch={comparison['pitch_correlation']:.3f}, energy={comparison['energy_correlation']:.3f}")
 
-    print(f"    Original pitch: {comparison['original_mean_pitch']:.1f}Hz")
-    print(f"    TTS pitch: {comparison['tts_mean_pitch']:.1f}Hz")
-    print(f"    pitch correlation: {comparison['pitch_correlation']:.4f}")
-    print(f"    energy correlation: {comparison['energy_correlation']:.4f}")
-
-    # Summary
-    print("\n=== SUMMARY ===")
-    print(f"  Input: {args.input}")
-    print(f"  Output: {args.output}")
-    print(f"  Transcription: {text[:80]}{'...' if len(text) > 80 else ''}")
-    print(f"  Speaker preservation:")
-    print(f"    pitch: {comparison['pitch_correlation']:.4f}")
-    print(f"    energy: {comparison['energy_correlation']:.4f}")
-    print(f"  Status: {'GOOD' if comparison['pitch_correlation'] > 0.5 else 'NEEDS WORK'}")
+    print("\n╔══════════════════════════════════════════════════════════════╗")
+    print("║                         DONE                               ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
