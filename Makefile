@@ -35,6 +35,7 @@ TIER1 := \
   test_geo_sid_loader \
   test_geo_prune \
   test_geo_fs \
+  test_geo_fs_mdim \
   test_monitor \
   test_phi_microscope \
   test_safetensors_reader \
@@ -110,6 +111,19 @@ tier2: | $(BUILD)
 	echo "───────────────────────────────────────"; \
 	echo "TIER2 — PASS: $$pass / $$((pass+fail))  FAIL: $$fail"
 
+# ── CLI binaries ─────────────────────────────────────
+MDIM_CLI_BIN := $(BUILD)/mdim_cli
+
+mdim_cli: tools/mdim_cli.c core/geofs_mdim.h | $(BUILD)
+	@echo "▶ BUILD  mdim_cli"
+	$(CC) $(CFLAGS) -o $(MDIM_CLI_BIN) tools/mdim_cli.c $(LDFLAGS)
+	@echo "✅ mdim_cli ready → ./$(MDIM_CLI_BIN) help"
+
+bench_mdim_timeline: tools/bench_mdim_timeline.c core/geofs_mdim.h | $(BUILD)
+	@echo "▶ BUILD  bench_mdim_timeline"
+	$(CC) $(CFLAGS) -o $(BUILD)/bench_mdim_timeline tools/bench_mdim_timeline.c $(LDFLAGS)
+	@echo "✅ bench ready → ./$(BUILD)/bench_mdim_timeline"
+
 # ── Housekeeping ──────────────────────────────────────
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -146,6 +160,13 @@ help:
 	@echo "make vis GGUF=I:/model/model.gguf — visualizer with model"
 	@echo "make clean      — remove build/"
 	@echo "make list       — list all tests"
+
+# ── GeoFS MDIM CLI ───────────────────────────────────────
+mdim: $(BUILD)/mdim_cli
+
+$(BUILD)/mdim_cli: tools/mdim_cli.c core/geofs_mdim.h | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/mdim_cli tools/mdim_cli.c $(LDFLAGS)
+	@echo "✅ mdim_cli ready — create/summon/get/list/info/view/history/unsummon"
 
 # ── FGLS_vis: geometry visualizer + console ─────────────
 GGUF ?= I:/model/SmolLM2-360M-Instruct.Q8_0.gguf
