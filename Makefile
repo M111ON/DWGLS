@@ -39,6 +39,11 @@ TIER1 := \
   test_monitor \
   test_phi_microscope \
   test_safetensors_reader \
+  test_tess_index_frame \
+  test_tess_scale_log \
+  test_tess_frame_seek \
+  test_tess_magnify \
+  test_tess_hex_delta \
   test_bfs_persist \
   test_bfs_stability \
   test_geo_bfs_hub \

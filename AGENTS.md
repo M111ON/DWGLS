@@ -127,6 +127,44 @@ DWGLS/
 - `geo_codec_verify()` = binary truth
 - Ratio < 1.0 must prove via decode (never trust encode-only)
 
+## 🧭 Rescope — Scale Timeline + 1 Tesseract (2026-08-14)
+
+> เราไม่ได้สร้าง geometry — ใช้โครงสร้าง combinatorial เป็น template ในการ map ข้อมูลเท่านั้น
+
+### Scale = Constant Magnification Rate (ไม่ใช่ geometry)
+- scale = อัตราการขยายคงที่ (multiplicative): `s(t) = s₀·kᵗ` — **ไม่มี 0, ไม่มีที่สิ้นสุด**
+- ico/dodeca sealed/spike = พาหะนำเสนอเท่านั้น ไม่ใช่แก่นแท้
+- หน้าต่างที่เลือกใช้ = `(0, 20736)`; 20736 = 144² = 1728×12 = 18 tes × 8 cube × 144
+- ทุกอย่างขยับพร้อมกันหมด (global scale เดียว) → **append ไม่ต้อง tag scale**
+
+### Hyperbolic Side = Passive Scale-Change Log
+- ฝั่ง hyperbolic เก็บ **log ของ scale-change events** (แต่ละ entry = route/path สั้นๆ ของ transform)
+- delta ∝ จำนวน scale-change events ไม่ใช่ขนาดข้อมูล → จุดที่ compression ได้จริง
+- อ่านที่ scale ตรงกับตอน append → lossless ตรงๆ (log ว่าง)
+- อ่านที่ scale ไม่ตรง → replay log (deterministic) → lossless อีกครั้ง
+
+### 1 Tesseract = Frame-as-Index (scope ปัจจุบัน)
+- **1 tesseract = 8 cube × 144 slots = 1152** (= 8 vertex × 144 scale positions)
+- **cube 0 = index frame** (144 slots = 8 blocks × 18): base/len/stride(route)/checksum ของทุก cube
+- cube 1..7 = data (1008 slots), scatter ด้วย route (stride coprime กับ 144 → เดินครบ)
+- **มอง 1 frame → retrieve ครบ 8 cube** — lossless, deterministic
+- **Magnify glass**: 20736÷4 = 5184 (36 scales × 144 vertices); กลาง window = glass,
+  อัตรา invert กับฝั่งตรงข้าม (a_w × a_{w+72} ≡ 1 mod 144) + offset เล็กน้อย;
+  ฝั่งตรงข้าม = hyperbolic side (compressed, เก็บ delta log)
+- **Delta จริง (hex_tile)**: scale เปลี่ยน → hyperbolic side เก็บ residual layer
+  ของ view (hex_tile predict+residual, 144 tiles × 7 cells); replay = decode → lossless;
+  ฝั่งตรงข้าม (antipode) = เก็บ delta ครบ; structured data → delta เล็ก (FLAT tiles)
+- พิสูจน์แล้ว: `tests/test_tess_index_frame.c` (7/7), `test_tess_scale_log.c` (10/10),
+  `test_tess_frame_seek.c` (8/8), `test_tess_magnify.c` (12/12), `test_tess_hex_delta.c` (10/10)
+
+### 18tes (6ico compound) = FUTURE UPGRADE
+- 18 tesseracts × 8 cube × 144 = 20736 — ยังไม่ implement, ซับซ้อนเกินไปตอนนี้
+
+### Working Rule: No Geometry Construction
+- ห้าม compute vertex/face/projection/coordinate จริง — ใช้แค่โครงสร้าง (cube/octant/route/vertex)
+  เป็นโครงร่างการ map: int ล้วน, LUT static, modular arithmetic เท่านั้น
+- scale/hyperbolic/4D = ฟังก์ชัน map บน address ไม่ใช่ space ที่ต้องสร้าง
+
 ## 📋 Session Start
 
 1. Check `core/geo_param_grid.h` — understand current GeoType
