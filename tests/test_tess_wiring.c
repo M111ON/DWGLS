@@ -168,7 +168,6 @@ int main(void) {
         geo_unified_init(&v);
         
         /* fill all slots */
-        uint8_t data[64] = {0};
         for (uint32_t i = 0; i < TESS_TOTAL; i++) {
             uint8_t *ptr = (uint8_t *)v.slot_ptrs[i];
             if (ptr) {

@@ -31,8 +31,6 @@ TIER1 := \
   kis_birds_eye \
   kis_multi_container \
   kis_scale_test \
-  test_geo_inference \
-  test_geo_sid_loader \
   test_geo_prune \
   test_geo_fs \
   test_geo_fs_mdim \
@@ -42,8 +40,13 @@ TIER1 := \
   test_tess_index_frame \
   test_tess_scale_log \
   test_tess_frame_seek \
+  test_tess_scale_dedup \
   test_tess_magnify \
   test_tess_hex_delta \
+  test_tess_trace \
+  test_tess_wiring \
+  test_v5_collision \
+  test_gguf_box \
   test_bfs_persist \
   test_bfs_stability \
   test_geo_bfs_hub \
@@ -53,7 +56,8 @@ TIER1 := \
 # ── Tier 2: need gguf_reader.h or geo_frame_seek.h ────
 # (removed: kis_codec_v5_test, kis_codec_v6_test, kis_map_roundtrip,
 #  kis_real_gguf_test, test_geo_sid_verify, test_rail_hub,
-#  test_qwen3_microscope, test_real_gguf_microscope — cross-repo deps, hang on fail)
+#  test_qwen3_microscope, test_real_gguf_microscope, test_geo_inference,
+#  test_geo_sid_loader — cross-repo deps, hang on fail)
 TIER2 := \
   kis_codec_v4_test \
   test_geo_tensor_hub \
