@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>12-gon Stride Topology</title>
+<script>p5.disableFriendlyErrors=true;</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:#0d1117;overflow:hidden;height:100%;font-family:monospace}
+canvas{display:block}
+#ui{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);display:flex;gap:6px;z-index:10;background:rgba(13,17,23,0.95);padding:5px 12px;border-radius:10px;border:1px solid #30363d;color:#8b949e;font-size:11px;align-items:center}
+#ui button{background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:2px 8px;border-radius:5px;cursor:pointer;font-size:11px}
+#ui button:hover{background:#30363d}
+#ui button.act{border-color:#58a6ff;background:#1a2332}
+#step-lbl{min-width:260px;text-align:center;color:#58a6ff;font-weight:600;font-size:11px}
+</style>
+</head>
+<body><div id=ui>
+<button id=bp>◀</button><span id=step-lbl>1/7</span><button id=bn>▶</button>
+<span>|</span><button id=set1 class=act>×4</button>
+<button id=set2>×12</button><button id=set3>×16</button>
+</div>
+<script>
+let st=1,setting=1;
+const PI=Math.PI,S=Math.sin,C=Math.cos;
+const L=[
+  'Stride-1 → Dodecagon (entry)',
+  'Stride-2 → Hexagon (exit gate)',
+  'Stride-3 → 3 Squares = 3 Towers',
+  'Stride-4 → 4 Wang Tiles',
+  'Stride-6 → 6 Fold Diameters',
+  'Entry/Exit Paths',
+  'Full System'
+];
+function setAct(n){
+  setting=n;
+  for(let i=1;i<=3;i++){
+    let b=document.getElementById('set'+i);
+    b.className=i==n?'act':'';
+  }
+}
+function setup(){
+  createCanvas(windowWidth,windowHeight);
+  document.getElementById('bp').onclick=()=>{st=max(1,st-1)};
+  document.getElementById('bn').onclick=()=>{st=min(7,st+1)};
+  document.getElementById('set1').onclick=()=>setAct(1);
+  document.getElementById('set2').onclick=()=>setAct(2);
+  document.getElementById('set3').onclick=()=>setAct(3);
+}
+function keyPressed(){
+  if(key==='ArrowRight')st=min(7,st+1);
+  if(key==='ArrowLeft')st=max(1,st-1);
+}
+function windowResized(){resizeCanvas(windowWidth,windowHeight)}
+
+function draw(){
+  background('#0d1117');
+  let R=min(width,height)*0.38,cx=width*0.5,cy=height*0.48;
+  let nm=['1(A)','2(B)','3(C)','4(D)','5(E)','6(F)','7(G)','8(H)','9(I)','10(J)','11(K)','12(L)'];
+  let grids=[4,12,16];
+  let grid=grids[setting-1];
+  
+  // 12-gon vertices
+  let V=[];
+  for(let k=0;k<12;k++){let a=-PI/2+k*PI/6;V.push({x:cx+R*C(a),y:cy+R*S(a)});}
+  
+  // Grid
+  stroke('#21262d');strokeWeight(0.3);
+  for(let i=0;i<width;i+=40){line(i,0,i,height);line(0,i,width,i);}
+  
+  // ─── Step 1: Dodecagon ───
+  if(st>=1){
+    stroke('#58a6ff');strokeWeight(1.2);noFill();
+    beginShape();for(let v of V)vertex(v.x,v.y);endShape(CLOSE);
+    fill('rgba(88,166,255,0.5)');noStroke();
+    for(let v of V)circle(v.x,v.y,3);
+    fill('rgba(88,166,255,0.3)');textSize(7);textAlign(CENTER);
+    for(let k=0;k<12;k++){let a=-PI/2+k*PI/6+PI/12;text(nm[k],V[k].x+C(a)*R*0.1,V[k].y+S(a)*R*0.1+2);}
+    stroke('rgba(88,166,255,0.06)');strokeWeight(0.3);
+    for(let k=0;k<12;k++)line(cx,cy,V[k].x,V[k].y);
+    fill('#58a6ff');noStroke();textAlign(LEFT);textSize(10);
+    text('Stride-1: 1→2→3→4→5→6→7→8→9→10→11→12',cx-R+10,cy+R+30);
+    text('= Dodecagon (entry wall)',cx-R+10,cy+R+46);
+  }
+  
+  // ─── Step 2: Hexagon exit gate ───
+  if(st>=2){
+    fill('rgba(57,185,80,0.08)');stroke('#3fb950');strokeWeight(2);
+    beginShape();for(let k=1;k<12;k+=2)vertex(V[k].x,V[k].y);endShape(CLOSE);
+    fill('rgba(57,185,80,0.6)');noStroke();
+    for(let k=1;k<12;k+=2)circle(V[k].x,V[k].y,5);
+    fill('rgba(57,185,80,0.8)');textSize(8);textAlign(CENTER);
+    let odd_nums='1357911';
+    for(let i=0;i<6;i++){let k=i*2+1;text(odd_nums[i],V[k].x+V[k].x/R*10,V[k].y+V[k].y/R*10+2);}
+    fill('#3fb950');noStroke();textAlign(LEFT);textSize(10);
+    text('Stride-2: 1→3→5→7→9→11',cx-R+10,cy+R+30);
+    text('= Hexagon = Exit Gate',cx-R+10,cy+R+46);
+  }
+  
+  // ─── Step 3: 3 Squares ───
+  if(st>=3){
+    let sqs=[[0,3,6,9],[1,4,7,10],[2,5,8,11]];
+    let cols=['rgba(163,113,247,0.10)','rgba(0,200,100,0.10)','rgba(255,160,60,0.10)'];
+    let strks=['#a371f7','#00cc66','#ff8833'];
+    for(let t=0;t<3;t++){
+      fill(cols[t]);stroke(strks[t]);strokeWeight(1.5);
+      beginShape();for(let i of sqs[t])vertex(V[i].x,V[i].y);endShape(CLOSE);
+    }
+    fill('#a371f7');noStroke();textAlign(LEFT);textSize(10);
+    text('Stride-3: 1→4→7→10 / 2→5→8→11 / 3→6→9→12',cx-R+10,cy+R+30);
+    text('= 3 Squares = 3 Towers',cx-R+10,cy+R+46);
+  }
+  
+  // ─── Step 4: 4 Wang Tiles ───
+  if(st>=4){
+    let tris=[[0,4,8],[1,5,9],[2,6,10],[3,7,11]];
+    let wcols=['rgba(248,81,73,0.12)','rgba(88,166,255,0.12)','rgba(163,113,247,0.12)','rgba(57,185,80,0.12)'];
+    let wstk=['#f85149','#58a6ff','#a371f7','#3fb950'];
+    for(let t=0;t<4;t++){
+      fill(wcols[t]);stroke(wstk[t]);strokeWeight(1);
+      beginShape();for(let i of tris[t])vertex(V[i].x,V[i].y);endShape(CLOSE);
+    }
+    fill('#f85149');noStroke();textAlign(LEFT);textSize(10);
+    text('Stride-4: 1→5→9 / 2→6→10 / 3→7→11 / 4→8→12',cx-R+10,cy+R+30);
+    text('= 4 Equilateral Δ = Wang Tiles',cx-R+10,cy+R+46);
+  }
+  
+  // ─── Step 5: 6 Fold Diameters ───
+  if(st>=5){
+    let diams=[[0,6],[1,7],[2,8],[3,9],[4,10],[5,11]];
+    stroke('rgba(255,200,60,0.3)');strokeWeight(0.8);
+    for(let d of diams)line(V[d[0]].x,V[d[0]].y,V[d[1]].x,V[d[1]].y);
+    fill('#ffcc33');noStroke();textAlign(LEFT);textSize(10);
+    text('Stride-6: 1→7 / 2→8 / 3→9 / 4→10 / 5→11 / 6→12',cx-R+10,cy+R+30);
+    text('= 6 Diameters = Fold lines',cx-R+10,cy+R+46);
+  }
+  
+  // ─── Step 6: Entry/Exit Paths ───
+  if(st>=6){
+    fill('rgba(88,166,255,0.08)');stroke('#58a6ff');strokeWeight(2);
+    beginShape();for(let v of V)vertex(v.x,v.y);endShape(CLOSE);
+    fill('rgba(57,185,80,0.15)');stroke('#3fb950');strokeWeight(2);
+    beginShape();for(let k=1;k<12;k+=2)vertex(V[k].x,V[k].y);endShape(CLOSE);
+    // Exit arrows
+    for(let k=1;k<12;k+=2){
+      let a=-PI/2+k*PI/6;
+      let ex=V[k].x+C(a)*R*1.05,ey=V[k].y+S(a)*R*1.05;
+      stroke('rgba(57,185,80,0.4)');strokeWeight(1.2);noFill();
+      line(V[k].x,V[k].y,ex,ey);
+      fill('rgba(57,185,80,0.4)');noStroke();
+      triangle(ex,ey,ex-C(a-PI/6)*7,ey-S(a-PI/6)*7,ex-C(a+PI/6)*7,ey+S(a+PI/6)*7);
+    }
+    fill('#58a6ff');noStroke();textAlign(LEFT);textSize(10);
+    text('⟵ Entry: Stride-1 (full perimeter)',cx-R+10,cy+R+30);
+    fill('#3fb950');
+    text('⟶ Exit: Stride-2 (odd: 1→3→5→7→9→11)',cx-R+10,cy+R+46);
+  }
+  
+  // ─── Step 7: Full System + Subdivision ───
+  if(st>=7){
+    // Draw 3 squares with N×N grid on each
+    let sqs=[[0,3,6,9],[1,4,7,10],[2,5,8,11]];
+    let strks=['#a371f7','#00cc66','#ff8833'];
+    let cols=['rgba(163,113,247,0.06)','rgba(0,200,100,0.06)','rgba(255,160,60,0.06)'];
+    
+    for(let t=0;t<3;t++){
+      let s=sqs[t];
+      // Get square vertices
+      let p=[V[s[0]],V[s[1]],V[s[2]],V[s[3]]];
+      
+      // Fill square
+      fill(cols[t]);stroke(strks[t]);strokeWeight(1.2);
+      beginShape();for(let i=0;i<4;i++)vertex(p[i].x,p[i].y);endShape(CLOSE);
+      
+      // Draw N×N subdivision grid on this square
+      let g=grid;
+      stroke(strks[t]);strokeWeight(0.3+0.3*t);
+      
+      for(let i=1;i<g;i++){
+        let u=i/g;
+        // Edge AB → DC interpolation for horizontal lines
+        let x1=lerp(p[0].x,p[1].x,u);
+        let y1=lerp(p[0].y,p[1].y,u);
+        let x2=lerp(p[3].x,p[2].x,u);
+        let y2=lerp(p[3].y,p[2].y,u);
+        line(x1,y1,x2,y2);
+        // Edge AD → BC interpolation for vertical lines
+        let x3=lerp(p[0].x,p[3].x,u);
+        let y3=lerp(p[0].y,p[3].y,u);
+        let x4=lerp(p[1].x,p[2].x,u);
+        let y4=lerp(p[1].y,p[2].y,u);
+        line(x3,y3,x4,y4);
+      }
+      
+      // Grid count label in center of each square
+      let cx2=(p[0].x+p[1].x+p[2].x+p[3].x)/4;
+      let cy2=(p[0].y+p[1].y+p[2].y+p[3].y)/4;
+      fill(strks[t]);noStroke();textAlign(CENTER);textSize(7);
+      text(g+'×'+g,cx2,cy2+3);
+    }
+    
+    // Entry/Exit overlay
+    fill('rgba(88,166,255,0.04)');stroke('#58a6ff');strokeWeight(0.5);
+    beginShape();for(let v of V)vertex(v.x,v.y);endShape(CLOSE);
+    fill('rgba(57,185,80,0.06)');stroke('#3fb950');strokeWeight(0.5);
+    beginShape();for(let k=1;k<12;k+=2)vertex(V[k].x,V[k].y);endShape(CLOSE);
+    
+    fill('#58a6ff');noStroke();textAlign(LEFT);textSize(10);
+    text('3 Towers × '+grid+'×'+grid+' grid',cx-R+10,cy+R+30);
+    text('⬡ Exit: stride-2 on innermost hexagon',cx-R+10,cy+R+46);
+    text('⟐ Total cells: '+(grid*grid*3),cx-R+10,cy+R+62);
+  }
+  
+  // Center
+  fill('rgba(255,255,255,0.4)');noStroke();circle(cx,cy,2);
+  fill('#8b949e');textSize(9);textAlign(LEFT);text(grid+'×'+grid+'×3towers',12,14);
+  
+  fill('#58a6ff');noStroke();textAlign(CENTER);textSize(10);
+  text(st+'/7 — '+L[st-1],cx,height-48);
+  document.getElementById('step-lbl').textContent='['+grid+'] '+st+'/7 '+L[st-1];
+}
+</script>
+</body>
+</html>
