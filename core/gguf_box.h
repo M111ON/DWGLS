@@ -131,12 +131,12 @@ static inline int gguf_box_build_mock(GGUFBox *box,
     if (!box->is_open) return -1;
 
     /* Calculate total size needed:
-     *   header: 16 bytes (magic + version + n_tensors + n_kv)
+     *   header: 24 bytes = magic(4) + version(4) + n_tensors(8) + n_kv(8)
      *   KV entries: 0 (we don't need them for routing)
      *   tensor info: n_tensors * (name_len + 4 + dims + dtype + offset)
      *   alignment padding
      */
-    size_t hdr_size = 16;  /* MockGGUFHeader */
+    size_t hdr_size = 24;  /* MockGGUFHeader — actual written size */
     size_t kv_size = 0;    /* No KV for mock */
 
     /* Calculate tensor info size */

@@ -127,6 +127,11 @@ DWGLS/
 - `geo_codec_verify()` = binary truth
 - Ratio < 1.0 must prove via decode (never trust encode-only)
 
+### Design Principles (Timeline-First)
+- เลือกใช้ **timeline-first**: int, base-2 scale, ไม่มี 0, ทุกสถานะ deterministic + replay ได้
+- hyperbolic/residual = เก็บส่วนต่างที่ explicit; geometry = template เท่านั้น (ไม่ใช่ตัวคำนวณ)
+- เหตุผล + หลักฐาน: `docs/TIMELINE_FIRST_FOUNDATION.md`
+
 ## 🧭 Rescope — Scale Timeline + 1 Tesseract (2026-08-14)
 
 > เราไม่ได้สร้าง geometry — ใช้โครงสร้าง combinatorial เป็น template ในการ map ข้อมูลเท่านั้น
