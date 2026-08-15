@@ -95,9 +95,14 @@ static inline int gguf_box_open(GGUFBox *box, const char *path) {
         e->offset = box->reader.offsets[i];
         e->size   = box->reader.sizes[i];
         e->dtype  = box->reader.dtypes[i];
-        e->n_dims = 0;
-        e->dims[0] = e->dims[1] = e->dims[2] = e->dims[3] = 0;
-        e->n_elems = 0;
+        /* real dims from reader — llama.cpp requires the actual shape */
+        e->n_dims = box->reader.n_dims[i];
+        e->dims[0] = (uint32_t)box->reader.dims[(size_t)i * 4 + 0];
+        e->dims[1] = (uint32_t)box->reader.dims[(size_t)i * 4 + 1];
+        e->dims[2] = (uint32_t)box->reader.dims[(size_t)i * 4 + 2];
+        e->dims[3] = (uint32_t)box->reader.dims[(size_t)i * 4 + 3];
+        e->n_elems = 1;
+        for (uint32_t d = 0; d < e->n_dims; d++) e->n_elems *= e->dims[d];
 
         /* Zero-copy pointer */
         if (box->reader.base &&
@@ -146,7 +151,7 @@ static inline int gguf_box_build_mock(GGUFBox *box,
         tensor_info_size += 8;                    /* name length */
         tensor_info_size += strlen(e->name);      /* name */
         tensor_info_size += 4;                    /* n_dims */
-        tensor_info_size += 4 * 4;               /* dims[4] */
+        tensor_info_size += 4 * 8;               /* dims[4] — int64 each per GGUF spec */
         tensor_info_size += 4;                    /* dtype */
         tensor_info_size += 8;                    /* offset */
     }
@@ -180,10 +185,13 @@ static inline int gguf_box_build_mock(GGUFBox *box,
         memcpy(buf + pos, &nlen, 8); pos += 8;
         memcpy(buf + pos, e->name, nlen); pos += nlen;
 
-        /* n_dims + dims */
-        uint32_t nd = 4;
+        /* n_dims + dims (int64 per GGUF spec) */
+        uint32_t nd = e->n_dims;
         memcpy(buf + pos, &nd, 4); pos += 4;
-        memcpy(buf + pos, e->dims, 16); pos += 16;
+        for (uint32_t d = 0; d < 4; d++) {
+            int64_t dv = (int64_t)e->dims[d];
+            memcpy(buf + pos, &dv, 8); pos += 8;
+        }
 
         /* dtype */
         memcpy(buf + pos, &e->dtype, 4); pos += 4;

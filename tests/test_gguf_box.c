@@ -40,7 +40,8 @@ static uint32_t pass_count = 0, fail_count = 0;
 
 /* parse the mock header back: returns 0 on success, fills tensor info */
 static int parse_mock(const uint8_t *buf, size_t size, uint32_t n_tensors,
-                      const char **names, uint32_t *dtypes, uint64_t *offsets) {
+                      const char **names, uint32_t *dtypes, uint64_t *offsets,
+                      uint32_t *ndims_out, uint64_t *dims_out) {
     if (size < 16) return -1;
     const uint8_t *p = buf;
     uint32_t magic, version;
@@ -65,8 +66,18 @@ static int parse_mock(const uint8_t *buf, size_t size, uint32_t n_tensors,
         p += nlen;
         if (p + 4 > buf + size) return -6;
         uint32_t nd; memcpy(&nd, p, 4); p += 4;
-        if (p + 16 > buf + size) return -7;
-        p += 16;                              /* dims[4] */
+        if (nd > 4 || p + 32 > buf + size) return -7;
+        if (ndims_out) ndims_out[i] = nd;
+        if (dims_out) {                        /* dims are int64 per GGUF spec */
+            for (uint32_t d = 0; d < 4; d++) {
+                int64_t dv;
+                memcpy(&dv, p, 8);
+                dims_out[(size_t)i * 4 + d] = (uint64_t)dv;
+                p += 8;
+            }
+        } else {
+            p += 32;                          /* dims[4] — 4 × int64 */
+        }
         if (p + 4 > buf + size) return -8;
         if (dtypes) { memcpy(&dtypes[i], p, 4); }
         p += 4;
@@ -135,7 +146,10 @@ int main(int argc, char **argv) {
         const char **names = (const char **)calloc(box.n_tensors, sizeof(char *));
         uint32_t *dtypes = (uint32_t *)calloc(box.n_tensors, 4);
         uint64_t *offsets = (uint64_t *)calloc(box.n_tensors, 8);
-        int rc = parse_mock(mock, mock_sz, box.n_tensors, names, dtypes, offsets);
+        uint32_t *ndims = (uint32_t *)calloc(box.n_tensors, 4);
+        uint64_t *dims = (uint64_t *)calloc(box.n_tensors, 32);
+        int rc = parse_mock(mock, mock_sz, box.n_tensors, names, dtypes, offsets,
+                            ndims, dims);
         CHECK("T3b: mock parses back (magic/version/n_tensors/kv=0)", rc == 0);
         if (rc == 0) {
             int ok = 1;
@@ -147,7 +161,7 @@ int main(int argc, char **argv) {
             CHECK("T3c: mock tensor info (name/dtype/offset) == box entries", ok);
         }
         for (uint32_t i = 0; i < box.n_tensors; i++) free((void *)names[i]);
-        free(names); free(dtypes); free(offsets); free(mock);
+        free(names); free(dtypes); free(offsets); free(ndims); free(dims); free(mock);
     }
 
     /* T4: route by name — the llama.cpp request path */
@@ -199,13 +213,55 @@ int main(int argc, char **argv) {
               meta < total_data / 100u);
     }
 
-    /* known gap — dims not stored by the reader (reported, not a failure) */
+    /* T7: real dims — reader stores shape, mock writes it, llama.cpp can read it */
     {
-        const GGUFBoxEntry *e = gguf_box_entry(&box, 0);
-        printf("\n  [known gap] reader parses tensor dims but does not store them\n");
-        printf("              → mock header writes n_dims=4, dims={0,0,0,0} —\n");
-        printf("              llama.cpp needs real dims (follow-up fix)\n");
-        (void)e;
+        int ok_nd = 1, ok_dims = 1, ok_elems = 1;
+        uint64_t total_elems = 0;
+        for (uint32_t i = 0; i < box.n_tensors; i++) {
+            const GGUFBoxEntry *e = gguf_box_entry(&box, i);
+            if (!e || e->n_dims == 0 || e->n_dims > 4) { ok_nd = 0; break; }
+            uint64_t prod = 1;
+            for (uint32_t d = 0; d < e->n_dims; d++) {
+                prod *= e->dims[d];
+                if (e->dims[d] == 0) { ok_dims = 0; break; }
+            }
+            if (e->n_elems != prod) { ok_elems = 0; break; }
+            total_elems += prod;
+        }
+        /* n_elems must be consistent with byte size & dtype block size */
+        int ok_size = 1;
+        for (uint32_t i = 0; i < box.n_tensors; i++) {
+            const GGUFBoxEntry *e = gguf_box_entry(&box, i);
+            uint64_t min_bytes = e->n_elems;   /* ≥1 byte per element for any type */
+            if (e->size < min_bytes) { ok_size = 0; break; }
+        }
+        printf("     total elements across %u tensors: %llu\n", box.n_tensors,
+               (unsigned long long)total_elems);
+        CHECK("T7: every tensor has n_dims in 1..4", ok_nd);
+        CHECK("T7b: all dims non-zero (real shapes, not {0,0,0,0})", ok_dims);
+        CHECK("T7c: n_elems == product of dims", ok_elems);
+        CHECK("T7d: byte size consistent with element count", ok_size);
+    }
+
+    /* T8: mock header dims == reader dims (the scion carries the real shape) */
+    {
+        uint8_t *mock = NULL;
+        size_t mock_sz = 0;
+        gguf_box_build_mock(&box, &mock, &mock_sz);
+        uint32_t *nd = (uint32_t *)calloc(box.n_tensors, 4);
+        uint64_t *dm = (uint64_t *)calloc(box.n_tensors, 32);
+        int rc = parse_mock(mock, mock_sz, box.n_tensors, NULL, NULL, NULL, nd, dm);
+        int ok = (rc == 0);
+        if (rc == 0) {
+            for (uint32_t i = 0; i < box.n_tensors && ok; i++) {
+                const GGUFBoxEntry *e = gguf_box_entry(&box, i);
+                if (nd[i] != e->n_dims) { ok = 0; break; }
+                for (uint32_t d = 0; d < e->n_dims; d++)
+                    if (dm[(size_t)i * 4 + d] != e->dims[d]) { ok = 0; break; }
+            }
+        }
+        CHECK("T8: mock header dims == reader dims (shape survives the graft)", ok);
+        free(nd); free(dm); free(mock);
     }
 
     gguf_box_close(&box);

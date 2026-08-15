@@ -24,6 +24,15 @@
 #define HYP_AXIS_Y  1u
 #define HYP_AXIS_Z  2u
 
+/* axis = slot / HYP_AXIS_SLOTS — each axis OWNS a contiguous 6912-slot band
+ * (axis 0: [0,6912), axis 1: [6912,13824), axis 2: [13824,20736)).
+ * Roundtrip kis_to_hyperbolic_axis()/hyperbolic_to_kis_axis() is bijective
+ * ONLY when the same axis is passed both ways; passing slot % 3 is a
+ * semantic bug (that is a phase, not the owning axis). */
+static inline uint8_t hyperbolic_axis_of(uint32_t slot) {
+    return (uint8_t)(slot / HYP_AXIS_SLOTS);
+}
+
 /* ═══════════════════════════════════════════════════════
    Complex number
    ═══════════════════════════════════════════════════════ */
@@ -97,7 +106,7 @@ static inline uint32_t hyperbolic_to_kis_axis(HypComplex w, uint8_t axis) {
    Teleport Seek (3-axis)
    ═══════════════════════════════════════════════════════ */
 static inline uint32_t teleport_seek(uint32_t src, uint32_t dst) {
-    uint8_t axis = dst / HYP_AXIS_SLOTS;
+    uint8_t axis = hyperbolic_axis_of(dst);
     if (axis > 2) axis = 2;
     HypComplex w = kis_to_hyperbolic_axis(dst, axis);
     return hyperbolic_to_kis_axis(w, axis);
@@ -138,19 +147,26 @@ static inline DualBalance3 dual_balance_3axis(uint32_t step) {
 static inline int hyperbolic_selftest(void) {
     int pass = 0, fail = 0;
     
-    /* Test 1: Roundtrip per axis */
+    /* Test 1: EXHAUSTIVE roundtrip — all 20736 slots, axis = owner band.
+     * Proves bijectivity: kis_to_hyperbolic_axis then back == original. */
+    for (uint32_t slot = 0; slot < HYP_KIS_SLOTS; slot++) {
+        uint8_t a = hyperbolic_axis_of(slot);
+        HypComplex w = kis_to_hyperbolic_axis(slot, a);
+        uint32_t back = hyperbolic_to_kis_axis(w, a);
+        if (back == slot) { pass++; } else { fail++; }
+    }
+    
+    /* Test 2: per-axis bijectivity — each band roundtrips within itself */
     for (uint8_t a = 0; a < 3; a++) {
-        uint32_t base = a * HYP_AXIS_SLOTS;
-        uint32_t test_cases[] = {0, 100, 500, 1000, 3456};
-        for (int i = 0; i < 5; i++) {
-            uint32_t slot = base + test_cases[i];
+        for (uint32_t s = 0; s < HYP_AXIS_SLOTS; s++) {
+            uint32_t slot = a * HYP_AXIS_SLOTS + s;
             HypComplex w = kis_to_hyperbolic_axis(slot, a);
             uint32_t back = hyperbolic_to_kis_axis(w, a);
             if (back == slot) { pass++; } else { fail++; }
         }
     }
     
-    /* Test 2: Three-phase balance */
+    /* Test 3: Three-phase balance */
     for (uint32_t s = 0; s < 100; s++) {
         DualBalance3 b = dual_balance_3axis(s);
         uint32_t sum = 0;

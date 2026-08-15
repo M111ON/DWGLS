@@ -45,7 +45,7 @@ static int test_record_vs_calc(void) {
 
     for (uint32_t i = 0; i < GEO_SLOTS; i++) {
         uint32_t slot = geo_slot(i);
-        uint8_t axis = slot % 3;
+        uint8_t axis = hyperbolic_axis_of(slot);   /* owner band, NOT %% 3 */
 
         /* Calc path (trig) */
         HypComplex h = kis_to_hyperbolic_axis(slot, axis);
@@ -158,7 +158,7 @@ static int test_fingerprint_consistency(void) {
 
     for (uint32_t i = 0; i < GEO_SLOTS; i++) {
         uint32_t slot = geo_slot(i);
-        uint8_t axis = slot % 3;
+        uint8_t axis = hyperbolic_axis_of(slot);   /* owner band, NOT %% 3 */
         HypComplex h = kis_to_hyperbolic_axis(slot, axis);
 
         fp_slot[i] = slot;
@@ -283,7 +283,7 @@ static int test_scale_ratio(void) {
         uint32_t record = expected;
 
         /* Calc path: ทะลุจริงไหม? */
-        uint8_t axis = expected % 3;
+        uint8_t axis = hyperbolic_axis_of(expected);   /* owner band */
         HypComplex h = kis_to_hyperbolic_axis(expected, axis);
         uint32_t calc = hyperbolic_to_kis_axis(h, axis);
 
@@ -307,7 +307,7 @@ static int test_loop_roundtrip(void) {
 
     for (uint32_t i = 0; i < GEO_SLOTS; i++) {
         uint32_t slot = geo_slot(i);
-        uint8_t axis = slot % 3;
+        uint8_t axis = hyperbolic_axis_of(slot);   /* owner band, NOT %% 3 */
 
         /* KIS → Hyper → KIS */
         HypComplex h = kis_to_hyperbolic_axis(slot, axis);
@@ -319,26 +319,19 @@ static int test_loop_roundtrip(void) {
 
     printf("  KIS → Hyper → KIS: %d PASS, %d FAIL\n", pass, fail);
 
-    /* ตรวจ axis 0 เทียบกับ axis 1,2 */
-    int axis0_pass = 0, axis1_pass = 0, axis2_pass = 0;
-    for (uint32_t i = 0; i < GEO_SLOTS; i++) {
-        uint32_t slot = geo_slot(i);
-
-        for (uint8_t axis = 0; axis < 3; axis++) {
+    /* per-axis bijectivity: each axis band [a*6912, (a+1)*6912) roundtrips
+     * within itself — total must equal GEO_SLOTS */
+    int axis_pass = 0, axis_fail = 0;
+    for (uint8_t axis = 0; axis < 3; axis++) {
+        for (uint32_t s = 0; s < HYP_AXIS_SLOTS; s++) {
+            uint32_t slot = axis * HYP_AXIS_SLOTS + s;
             HypComplex h = kis_to_hyperbolic_axis(slot, axis);
             uint32_t back = hyperbolic_to_kis_axis(h, axis);
-
-            if (back == slot) {
-                if (axis == 0) axis0_pass++;
-                else if (axis == 1) axis1_pass++;
-                else axis2_pass++;
-            }
+            if (back == slot) axis_pass++; else axis_fail++;
         }
     }
-
-    printf("  Axis 0: %d/%d PASS\n", axis0_pass, GEO_SLOTS);
-    printf("  Axis 1: %d/%d PASS\n", axis1_pass, GEO_SLOTS);
-    printf("  Axis 2: %d/%d PASS\n\n", axis2_pass, GEO_SLOTS);
+    printf("  Per-axis (owner band): %d/%d PASS (%d FAIL)\n\n",
+           axis_pass, GEO_SLOTS, axis_fail);
 
     return fail;
 }
@@ -367,7 +360,7 @@ static void test_speed(void) {
     t0 = clock();
     for (uint32_t i = 0; i < n; i++) {
         uint32_t slot = geo_slot(i);
-        uint8_t axis = slot % 3;
+        uint8_t axis = hyperbolic_axis_of(slot);   /* owner band */
         HypComplex h = kis_to_hyperbolic_axis(slot, axis);
         uint32_t back = hyperbolic_to_kis_axis(h, axis);
         sink += back;

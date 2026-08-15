@@ -41,6 +41,9 @@ typedef struct {
     uint32_t *sizes;
     uint8_t  *dtypes;   /* per-tensor GGML type code (unused on old builds? no — always filled) */
     char   **names;
+    /* per-tensor shape: n_dims (0..4) + dims[4] row-major (n_tensors*4) */
+    uint8_t  *n_dims;
+    uint64_t *dims;
     /* bulk mode: whole file mapped into memory (NULL if not) */
     uint8_t *base;
     size_t   base_sz;
@@ -168,7 +171,10 @@ static inline int gguf_open(const char *path, GgufReader *r) {
         r->offsets = (uint64_t *)calloc(n_tensors, sizeof(uint64_t));
         r->sizes = (uint32_t *)calloc(n_tensors, sizeof(uint32_t));
         r->dtypes = (uint8_t *)calloc(n_tensors, sizeof(uint8_t));
-        if (!r->names || !r->offsets || !r->sizes || !r->dtypes) goto fail;
+        r->n_dims = (uint8_t *)calloc(n_tensors, sizeof(uint8_t));
+        r->dims   = (uint64_t *)calloc((size_t)n_tensors * 4, sizeof(uint64_t));
+        if (!r->names || !r->offsets || !r->sizes || !r->dtypes ||
+            !r->n_dims || !r->dims) goto fail;
 
     static const struct { uint16_t tsz; uint16_t blck; } tinfo[31] = {
         {4,   1},   /* GGML_TYPE_F32    = 0  */
@@ -216,12 +222,15 @@ static inline int gguf_open(const char *path, GgufReader *r) {
 
         uint32_t n_dims;
         if (gbuf_u32(&b, &n_dims) != 0) goto fail;
+        if (n_dims > 4) goto fail;
+        r->n_dims[i] = (uint8_t)n_dims;
 
         int64_t dims[4] = {1,1,1,1};
         for (uint32_t d = 0; d < n_dims; d++) {
             int64_t v;
             if (gbuf_u64(&b, (uint64_t*)&v) != 0) goto fail;
             dims[d] = v;
+            r->dims[(size_t)i * 4 + d] = (uint64_t)v;
         }
 
         uint32_t dtype;
@@ -285,6 +294,8 @@ static inline void gguf_close(GgufReader *r) {
     free(r->offsets);
         free(r->sizes);
         free(r->dtypes);
+        free(r->n_dims);
+        free(r->dims);
 #if defined(_WIN32)
     if (r->base) UnmapViewOfFile(r->base);
     if (r->hmap) CloseHandle(r->hmap);

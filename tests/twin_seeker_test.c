@@ -97,7 +97,7 @@ static TwinResult twin_seek(uint32_t global_slot, BoundRange bound) {
     r.kis_value = geo_inverse(global_slot);
 
     /* Hyper side — rich, float */
-    uint8_t axis = global_slot % 3;
+    uint8_t axis = hyperbolic_axis_of(global_slot);   /* owner band, NOT %% 3 */
     r.hyper_pos = kis_to_hyperbolic_axis(global_slot, axis);
     r.hyper_slot = hyperbolic_to_kis_axis(r.hyper_pos, axis);
 
@@ -131,7 +131,7 @@ static void benchmark_hyper_seek(uint32_t n) {
     clock_t t0 = clock();
     for (uint32_t i = 0; i < n; i++) {
         uint32_t slot = bound_slot(bound_create(BOUND_START, BOUND_END), i);
-        uint8_t axis = slot % 3;
+        uint8_t axis = hyperbolic_axis_of(slot);
         HypComplex h = kis_to_hyperbolic_axis(slot, axis);
         uint32_t back = hyperbolic_to_kis_axis(h, axis);
         sink += back;
@@ -196,24 +196,26 @@ int main(void) {
     /* ── Step 3: Roundtrip Proof ────────────────────────────────────────── */
     printf("\n═══ Step 3: Roundtrip Proof ═══\n\n");
 
-    int pass = 0, fail = 0;
+    int kis_pass = 0, kis_fail = 0, hyp_pass = 0, hyp_fail = 0;
     for (uint32_t i = 0; i < BOUND_SIZE; i++) {
         uint32_t slot = bound_slot(bound, i);
         TwinResult r = twin_seek(slot, bound);
 
         /* KIS roundtrip */
         uint32_t kis_back = geo_slot(r.kis_value);
-        int kis_ok = (kis_back == slot);
+        if (kis_back == slot) kis_pass++; else kis_fail++;
 
         /* Hyper roundtrip */
-        int hyper_ok = (r.hyper_slot == slot);
-
-        if (kis_ok && hyper_ok) pass++;
-        else fail++;
+        if (r.hyper_slot == slot) hyp_pass++; else hyp_fail++;
     }
 
-    printf("  KIS roundtrip:    %d PASS, %d FAIL\n", pass, fail);
-    printf("  Hyper roundtrip:  %d PASS, %d FAIL\n", pass, fail);
+    printf("  KIS roundtrip:    %d PASS, %d FAIL\n", kis_pass, kis_fail);
+    printf("  Hyper roundtrip:  %d PASS, %d FAIL\n", hyp_pass, hyp_fail);
+    printf("  Twin (both):      %d PASS, %d FAIL\n",
+           (kis_pass == (int)BOUND_SIZE && hyp_pass == (int)BOUND_SIZE)
+               ? (int)BOUND_SIZE : 0,
+           (kis_pass == (int)BOUND_SIZE && hyp_pass == (int)BOUND_SIZE)
+               ? 0 : (int)BOUND_SIZE);
 
     /* ── Step 4: Benchmark ──────────────────────────────────────────────── */
     printf("\n═══ Step 4: Benchmark ═══\n\n");
@@ -245,7 +247,7 @@ int main(void) {
     t0 = clock();
     for (uint32_t i = 0; i < n; i++) {
         uint32_t slot = bound_slot(bound, i);
-        uint8_t axis = slot % 3;
+        uint8_t axis = hyperbolic_axis_of(slot);
         HypComplex h = kis_to_hyperbolic_axis(slot, axis);
         volatile uint32_t v = hyperbolic_to_kis_axis(h, axis);
         (void)v;
