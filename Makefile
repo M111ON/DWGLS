@@ -45,6 +45,8 @@ TIER1 := \
   test_tess_hex_delta \
   test_tess_sacred \
   test_tess_subdivide \
+  test_tess_scale_wire \
+  test_tess_tetra_axis \
   test_tess_ghost \
   test_tess_leverage \
   test_tess_registry_gate \

@@ -25,16 +25,18 @@
 ladder 20736→6912→2304→768→256  (÷3 สลับแกน)  กลับ 16:9 พอดี
 ```
 
-## สถานะ test — TIER1 46/46 เขียว
+## สถานะ test — TIER1 47/47 เขียว
 
 ```
-make tier1        # ทั้งหมด 46 ตัว (self-contained)
+make tier1        # ทั้งหมด 47 ตัว (self-contained)
 make graft-llama  # ขั้น ③ ต้องมี I:/llama + Qwen จริง
 
 หลักฐานแกน:   test_tess_sacred 27/27 · index_frame 7/7 · scale_log 10/10
               frame_seek 8/8 · magnify 12/12 · hex_delta 10/10
 Subdivide:    test_tess_subdivide 15/15 (aperture 3/4/7 rule-only: 4-ladder
               1→4→16→64→256, 3-ladder 1→3→9→27→81, roundtrip lossless)
+Scale wire:   test_tess_scale_wire 11/11 (depth d → scale w: 4-ladder 2 หลัก
+              แรกใน w-axis, 2 หลังใน pos; a_w แยก depth-d cell ทุกระดับ)
 Hyper seeker: twin_seeker_test 10368/10368 (KIS+Hyper) · twin_seeker_hard_test
               ALL PASS (20736/20736 roundtrip — แก้ axis semantic แล้ว)
 Ghost/gate:   test_tess_ghost 30/30 · leverage 24/24 · registry_gate 22/22

@@ -951,3 +951,49 @@ lo ∈ [0,81)  = 3-ladder  (3⁴)        ← Peano 3-adic,  subdivide 3 → 1/3 
 ทุก level ตัดพื้นที่ครึ่ง → 1/4; "1/2" ก็ได้ในรูป 4-subdivision ครึ่งระดับ หรือ base-2
 scale (2ᵏ shift) ที่ timeline ใช้อยู่แล้ว (§15.7) — ทั้งหมดเป็น integer ล้วน
 ตรงกับ rescope: **MAP not COMPRESS — coordinate = data**
+
+### 15.21 Subdivision ↔ Scale-Timeline Wiring — th_subdivide ลง timeline แล้ว (test_tess_scale_wire 11/11)
+
+ต่อจาก §15.20 — ตอนนี้ 4-subdivision depth d ผูกกับ scale position w แล้ว
+ด้วย mixed-radix bridge เดียว (integer ล้วน, ตาม rescope):
+
+```
+node = hi·81 + lo,   hi = 16H + h,  lo = 9L + l
+scale position w = 9H + L   ← outer digits (window-head axis)
+local position  pos = 9h + l ← inner digits (intra-window axis)
+(w, pos) ↔ node — bijection 144² = 20736
+```
+
+**Depth d → scale (wiring):** 4-ladder มี 4 base-4 digit — 2 หลักแรกอยู่ใน
+SCALE axis (H), 2 หลักหลังอยู่ใน LOCAL axis (h):
+
+```
+d ≤ 2: cell = w-block 144/4^d (144, 36, 9) × pos เต็ม   ← scale axis หด
+d = 3: w หยุดที่ 9 (อิ่มตัว); pos แยก 144 → 4×36          ← local axis หด
+d = 4: w หยุดที่ 9;           pos แยก 36 → 4×9
+ทุก cell = สี่เหลี่ยม w_ext × pos_ext พอดี = 20736/4^d
+canonical depth scale: {0, 108, 135, 135, 135} = 144 − w_ext(d)
+```
+
+**a_w ↔ th_cell_anchor (พิสูจน์ exhaustive ทุกระดับ):**
+
+| T | พิสูจน์ | ผล |
+|---|---|---|
+| W1 | (w, pos) ↔ node bijection — ทั้ง 20736, ทั้งสองทิศ | ✅ |
+| W2 | ทุก node อยู่ใน (w-block, pos-block) ของ cell ระดับ depth ทุกชั้น; พื้นที่ = 20736/4^d | ✅ |
+| W3 | w-block ระดับ 2 tile ระดับ 1 พอดี (4×9=36); w-axis อิ่มตัวที่ d=2 (d=3 แชร์ 4 ต่อ block, d=4 แชร์ 16) | ✅ |
+| W4 | **ที่ทุก scale w, view a_w แยก depth-d cell ที่ active — pos-image partition pos** (ไม่มี cell ไหนชนกัน) | ✅ |
+| W5 | slot owner == depth-d cell ของ node (a_w ตรงกับ th_cell_anchor slot-for-slot) + อ่านกลับ lossless | ✅ |
+| W6 | canonical depth scale ∈ [0,144) = w-block สุดท้ายของ depth | ✅ |
+| W7 | ทุก th_subdivide4 child อยู่ใน rectangle ของ parent (ทุกชั้น) | ✅ |
+
+**ความหมาย (ตอบคำถาม "map depth d ไป w แล้ว a_w ตรงกับ anchor"):**
+- 144-scale axis ดูดซับ subdivision 2 ระดับแรก (d=1,2 — cell = w-block 36/9),
+  local axis ดูดซับ 2 ระดับหลัง (d=3,4 — pos-block 36/9) — **"1/2, 1/4" ที่
+  ถามไว้ตอนนี้เป็นตำแหน่งบน w-axis จริง ไม่ใช่แค่เลขคูณ**
+- ที่ทุกระดับ: a_w view เป็น bijection บน pos → pos-block ของ cell ที่ active
+  ถูก map เป็น partition ของ 144 slots พอดี — **ไม่มี scale ไหนอ่าน cell ปนกัน**
+- บทเรียนจาก bug ระหว่างทาง: (1) `owner` ต้อง uint16 — cell 255 ที่ depth 4
+  ตัดใน uint8 กลายเป็น 0 ปลอม, (2) placement ต้องเป็น per-scale row
+  (node ที่ scale == w เท่านั้น) — cell 1 ก้อนอยู่หลาย w-row วางลง store
+  144 slots เดียวไม่ได้ (นั่นคือความหมายของ w-block)
