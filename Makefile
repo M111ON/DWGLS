@@ -47,6 +47,14 @@ TIER1 := \
   test_tess_subdivide \
   test_tess_scale_wire \
   test_tess_tetra_axis \
+  test_tess_torus \
+  test_tess_tetra_torus \
+  test_tess_12x1728 \
+  test_geo_sync_bridge \
+  test_tess_geo_jump_walks \
+  test_tess_full_cycle \
+  test_tess_belt \
+  test_tess_tensor_belt \
   test_tess_ghost \
   test_tess_leverage \
   test_tess_registry_gate \
@@ -229,6 +237,19 @@ graft-field: | $(BUILD)
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
 	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_graft_field $(LLAMA_GGUF) "The capital of France is" 40
+
+# ── Output on the +37 belt: model's token+logits stream → field ──
+# Step ⑤: real generation through the field-built graft, then embed the
+# captured output (tokens + full per-step logits) into the field in +37 belt
+# serial order; read back and prove bitwise identity.
+graft-belt: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/gguf_graft_belt tools/gguf_graft_belt.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
+	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_graft_belt $(LLAMA_GGUF) "The capital of France is" 40
 
 # ── Page field: tokenizer KV → field, graft header 5.9MB → ~20KB ──
 # Tokenizer strings live in the window chain; the graft header only carries

@@ -119,6 +119,145 @@ orbit r ↔ (vertex r/3, edge r%3) — 4 จุดยอด × 3 ขอบ
 
 ---
 
+### ⑩ cycle walk = ไม่มี distance function — หลบ non-metric โดย construction (Nagy 2003)
+
+> อ้างอิง: B. Nagy, "Shortest Paths in Triangular Grids with Neighbourhood Sequences",
+> CIT 11 (2003) 111-122 — คณิตศาสตร์มาตรฐานของ triangular grid: 3 พิกัด + ผลรวม 0
+> (ยืนยันขั้น ⑤), lane = เส้นคงที่ 1 พิกัด, hex = dual ของ triangle (ยืนยัน hex-6)
+
+**คำเตือนของเอกสาร:** ระยะทางบน triangular grid (นิยามผ่าน neighbourhood sequence)
+ไม่จำเป็นต้องเป็น metric — ตัวอย่าง 3.4.1: `d(A,B) = 2` แต่ `d(B,A) = 3` (ไม่ symmetric)
+— ตัวอย่าง 3.4.2: ไม่ผ่าน triangle inequality — สาเหตุคือ **ลำดับก้าวผสม**
+`B = (b₁ b₂ b₃ …)` ที่ประเภทก้าวเปลี่ยนทุกก้าว (เดินกลับต้อง reverse sequence → ระยะไม่เท่า)
+
+**แต่ sequence คงที่ปลอดภัยเสมอ:** `B = (k, k, k, …)` — m-neighbour เป็นความสัมพันธ์
+symmetric (นิยาม |p(i)−q(i)| ≤ 1, Σ ≤ m สมมาตรใน p,q) → reverse path ความยาวเท่าเดิม
+
+| walk ของเรา | ภาษาของ Nagy | symmetric? |
+|---|---|---|
+| stride-12 tetra orbits (⑦) | constant seq B=(12) | ✅ โดย construction |
+| stride-37 frame-seek/scatter | constant seq B=(37) | ✅ โดย construction |
+| stride-3 Peano/trit (lo-world, ②) | constant seq B=(3) | ✅ โดย construction |
+| 3-phase hyperbolic (step%3, X→Y→Z) | periodic seq — หน้าตาคล้าย B=(1 3 2) | ⚠️ แต่**ไม่ใช่ distance** |
+
+**3-phase ปลอดภัยเพราะมันไม่ใช่ระยะทาง:** `phase = step % 3` ใน `hyperbolic_seek.h`
+เป็น load-balance rule (60/25/15 ต่อ phase) ไม่ใช่ d(p,q) — และ twin_seeker roundtrip
+KIS→Hyper→KIS เป็น bijection 20736/20736 (พิสูจน์แล้ว) — รูป periodic เหมือนกับตัวอย่าง
+3.4.1 ของ Nagy แต่ไม่มี metric ให้พัง
+
+**หลักฐานหัวใจ — ระบบเราไม่มี distance function เลย:**
+
+```
+เราใช้แค่:  permutation (bijection + cycle)  ← ต้องการแค่ f: สนาม→สนาม, ปิดวง
+ไม่ใช้:     distance (ต้อง d(p,q)=d(q,p), triangle inequality)  ← ปัญหาของ Nagy
+→ ปัญหา non-metric เกิดได้กับ "ระบบที่คำนวณระยะ" เท่านั้น — เราไม่มีให้เกิด
+```
+
+cycle walk ยังเป็นคำตอบของคำถามการห่อ (ขั้น ⑤/⑧ ที่ยังเปิด): เส้นอนันต์ (lane) →
+ห่อเป็น orbit ปิด 12 วง × 1728 — ไม่ต้องมี origin เพราะวงปิดไม่มีจุดแรก (enter anywhere)
+
+**ถ้าวันหน้าต้องการ "ระยะทาง" จริง:** ทางรอดมี 2 แบบที่พิสูจน์แล้ว — (ก) constant
+stride (symmetric เสมอ), หรือ (ข) hexagonal distance `max(|Δa₁|,|Δa₂|,|Δa₃|)`
+(Luczak–Rosenfeld, ref [9] ของ Nagy — metric จริง) — อย่าใช้ sequence ผสม
+
+---
+
+### ⑪ สองพื้น: window floor (d ≤ 2) vs hexagon floor (d ≤ 3) — ทำไม depth-4 แตก (13.5)
+
+hexagon count ต่อ depth (hex-6, 6 nodes ต่อ tile):
+
+```
+depth 0:  20736/6  = 3456  ✓ integer
+ depth 1:  5184/6   = 864   ✓
+ depth 2:  1296/6   = 216   ✓
+ depth 3:  324/6    = 54    ✓   ← ยังลงตัว!
+ depth 4:  81/6     = 13.5  ✗   ← แตกตรงนี้จุดเดียว
+```
+
+**ทำไม depth-4 ถึงแตก (สมการกำแพง 3-world):**
+
+```
+cell(d) = 20736/4^d = 4^(4−d)·3⁴ = 2^(8−2d)·3⁴
+6 = 2·3 ต้องการ factor 2 กับ 3 ทั้งคู่
+ d ≤ 3:  2^(8−2d) เหลืออยู่        → 6 หารลงตัว  ✓
+ d = 4:  4⁰ = 1 — 2-world หมดเกลี้ยง → cell = 3⁴ = 81 ล้วน
+         81 มีแต่ตัวประกอบ 3 — ไม่มี 2 → 81/6 = 13.5 ✗
+```
+
+13.5 = ระบบเตือนว่า **"2-world หมดแล้ว"** — 4-ladder ถูกใช้ครบทั้ง 4 ระดับที่
+depth-4 — เหลือแต่กำแพง 3⁴ = 81 ของ lo-world — hexagon (6 = 2·3) ต้องการ
+2-world มาแทรก แต่ไม่มีแล้ว → ทศนิยม
+
+**สองพื้น — กฎคนละชั้น (ต้องแยกให้ชัด):**
+
+| พื้น | ขีดจำกัด | เหตุผล | สัญญาณ |
+|---|---|---|---|
+| **Window floor** (scale axis, §15.21) | depth ≤ 2 | w-axis ดูดซับได้ 2 ระดับ (144→36→9) แล้วอิ่มตัว | ลง d=3-4 = อยู่ใต้ window |
+| **Hexagon floor** (tiling) | depth ≤ 3 | 6 หาร 324 ลงตัว (54) แต่หาร 81 ไม่ลง | **13.5** เกิดที่ d=4 |
+
+13.5 เป็นสัญญาณของ **hexagon floor** และมันคือชั้นลึกสุดของทั้งระบบ (d=4 =
+ระดับสุดท้ายของ 4-ladder) — ส่วนกฎ "depth ≤ 2" เป็นกฎอนุรักษ์นิยมกว่าที่ผูกกับ
+scale axis — ทั้งสองชี้จุดเดียวกัน: **จุดเล็กสุดของระบบอยู่ที่ natural square
+grid (window) — subdivide ลึกกว่านั้น = ลงใต้ความละเอียดธรรมชาติ → เลขไม่ลงตัว**
+
+---
+
+### ⑫ geo_jump ↔ KIS — 7 jump types, 3 discoveries, zones (จากโค้ดจริง)
+
+> อ่านจาก `I:/FGLS_new/collection/geo_jump_module/include/geo_jump.h` (342 บรรทัด)
+> + พิสูจน์ด้วย probe จริง (MOD order, bijectivity, partition ต่าง)
+
+**โครงสร้าง geo_jump = ตัวเลขเดียวกับเราเป๊ะ:**
+
+```
+GEO_TOWER=144  GEO_BLOCK=48  FLOORS=3  CELLS=16(4²)
+GEO_PENTAGONS=12  GEO_SHELL_TICK=12  GEO_FIBO_CLOCK=1440
+GEO_MOD_PRIME=162 (2·3⁴)  GEO_MOD_STRIDE=5  GEO_FULL=20736 (144²)
+ZONES: INNER 24 (=144/6 — hexagon!)  OUTER 144  FAR 432 (=3×144)
+```
+
+**zones 24/144/432 + block 48 = ตัวเลข period candidates ของคำถามห่อ torus ครบ**
+(24 = 144/6, 48 = 144/3 band, 144 = tower, 432 = 3×144) — อยู่ใน geo_jump แล้ว
+
+**ตาราง mapping — 7 jump types (enum มี 7 ไม่ใช่ 6 ตาม explorer):**
+
+| JUMP | กลไกจริง (จากโค้ด) | bijective? | ของเรา (KIS) |
+|---|---|---|---|
+| HILBERT | project ไป tower เดิม + offset = hilbert(col,row) + floor·16 | ❌ fix params → 1 offset/tower | a_w view (ของเรา bijective ครบ 144) |
+| PEANO | เหมือน HILBERT แต่ cell = peano snake | ❌ | 3-ladder Peano walk (lo-world) |
+| PENTAGON | face = node/1728 (12 blocks) + layer·144 | ❌ | 12×1728 — block ≠ residue partition |
+| MOD | node × 5 mod 20736 | ✅ order 1728 | additive stride-12 — 12×1728 แต่ partition คนละชุด |
+| INVERT | 3-floor cycle + 48-mirror → project tower 0 (period 6) | ❌ collision 20592 | 3-phase (step%3) + antipode mirror |
+| GROUND | project ไป (tower, fixed slot) | ❌ | per-scale placement / cell anchor |
+| CAPO | node + key×144 (tower shift) | ✅ | **scale-axis translation — stride-144 / window shift** |
+| default | node + 1 | ✅ | — |
+
+**Discovery ① — "12 × 1728" มี 3 partition คนละชุด (พิสูจน์ test_tess_12x1728 9/9):**
+
+```
+A pentagon block (geo_jump):  node/1728     → 12 × 1728 สม่ำเสมอ ✅
+B residue mod 12 (KIS tetra): node%12       → 12 × 1728 สม่ำเสมอ ✅
+C MOD coset (×5):             orbit ของ ×5  → 128 orbits ขนาดต่างกัน ❌
+   (sizes = ตัวหารของ 1728 ทั้งหมด: 1,2,4,6,8,...,1728 — max 4×1728 = units เท่านั้น)
+→ "12 orbits" ของ MOD walk เป็นแค่กรณี max — sync ต้องเลือก canonical ระหว่าง A กับ B
+```
+
+**Discovery ② — "bijective map" ใช้ไม่ได้ทุก jump (พิสูจน์จริง):**
+MOD + CAPO bijective เท่านั้น — INVERT มี collision 20592 (project ลง tower 0!)
+— HILBERT/PEANO/GROUND/PENTAGON เป็น projection — กลไก navigation ไม่ใช่ permutation
+
+**Discovery ③ — CAPO = +key×144 = การเลื่อน tower = scale-axis translation**
+ตรงกับ stride-144 บน w-axis ของเรา — จุดเชื่อม sync ที่ชัดเจนที่สุด
+
+**ภาพรวม — สอง decomposition ของ 20736 เดียวกัน (bridge: geo_sync_bridge.h):**
+
+```
+geo_jump:  node = face·1728 + tick·144 + local   (12·12·144 = 20736)
+KIS:       node = hi·81 + lo → (w, pos)          (144² = 20736)
+```
+
+---
+
 ## สิ่งที่ "แปลกจากที่เคยเห็นทั่วไป"
 
 | เรื่องปกติ | โครงสร้างนี้ |
@@ -136,10 +275,15 @@ orbit r ↔ (vertex r/3, edge r%3) — 4 จุดยอด × 3 ขอบ
 
 | ไฟล์ | สถานะ |
 |---|---|
-| `tests/test_tess_tetra_axis.c` | 10/10 (พิสูจน์ ①-⑧ ฝั่ง tetra walk) — TIER1 48/48 |
+| `tests/test_tess_tetra_axis.c` | 10/10 (พิสูจน์ ①-⑧ ฝั่ง tetra walk) — TIER1 52/52 |
 | ⑨ ตาราง 12ᵏ | derived จากตัวเลขที่พิสูจน์แล้ว — ไม่มีค่าทศนิยมที่ depth ≤ 2 |
+| ⑩ cycle walk vs non-metric | ยืนยันโดย Nagy 2003 — constant stride = symmetric; ระบบไม่มี distance function → หลบโดย construction |
+| ⑪ สองพื้น (window/hexagon) | 13.5 = กำแพง 3⁴ — 2^(8−2d)·3⁴: d=4 หมด 2-world; hexagon floor d ≤ 3, window floor d ≤ 2 |
+| ⑫ geo_jump ↔ KIS | จากโค้ดจริง — 7 jump types mapping; 3 discoveries (3 partitions, bijectivity จริง, CAPO = scale shift); zones 24/48/144/432 |
 | สมการราก 128×162 | มีอยู่แล้วใน `core/infra/gear_lock.h` |
 | 3 แกน X/Y/Z (Hilbert/Peano/Metatron) | มีอยู่แล้วใน `core/hyperbolic_seek.h` (6912/band) |
 | tetra-axis walk | **ใหม่** — พิสูจน์แล้ว 10/10 |
 
-จุดที่ยังเปิด (ยังไม่ได้เชื่อม): การห่อ 3 เส้นอนันต์เป็น torus ด้วย period (144/288/48/432) — relation ของ lattice ที่ทำให้ arrangement ปิด — และ 4 ระนาบ → tetra tessellation เต็มรูปแบบ (flat: tetra+octa / hyperbolic: tetra ล้วน)
+จุดที่ยังเปิด (ยังไม่ได้เชื่อม): tetra tessellation เต็มรูปแบบ (flat: tetra+octa / hyperbolic: tetra ล้วน) — และการนำ geo_jump jump types ไปวิ่งบน KIS torus ผ่าน sync bridge (ขั้นถัดไปจาก ⑫)
+
+ปิดแล้วในระหว่างรวบรวม: การห่อ torus — period **(144,144)** พิสูจน์แล้ว (test_tess_torus 16/16, §15.22) — tetra walk บน torus (test_tess_tetra_torus 9/9, §15.23) — 3 partitions ของ 12×1728 + sync bridge (test_tess_12x1728 9/9 + test_geo_sync_bridge 7/7, §15.24)

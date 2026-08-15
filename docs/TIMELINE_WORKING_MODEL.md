@@ -997,3 +997,284 @@ canonical depth scale: {0, 108, 135, 135, 135} = 144 − w_ext(d)
   ตัดใน uint8 กลายเป็น 0 ปลอม, (2) placement ต้องเป็น per-scale row
   (node ที่ scale == w เท่านั้น) — cell 1 ก้อนอยู่หลาย w-row วางลง store
   144 slots เดียวไม่ได้ (นั่นคือความหมายของ w-block)
+
+### 15.22 Torus Wrapping — period (144,144) ปิด relation ของ 3 ตระกูลเส้น (test_tess_torus 16/16)
+
+ต่อจาก §15.21 — คำถามค้างจาก TETRA_FIELD_STRUCTURE (ขั้น ⑤/⑧): "ห่อ 3 เส้นอนันต์
+ด้วย period ไหน" — ตอบแล้ว: **(144, 144)**
+
+```
+3 ตระกูลเส้นบน (w, pos) grid:
+  X: w = const      (step (0,1)  mod 144)
+  Y: pos = const    (step (1,0)  mod 144)
+  Z: w+pos = const  (step (1,−1) mod 144 — ทแยง)
+relation: (w, pos, −(w+pos)) mod 144 — i+j+k ≡ 0 mod 144
+```
+
+**ทำไม (144,144) เท่านั้น:** relation ต้องใช้ modulus เดียว g กับพิกัดทั้งสาม
+(symmetry — ไม่มีแกนไหนพิเศษ) → ต้อง g|m และ m|g (และ n) → m = n = g —
+ใน 20736 = 144² = 288×72 = 48×432 มีแค่ (144,144) ที่ m = n —
+(288,72)/(48,432) ชนกันใต้ modulus เดียว (พิสูจน์ T1) — 48 (band กว้าง = 144/3),
+288 (CELL_288), 432 (3×144) ปรากฏที่อื่นในระบบ แต่ไม่มีตัวไหนปิดการห่อ
+
+**Seam-free ทุกระดับ:** depth-d cell = w_ext×pos_ext, extents ∈ {144,36,9} —
+ทุกตัวหาร 144 ลงตัว → ขอบ cell ตรงกับขอบ wrap (144→0) → seam ไม่เคยตัด cell
+(พิสูจน์ exhaustive ครบ 4^d cell × ทุกระดับ — T3) — และ hex-6 ปิดสนิท:
+20736 = 6×3456 (T4) — กำแพง depth-4 (81 = 6×13.5) ยังอยู่ตามขั้น ⑪
+
+ความหมาย: การห่อ = identify ขอบตรงข้าม — ไม่มีขอบ ไม่มี origin —
+ทุกจุดเป็นจุดตัดของ 3 เส้น (1 ต่อตระกูล) — homogeneous = enter anywhere
+(พิสูจน์ translation-invariant — T5) — กับ cycle walk (⑦/⑩) ที่ห่อ lane เป็น
+orbit ปิด: ตอนนี้ "lane" มีความหมายเต็มรูปบน torus แล้ว
+
+### 15.23 Tetra-Axis Walk on the Torus — 12 orbits × 1728 บน (144,144) (test_tess_tetra_torus 9/9)
+
+ต่อจาก §15.22 — นำ tetra walk (⑦) ไปวิ่งบน torus: orbit r = {r + 12k} —
+พิสูจน์ว่าเดินครบสนามบน torus โดยไม่มีจุดเริ่มต้น และโครงสร้างตัดกันของ
+ตระกูลเส้น × orbit เป็นอย่างไร
+
+**รากของทุกอย่าง — residue ของ orbit ผ่าน bridge:**
+
+```
+r(n) = n mod 12 = (81·16H + 81h + 9L + l) mod 12
+                = (9(h+L) + l) mod 12      ← 81·16 = 1296 ≡ 0 mod 12
+→ r ขึ้นกับ (h, L, l) เท่านั้น — ไม่ขึ้นกับ H — ข้อเท็จจริงเดียวที่อธิบายทุกอย่าง
+```
+
+**โครงสร้างตัดกัน (พิสูจน์ exhaustive — ข้อมูลจริง):**
+
+| ตระกูล | ทุกเส้นตัดกี่ orbit | ต่อ orbit ต่อเส้น | เหตุผล |
+|---|---|---|---|
+| X (w=const) | **12/12 (transversal)** | 12 nodes | fix (H,L), h∈[0,16)×l∈[0,9) → ครบ 12 residue |
+| Z (w+pos=const) | **12/12 (transversal)** | 12 nodes | coupling H กับ (h,L,l) → ครบ |
+| Y (pos=const) | **4 orbits (cluster)** | {48,32,32,32} | fix (h,l), L เปลี่ยน → 9L mod 12 period 4 |
+
+ต่อ orbit: 12 Y-lines × 48 + 36 × 32 = 1728 (96 เส้นไม่แตะ) — walk 1 วง
+แตะ X ครบ 144 เส้น, Z ครบ 144 เส้น, แต่ Y แค่ 48 เส้น
+
+**ความหมาย:** ตระกูลทั้งสาม**ไม่สมมาตร**ภายใต้ tetra walk — X/Z เป็นเส้นตัด
+(ทุก orbit ผ่านทุกเส้นพอดี 12 จุด) ส่วน Y เป็นเส้นเกาะ (4 orbits) — เกิดจาก
+12 = 4×3 ที่ bridge (H-digit 4 / L-digit 3) ผูกกับ pos = 9h+l —
+ตรงกับหลัก "โครงสร้างแปลกจากที่เคยเห็นทั่วไป": ไม่ใช่สามแกนสมมาตร
+แต่เป็น X/Z-transversal + Y-cluster ที่เลขกำหนดชัดเจน
+
+### 15.24 Sync Bridge — geo_jump decomposition ↔ KIS (w,pos) (test_tess_12x1728 9/9 + test_geo_sync_bridge 7/7)
+
+ต่อจาก §15.23 — เชื่อมกับ geo_jump (FGLS_new/collection/geo_jump_module):
+ทั้งสองระบบ address 20736 เดียวกัน แต่ decomposition ต่างกัน:
+
+```
+geo_jump:  node = face·1728 + tick·144 + local   (12 × 12 × 144 = 20736)
+KIS:       node = hi·81 + lo → (w, pos)          (144 × 144 = 20736)
+```
+
+**สาม partition ของ "12 × 1728" — คนละชุด (พิสูจน์ exhaustive):**
+
+| partition | นิยาม | ขนาด | สม่ำเสมอ? |
+|---|---|---|---|
+| A pentagon block (geo_jump) | node/1728 | 12 × 1728 | ✅ |
+| B residue mod 12 (KIS tetra) | node%12 | 12 × 1728 | ✅ |
+| C MOD coset (×5) | orbit ของ ×5 | **128 orbits, ขนาดต่างกัน** (ทุกตัวเป็นตัวหารของ 1728, max 4×1728 = units เท่านั้น) | ❌ |
+
+C มีขนาด orbit ไม่เท่ากัน: units (gcd=1, 6912 ตัว) ได้ 4 orbits × 1728; non-units
+เล็กกว่า (orbit(0) = {0}) — histogram: 1,2,4,6,8,12,...,1728 — "12 orbits" ของ
+MOD walk เป็นแค่กรณี max ไม่ใช่ partition สม่ำเสมอ — สำหรับ sync ต้องเลือก
+canonical ระหว่าง A กับ B
+
+**Sync bridge (`core/geo_sync_bridge.h` — ใหม่):**
+
+```
+gsb_node_of(face,tick,local)      → node          (geo_jump side)
+gsb_face_of/tick_of/local_of      → decomposition (geo_jump side)
+gsw_scale_of_node/gsw_node_of_scale → (w,pos)     (KIS side, เดิม)
+gsb_to_wpos / gsb_to_face_tick_local → BRIDGE ระหว่างสอง decomposition
+```
+
+พิสูจน์: roundtrip lossless ทั้งสองทิศครบ 20736 (T1/T2/T4), bijection
+(face,tick,local)→(w,pos) ครอบทุก slot พอดี (T3), factorizations ตรง (T5),
+partition A ≠ B (T6) — integer ล้วน ไม่มี table/float — bridge map พิกัด
+ไม่ใช่ partition ดังนั้นฝั่งไหนแสดง partition อันไหนก็ได้
+
+### 15.25 geo_jump walks บน KIS torus — ผ่าน sync bridge (test_tess_geo_jump_walks 15/15)
+
+ต่อจาก §15.24 — นำ geo_jump walks (node space) map ผ่าน bridge ไป (w,pos)
+แล้วจัดชั้น transversal/cluster เทียบกับตระกูลเส้น (X: w, Y: pos, Z: w+pos):
+
+| walk (seed) | ขนาด orbit | X-lines | Y-lines | Z-lines | residues | ชั้น |
+|---|---|---|---|---|---|---|
+| MOD(5) (1) | **1728** (max order) | 144 ✅ | 96 | 144 ✅ | {1,5} | **X/Z-transversal + Y-cluster** |
+| MOD(5) (0) | 1 | 1 | 1 | 1 | {0} | collapse (0·5≡0) |
+| CAPO(1) (0) | 144 = 20736/gcd(144,20736) | 144 ✅ | 9 | 144 ✅ | {0} | **X/Z-transversal + Y-cluster** |
+| CAPO(3) (0) | 48 = 20736/gcd(432,20736) | 48 | 3 | 48 | {0} | cluster ทั้ง 3 |
+| INVERT (0) | 6 (3-floor × 2-mirror) | 4 | 6 | 6 | {0,11} | cluster ทั้ง 3 |
+
+**Discovery — geo_jump family และ tetra family แชร์ signature เดียวกัน:**
+MOD และ CAPO(1) เป็น X/Z-transversal + Y-cluster — **เหมือน tetra walk เป๊ะ**
+(test_tess_tetra_torus) — ทั้งที่ node-space ต่างกันโดยสิ้นเชิง (คูณ 5 / บวก
+144 / บวก 12) — signature บน (w,pos) ถูกกำหนดโดย bridge ไม่ใช่โดย walk —
+หลักฐานว่าโครงสร้าง torus ครอบงำพฤติกรรมของทุก walk
+
+**Residue facts (พิสูจน์แล้ว):**
+- MOD: 5^k mod 12 ∈ {1,5} (period 2) → orbit(1) แตะแค่ 2 residue classes
+- CAPO: 144·key ≡ 0 mod 12 → residue-pure (1 class) — tower shift ไม่ปน residue
+- INVERT: mirror สลับ local → residues {0,11} สลับกัน
+- MOD จาก non-unit seed (เช่น 0) collapse — walk เดียว cover ได้ max 1728
+  (สอดคล้อง test_tess_12x1728: orbit ขนาดต่างกัน)
+
+### 15.26 Full 20736-cycle — +37 และ +5 คือ full cycle (test_tess_full_cycle 12/12)
+
+ต่อจาก §15.25 — คำถาม: มี walk ไหนในระบบที่เดินครบ 20736 เป็นวงเดียว?
+
+**คำตอบ: additive walk `n → n+s mod 20736` เป็น full cycle ⇔ gcd(s, 20736) = 1**
+(verified s = 1..1023) — กล่าวคือ s ต้องเป็นเลขคี่และไม่หารด้วย 3 ลงตัว (s ≡ 1 หรือ 5 mod 6)
+
+| walk | ขนาด orbit | full? |
+|---|---|---|
+| tetra-12 (+12) | 12 × 1728 | ❌ |
+| MOD-5 (×5 mult) | 1728 (max) | ❌ |
+| CAPO-144 (+144) | 144 × 144 | ❌ |
+| Z-walk (step (1,−1)) | 144-cycle | ❌ |
+| a_w view | 144-permutation | ❌ |
+| **+5 additive** | **20736** | ✅ |
+| **+37 additive** | **20736** | ✅ |
+
+**Discovery — stride-37 คือ full cycle ของสนามทั้งสนาม:**
+- 37 เป็น stride ของ frame_seek เอง — explorer เคยสรุปว่า "37 ผิดโดเมน 20736"
+  — แต่ข้อสรุปนั้นใช้กับ **MOD walk (คูณ)** เท่านั้น (order 576) —
+  **additive (+37) เป็น full 20736-cycle พอดี** (gcd(37,20736)=1)
+- 37 ≡ 1 mod 12 → วงเต็มเดิน **12 tetra orbits หมุนตามลำดับ** (node_k ≡ k mod 12)
+- 37 coprime กับ 1440 ด้วย → full cycle บน frame-seek domain ด้วย (ทั้งสองโดเมน)
+- บน torus: stride-37 = **Hamiltonian cycle** ของ grid 144×144 — แตะทุก cell
+  พอดีครั้งเดียวแล้วกลับจุดเริ่ม (T7)
+- geo_jump's stride 5: additive ก็เป็น full cycle เช่นกัน (gcd(5,20736)=1)
+
+**ความหมาย:** ระบบมี "สายพานเต็มสนาม" อยู่แล้วโดยไม่ต้องเพิ่มอะไร — เดิน +37
+จากจุดใดก็ได้ = เยี่ยมทุก address 20736 ครบพอดีครั้งเดียว กลับจุดเดิม —
+ไม่มี origin (เข้าได้ทุกจุด) — เป็นคู่ของโครงสร้าง 12-orbit (tetra): 12-orbit
+แบ่งสนามเป็น 12 sector, +37 เดินทะลุทุก sector หมุนตามลำดับ
+
+### 15.27 สายพาน +37 — ฝัง stream ลงสนาม (test_tess_belt 10/10)
+
+ต่อจาก §15.26 — ใช้ full cycle เป็น CONVEYOR BELT สำหรับ sequence data:
+
+```
+address[k] = (start + 37·k) mod 20736     ← เดิน +37, วางค่าที่ละ address
+อ่านกลับ: เดิน +37 เหมือนเดิม → ได้ stream เดิมเป๊ะ (lossless, wrap ได้)
+```
+
+**พิสูจน์ (10/10):** ฝัง stream 16-bit ครบ 20736 ค่า + 5000 ค่า (สอง start)
+อ่านกลับ bit-for-bit; อ่านจาก offset ไหนก็ได้ = stream หมุน (wrap, enter
+anywhere — T2/T3); balance: ทุก X/Y/Z-line โดนแตะ 144 ครั้งพอดี (T4);
+12 ก้าวติดกันครบ 12 tetra sectors หมุนตามลำดับ (T5); step pattern:
+Δw ∈ {−5,−4,+4,+5}, Δpos ∈ {−8,+1,+10} — 55.6% ของก้าว advance pos +1 (T7)
+
+**เปรียบเทียบ — สายพาน vs 12-orbit placement (ความจุรวมเท่ากัน 20736):**
+
+| | 12-orbit (stride-12) | สายพาน (+37) |
+|---|---|---|
+| โครงสร้าง | 12 stream ขนาน × 1728 | 1 stream อนุกรม × 20736 |
+| sector | อยู่ sector เดียว (residue r) | ข้ามครบ 12 sectors หมุนตามลำดับ |
+| Y-lines | cluster 48 เส้น | ครบ 144 เส้น |
+| X/Z-lines | 12 โนด/เส้น | 144 โนด/เส้น |
+| องค์กร | parallel (12 คอลัมน์) | serial (สายพานเดียว) |
+
+**ความหมาย:** สายพาน = อันดับการเข้าถึงแบบอนุกรมที่ครอบทั้งสนามอย่าง
+สม่ำเสมอ — ต่างจาก orbit ที่แบ่งเป็นคอลัมน์ — เหมาะกับ stream ยาว (เช่น
+tensor weights, token sequence) ที่ต้องการ serial order ครบ field —
+กับ orbit เหมาะกับ data 12 กลุ่มที่ต้องการ sector isolation — สองแบบใช้
+stride เดียวกันคนละตัว (+37 serial / +12 parallel) บนเลขเดียวกัน
+
+### 15.28 tensor weights บนสายพาน +37 (test_tess_tensor_belt 10/10)
+
+ต่อจาก §15.27 — ใช้สายพานกับ tensor weights จริง (Qwen-shaped: 288 tensors ×
+72 values = 20736 — โมเดลเต็มสายพานพอดี):
+
+```
+belt:   address = (start + 37·k) mod 20736    k = global offset
+        tensor t เริ่มที่ offset t·72 (ต่อเนื่องบนสายพานเดียว)
+scatter: home(rank) = rank·37 (1 node/tensor — pointer/directory)
+```
+
+**พิสูจน์ (10/10):** 288 tensors × 72 values ครบ 20736 พอดี (T1a); rank 0..287
+เป็น bijection (T1b); belt embed/read 20736 ค่าทั้งหมด bit-for-bit สอง start
+(T2); หนึ่ง tensor แผ่ข้ามหลาย windows (>5) และ belt แตะครบ 144 windows (T3);
+scatter homes distinct (T4a) ครอบ windows 0..73 (T4b); **identity: scatter
+home(rank) == belt address ของ len-1 tensor start 0 — เดินสายพาน +37 ตัวเดียวกัน**
+(T5); ต่างกันที่ granularity: scatter = directory of homes (288 nodes),
+belt = value storage (20736 slots) — ทั้งคู่ deterministic + lossless (T6)
+
+**ความหมาย:** placement เดิม (scatter window chain) กับ belt เป็น**การเดิน
++37 อันเดียวกัน** — ต่างแค่ payload ต่อ node (pointer vs value) — สายพาน
+คือ window chain ในโหมด "value-granularity" — ระบบมีทั้งสองโหมดโดยไม่ต้อง
+เพิ่มกลไกใหม่ — belt เหมาะกับ sequence weights ที่ต้องการ serial order,
+scatter เหมาะกับ directory (pointer) — ใช้ stride เดียวกันทั้งคู่
+
+### 15.29 output sequence → สายพาน +37 — real graft (gguf_graft_belt 12/12)
+
+ต่อจาก §15.28 — ใช้สายพานเป็น serial order ของ **output จริงของโมเดล** ไม่ใช่
+tensor weights: ฝัง token stream + logits ทุก step ที่ graft ตัวจริง (field-built
+GGUF) generate ออกมา ลงสนามด้วยการเดิน +37 แล้วอ่านกลับเทียบ bitwise
+
+```
+token stream  (n × int32, 160 B สำหรับ 40 tokens) → 1 window, belt order
+logits stream (n × vocab × f32, 40×151936×4 = 24.3 MB) → window chain,
+belt order ภายในทุก window  → อ่านกลับด้วย walk เดียวกัน → bitwise
+```
+
+**พิสูจน์ (12/12, ผ่านรันจริง Qwen2.5-0.5B 40 tokens):**
+- **F1-F4** field bake lossless + header rebuilt + graft จริง + body ≠ source
+  (chain reorder — ไม่ใช่ memcpy)
+- **T1** graft token stream == original (multi-token 40/40)
+- **T2** graft per-step logits == original **bitwise ทุก step** (memcmp เต็ม
+  เวกเตอร์ 151936 floats × 40 — ขยาย graft_llama T3c จาก 1 pass เป็นทุก step)
+- **T3** token stream ฝัง belt → อ่านกลับ bitwise
+- **T4** logits stream 24.3 MB ฝัง window chain (belt order ใน window) →
+  อ่านกลับ bitwise
+- **T5** belt เดินครบ 20736 slots พอดีครั้งเดียว (gcd(37,20736)=1) — ไม่มี
+  collision = ไม่มี overwrite
+- **T6a/b** 37⁻¹ mod 20736 = 16813 (extended Euclid พิสูจน์) + enter anywhere:
+  อ่านจาก start อื่น = stream หมุน Δ = (s2−s1)·16813 ก้าว — deterministic
+
+**ความหมาย:** สายพาน +37 ใช้ได้กับ output ของโมเดลจริง (ไม่ใช่แค่ synthetic)
+— token stream หนึ่ง window พอดี, logits 24.3 MB ผ่าน window chain โดยที่
+serial order ภายในทุก window คือการเดิน +37 เดียวกัน — อ่านกลับ lossless
+100% — ระบบมี "serial order กลาง" สำหรับทั้ง input (weights §15.28) และ
+output (logits/tokens) บนกลไกเดียวกัน
+
+### 15.30 locality — linear cursor vs belt +37 บน logits จริง (graft-belt L1-L3)
+
+ต่อจาก §15.29 — วัดเชิงตัวเลขว่า placement สองแบบบน logits stream จริง
+(24.3 MB = 40 × 151936 × f32, 1173 windows) ต่างกันแค่ไหน และกระทบ
+generation speed หรือไม่
+
+**ผลวัดจริง (Qwen2.5-0.5B, 300 sweeps, 8-way accumulators, warm cache):**
+
+| metric | linear cursor | belt +37 | ต่าง |
+|---|---|---|---|
+| best read-back | 17.6 ms/sweep | 33.7 ms/sweep | **1.92×** |
+| throughput | 1318 MB/s | 688 MB/s | −48% |
+| windows/s | 66,700 | 34,800 | −48% |
+| 64B-lines/sweep | 379,840 | 380,052 | +212 (0.06%) |
+| full windows | 324 lines/window | 324 lines/window | เท่ากัน |
+| ragged tail (0.6% ของ stream) | 112 lines | 324 lines | belt อ่านทั้ง window |
+
+**สาเหตุของ 1.92×:** stride-37 byte access ทำลาย hardware prefetch (linear
+ถูก prefetch ตามลำดับ, belt กระโดด 37B) — cache-line coverage เท่ากันเป๊ะ
+(window เต็ม 324/324) ต่างแค่**ลำดับ** — ไม่ใช่ modulo (ทดสอบแล้ว: incremental
+walk ยังได้ 1.86-1.92×)
+
+**ผลต่อ generation speed — ไม่มีนัยสำคัญ:**
+
+```
+per-step logits read-back: linear 0.44 ms | belt 0.84 ms
+real llama_decode:         119 ms/step
+→ placement impact: linear 0.37% | belt 0.71% ของ decode
+```
+
+**ความหมาย:** ราคา locality ของ belt = 0.7% ของ generation (sub-1%) —
+belt แพงกว่า linear 1.92× เฉพาะใน microbenchmark ของการอ่าน field กลับ
+ซึ่งเป็นส่วนเล็กน้อยมากของงานจริง (decode 119ms ต่อ step ครองทุกอย่าง) —
+serial order ของ belt แลกกับ 0.7% นั้นคุ้มค่า (enter anywhere + ครบวง +
+identity กับ scatter §15.28) — ถ้าวันไหนต้องการ linear speed จริง เก็บ
+belt ไว้เป็น "index" แล้วอ่าน payload แบบ linear ผ่าน map จาก belt address
+(§15.27-15.28 ใช้ stride เดียวกันอยู่แล้ว)

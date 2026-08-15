@@ -25,10 +25,10 @@
 ladder 20736→6912→2304→768→256  (÷3 สลับแกน)  กลับ 16:9 พอดี
 ```
 
-## สถานะ test — TIER1 47/47 เขียว
+## สถานะ test — TIER1 56/56 เขียว
 
 ```
-make tier1        # ทั้งหมด 47 ตัว (self-contained)
+make tier1        # ทั้งหมด 56 ตัว (self-contained)
 make graft-llama  # ขั้น ③ ต้องมี I:/llama + Qwen จริง
 
 หลักฐานแกน:   test_tess_sacred 27/27 · index_frame 7/7 · scale_log 10/10
@@ -37,6 +37,28 @@ Subdivide:    test_tess_subdivide 15/15 (aperture 3/4/7 rule-only: 4-ladder
               1→4→16→64→256, 3-ladder 1→3→9→27→81, roundtrip lossless)
 Scale wire:   test_tess_scale_wire 11/11 (depth d → scale w: 4-ladder 2 หลัก
               แรกใน w-axis, 2 หลังใน pos; a_w แยก depth-d cell ทุกระดับ)
+Tetra axis:   test_tess_tetra_axis 10/10 (12 orbits × 1728 = 20736, cycle ปิด
+              ไม่มี origin — 12 = 4×3 = directed edges ของ tetrahedron)
+Torus wrap:   test_tess_torus 16/16 (period (144,144) ปิด relation i+j+k≡0;
+              3 ตระกูลเส้นเป็นวงปิด 144; seam ไม่ตัด cell ทุกระดับ; hex-6 ปิด 3456)
+Tetra×torus:  test_tess_tetra_torus 9/9 (tetra walk บน torus: orbit = 1728 จุด
+              ต่างกัน, cycle ปิดไม่มี origin; X/Z-transversal 12/12/12, Y-cluster {48,32,32,32})
+12×1728:      test_tess_12x1728 9/9 (3 partitions คนละชุด: pentagon block /
+              residue mod 12 / MOD coset — MOD มีขนาด orbit ต่างกัน 128 orbits, max 4×1728)
+Sync bridge:  test_geo_sync_bridge 7/7 (node = face·1728+tick·144+local ↔ (w,pos)
+              mixed-radix — bijection ครบ 20736 ทั้งสองทิศ, lossless)
+Geo walks:    test_tess_geo_jump_walks 15/15 (MOD/CAPO/INVERT บน KIS torus:
+              MOD 1728-orbits X/Z-transversal+Y-cluster — signature เดียวกับ tetra
+              walk; CAPO residue-pure; INVERT period 6)
+Full cycle:   test_tess_full_cycle 12/12 (full 20736-cycle ⇔ gcd(s,20736)=1;
+              +37 และ +5 เป็น full cycle — stride-37 ≡ 1 mod 12 เดิน orbit หมุน
+              ตามลำดับ + Hamiltonian cycle บน torus)
+Belt:         test_tess_belt 10/10 (สายพาน +37: ฝัง stream 20736/5000 ค่า
+              อ่านกลับ lossless + wrap/enter anywhere; balance 144/144/144 ต่อ
+              เส้น; 12 ก้าวติดกันครบ 12 sectors; Δw{±4,±5}, Δpos{+1,+10,−8})
+Tensor belt:  test_tess_tensor_belt 10/10 (Qwen-shaped 288×72 = 20736 เต็ม
+              สายพาน; belt = scatter ตัวเดียวกัน — identity: home(rank) ==
+              belt addr ของ len-1 tensor; scatter = directory, belt = values)
 Hyper seeker: twin_seeker_test 10368/10368 (KIS+Hyper) · twin_seeker_hard_test
               ALL PASS (20736/20736 roundtrip — แก้ axis semantic แล้ว)
 Ghost/gate:   test_tess_ghost 30/30 · leverage 24/24 · registry_gate 22/22
@@ -61,6 +83,11 @@ GGUF main:    test_gguf_box 16/16 · window_chain 11/11 · real_gate 15/15
    + zero-copy: callback repoint t->data เข้า field mmap → load 0.36s/0.9% resident,
      generation หน้า-in เฉพาะที่ใช้ (Qwen 25,639/32,587 win, token_embd อ่าน 0.1%)
      WS peak 1289 MB ≈ file-mmap 1277 (copy mode เคย +148 MB) — §15.18
+   + output sequence → สายพาน +37: token stream + logits ทุก step ฝังลง field
+     ใน +37 serial order → อ่านกลับ bitwise (graft-belt 15/15 — §15.29-15.30)
+     locality จริง: belt อ่านกลับ 688 MB/s vs linear 1318 (1.92× — stride-37
+     prefetch ไม่เต็มที่) แต่ per-step 0.84ms vs decode 119ms = 0.71% ของ
+     generation — placement ไม่กระทบ speed อย่างมีนัยสำคัญ
 ```
 
 **ผลลัพธ์ไฟล์จริง (Qwen2.5-0.5B Q8_0, 291 tensors, 630M elements):**
