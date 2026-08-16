@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.855Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.855Z
+luminaVersion: 1.3.11
+---
 # GeoFS MDIM — Multidimensional Native Volume
 
 Status: **working prototype** — 20/20 tests green (28/28 tier-1), crash-simulated under 1656 power cycles plus 382 torn 4 KB page writes, CLI demo verified (100 KB file lossless across 28 frames).

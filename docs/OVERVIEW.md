@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.928Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.928Z
+luminaVersion: 1.3.11
+---
 # DWGLS — ภาพรวมทั้งระบบ (หนึ่งหน้า)
 
 > **MAP not COMPRESS** — เรขาคณิตคือ address space; coordinate = data.

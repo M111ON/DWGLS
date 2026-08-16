@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.539Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.539Z
+luminaVersion: 1.3.11
+---
 # GeoFS — Geometric Filesystem Prototype Design
 
 > "No compute, only lookup and sync transport" — applied to a filesystem.

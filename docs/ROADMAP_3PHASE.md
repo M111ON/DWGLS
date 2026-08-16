@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:02.129Z
+tags: []
+luminaModified: 2026-08-16T06:55:02.129Z
+luminaVersion: 1.3.11
+---
 # DWGLS 3-Phase Roadmap
 ## 7B on 4GB GPU via Geometry
 

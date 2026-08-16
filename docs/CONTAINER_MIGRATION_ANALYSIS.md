@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.264Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.264Z
+luminaVersion: 1.3.11
+---
 # Container Format Migration Analysis
 ## 5 → Layered Architecture: Practical Constraints & Risks
 

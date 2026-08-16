@@ -9,6 +9,10 @@
  *   T5: CRC corruption detection
  *   T6: Compression ratio on mixed data
  *
+ * NOTE (2026-08-16): T1 expects BITPACK (not CODEBOOK) for the repeated
+ * i%5 pattern — CODEBOOK was removed from classify on Aug 10, 2026
+ * (provably never smaller than raw; see dwgls_dynamic_codec.h).
+ *
  * BUILD: gcc -O2 -Wall -Wextra -Icore -o build/test_tess_codec
  *        tests/test_tess_codec.c -lm
  */
@@ -73,12 +77,30 @@ static void test_per_cube_mixed(void)
     }
     CHECK(3, "cubes 0-11 = SPARSE", sparse_correct);
 
-    /* Cubes 12-23 should be CODEBOOK */
-    int codebook_correct = 1;
+    /* Cubes 12-23: repeated i%5 pattern → compact strategy.
+     * CODEBOOK was REMOVED from classify (Aug 10, 2026 — byte-per-index
+     * codebook ≥ n+5 > n, provably never smaller than raw; see
+     * dwgls_dynamic_codec.h). The current classifier picks BITPACK
+     * (5 unique values ≤ threshold). */
+    int bitpack_correct = 1;
     for (uint32_t c = 12; c < 24; c++) {
-        if (tc.cubes[c].strategy != DYN_STRAT_CODEBOOK) { codebook_correct = 0; break; }
+        if (tc.cubes[c].strategy != DYN_STRAT_BITPACK) { bitpack_correct = 0; break; }
     }
-    CHECK(4, "cubes 12-23 = CODEBOOK", codebook_correct);
+    CHECK(4, "cubes 12-23 = BITPACK (CODEBOOK removed from classify)", bitpack_correct);
+
+    /* Cubes 24-35: sequential i&0x7F → DELTA */
+    int delta_correct = 1;
+    for (uint32_t c = 24; c < 36; c++) {
+        if (tc.cubes[c].strategy != DYN_STRAT_DELTA) { delta_correct = 0; break; }
+    }
+    CHECK(5, "cubes 24-35 = DELTA", delta_correct);
+
+    /* Policy regression guard: fresh encodes must NEVER select CODEBOOK */
+    int no_codebook = 1;
+    for (uint32_t c = 0; c < TCODEC_CUBES; c++) {
+        if (tc.cubes[c].strategy == DYN_STRAT_CODEBOOK) { no_codebook = 0; break; }
+    }
+    CHECK(6, "no cube selects CODEBOOK (removed policy)", no_codebook);
 
     printf("\n");
 }

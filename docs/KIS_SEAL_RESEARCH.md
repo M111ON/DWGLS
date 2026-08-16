@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.790Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.790Z
+luminaVersion: 1.3.11
+---
 # Kis-Seal Research — Critical Findings
 ## Source: Research collaborator warning (Aug 2026)
 

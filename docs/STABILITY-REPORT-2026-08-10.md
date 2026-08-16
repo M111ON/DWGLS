@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:06.335Z
+tags: []
+luminaModified: 2026-08-16T06:55:06.335Z
+luminaVersion: 1.3.11
+---
 # STABILITY REPORT — DWGLS Breathing FS (2026-08-10)
 
 **Scope**: anchor seeker · BIMG v3 persist · dynamic codec · breath engine ·

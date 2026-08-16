@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:06.405Z
+tags: []
+luminaModified: 2026-08-16T06:55:06.405Z
+luminaVersion: 1.3.11
+---
 # .tess File Format Specification v1.0
 
 **Status:** Design Draft (Aug 8, 2026)

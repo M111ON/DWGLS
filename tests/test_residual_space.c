@@ -1,24 +1,31 @@
-/* test_residual_space.c — Residual Space = Singularity Protection
+/* test_residual_space.c — Timeless Bond-Only Storage Zone
  *
- * User insight: "ต้องมี residual space ทำให้ 0 มีอยู่แต่ access ไม่ได้
- * แค่นั้น ที่ 0 เวลาไม่เดิน นับอีกครั้งหลังเดินจาก 0 ออกไป"
+ * Real test of core/residual_space.h (former version tested the WRONG
+ * header — hyperbolic_seek.h, legacy angle-math from before the rescope).
  *
- * Slot 0 = residual space (exists but inaccessible).
- * When scale transform maps data to slot 0 (singularity),
- * nothing is lost because slot 0 is always empty.
- * To recover: move away from 0 (restore creation scale).
+ * What this proves (per rescope working model):
+ *   - Frozen data is addressed ONLY by bond_key (bond_L XOR bond_R),
+ *     never by geo coordinate → "0 อยู่แต่ access ไม่ได้" (timeless zone).
+ *   - origin_key = birth pile identity (geo_key) — rs_verify must pass.
+ *   -  เสาเข็มห้ามขยับ: shift the pile's seed → bond_key changes →
+ *     thaw/verify fail = bond breaks automatically (no lookup table,
+ *     coordinate-bound by construction).
+ *   - Lifecycle: freeze → thaw → refreeze(update) → tombstone → sweep
+ *     → expire_by_origin → eviction when the zone is full.
  *
- * BUILD: gcc -O2 -Icore -o test_residual_space.exe tests/test_residual_space.c -lm
+ * Ghost-lift framing (next step in the roadmap): blocks whose requested
+ * scale exceeds their envelope (k > 4-5 ROI cliff) get FROZEN here via
+ * bond and tracked through the hyperbolic delta log instead of
+ * expanding the field.
+ *
+ * BUILD: gcc -O2 -Wall -Wextra -Wno-unused-parameter -I. -Icore -Icore/infra \
+ *        -o build/test-residual_space tests/test_residual_space.c -lm
  */
 
 #include <stdio.h>
 #include <stdint.h>
-#include <math.h>
-#include "../core/hyperbolic_seek.h"
-
-#define SCALE_FACTOR 65536.0
-#define PI 3.14159265358979323846
-#define RESIDUAL_SLOT 0  /* slot 0 = residual space, never stores data */
+#include <string.h>
+#include "../core/residual_space.h"
 
 static int pass = 0, fail = 0;
 #define CHECK(n, desc, cond) do { \
@@ -26,290 +33,339 @@ static int pass = 0, fail = 0;
     else      { fail++; printf("  T%d: FAIL — %s\n", n, desc); } \
 } while(0)
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   Angle math
-   ═══════════════════════════════════════════════════════════════════════════ */
-static inline uint8_t select_axis(uint32_t slot) {
-    if (slot < 6912) return 0;
-    if (slot < 13824) return 1;
-    return 2;
+/* ── payload helpers ─────────────────────────────────────────── */
+static void fill_pattern(uint8_t *buf, uint32_t n, uint32_t seed) {
+    for (uint32_t i = 0; i < n; i++)
+        buf[i] = (uint8_t)((i * 31 + seed * 7) & 0xFF);
 }
 
-static inline double slot_to_angle(uint32_t slot) {
-    uint8_t axis = select_axis(slot);
-    uint32_t aslot = slot % 6912;
-    double angle = 2.0 * PI * (double)aslot / 6912.0;
-    angle += (double)axis * 2.0 * PI / 3.0;
-    return angle;
+/* ═══════════════════════════════════════════════════════════════
+   T1 — freeze + thaw roundtrip (bond-addressed)
+   ═══════════════════════════════════════════════════════════════ */
+static void test_roundtrip(void) {
+    ResidualSpace rs;
+    CHECK(1, "rs_init(64) succeeds", rs_init(&rs, 64) == 0);
+
+    uint8_t data[256];
+    fill_pattern(data, sizeof(data), 42);
+
+    PoglsPiece p = pogls_make_piece(0x1234, 3);   /* axis 3 → T splitter */
+    uint64_t bk = rs_freeze(&rs, &p, data, sizeof(data), 0);
+    CHECK(1, "rs_freeze returns nonzero bond_key", bk != RS_BOND_KEY_RESERVED);
+    CHECK(1, "bond_key == pogls_bond_key(piece)", bk == pogls_bond_key(&p));
+
+    uint32_t out_sz = 0;
+    const void *got = rs_thaw(&rs, bk, &out_sz);
+    CHECK(1, "rs_thaw finds entry", got != NULL);
+    CHECK(1, "thawed size matches", out_sz == sizeof(data));
+    CHECK(1, "thawed bytes match exactly",
+          got && memcmp(got, data, sizeof(data)) == 0);
+    CHECK(1, "rs_contains(bond_key)", rs_contains(&rs, bk));
+
+    rs_free(&rs);
 }
 
-static inline uint32_t angle_to_slot(double angle, uint8_t axis) {
-    while (angle < 0) angle += 2.0 * PI;
-    while (angle >= 2.0 * PI) angle -= 2.0 * PI;
-    double a = angle;
-    a -= (double)axis * 2.0 * PI / 3.0;
-    if (a < 0) a += 2.0 * PI;
-    uint32_t result = (uint32_t)(a * 6912.0 / (2.0 * PI) + 0.5);
-    return (result % 6912) + axis * 6912;
+/* ═══════════════════════════════════════════════════════════════
+   T2 — origin_key = birth pile identity (rs_verify contract)
+   ═══════════════════════════════════════════════════════════════ */
+static void test_verify(void) {
+    ResidualSpace rs;
+    rs_init(&rs, 64);
+
+    uint8_t d[16];
+    fill_pattern(d, sizeof(d), 7);
+    PoglsPiece p = pogls_make_piece(0xABCD, 1);
+    rs_freeze(&rs, &p, d, sizeof(d), 0);
+
+    /* verify checks origin_key == piece->geo_key (birth pile identity).
+       Before the fix, the empty-slot path stored origin_key = bond_key,
+       so this FAILED for every fresh entry. */
+    CHECK(2, "rs_verify true for the freezing piece", rs_verify(&rs, &p) == 1);
+
+    /* entry exposes origin_key == geo_key directly */
+    uint32_t sz = 0;
+    const void *got = rs_thaw(&rs, pogls_bond_key(&p), &sz);
+    const ResidualEntry *e = (const ResidualEntry *)((const uint8_t *)got -
+                             RS_ENTRY_HEADER_SZ);
+    CHECK(2, "stored origin_key == geo_key", e->origin_key == p.geo_key);
+    CHECK(2, "stored geo_key == geo_key",     e->geo_key == p.geo_key);
+
+    rs_free(&rs);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   TEST 1: Slot 0 IS the singularity
-   ═══════════════════════════════════════════════════════════════════════════ */
-static void test_singularity(void) {
-    printf("TEST 1: Slot 0 IS the Singularity\n");
-    printf("════════════════════════════════════\n");
-    
-    double angle_0 = slot_to_angle(RESIDUAL_SLOT);
-    printf("  Slot 0 angle: %.6f radians (= 0, the origin)\n", angle_0);
-    
-    /* Any scale × 0 = 0 */
-    double scaled_2x = angle_0 * 2.0;
-    double scaled_half = angle_0 * 0.5;
-    double scaled_10x = angle_0 * 10.0;
-    
-    printf("  angle × 2.0  = %.6f (still 0)\n", scaled_2x);
-    printf("  angle × 0.5  = %.6f (still 0)\n", scaled_half);
-    printf("  angle × 10.0 = %.6f (still 0)\n", scaled_10x);
-    
-    uint8_t axis = select_axis(RESIDUAL_SLOT);
-    uint32_t back_2x = angle_to_slot(scaled_2x, axis);
-    uint32_t back_half = angle_to_slot(scaled_half, axis);
-    uint32_t back_10x = angle_to_slot(scaled_10x, axis);
-    
-    printf("  → slot back from ×2:   %u (always 0)\n", back_2x);
-    printf("  → slot back from ×0.5: %u (always 0)\n", back_half);
-    printf("  → slot back from ×10:  %u (always 0)\n", back_10x);
-    
-    CHECK(1, "Slot 0 is singularity (×anything = 0)", 
-          back_2x == 0 && back_half == 0 && back_10x == 0);
-    
-    printf("\n  WHY: angle(0) = 0 → 0 × k = 0 → slot(0) = 0\n");
-    printf("  This is the Cayley transform singularity at z=1, w=0\n\n");
+/* ═══════════════════════════════════════════════════════════════
+   T3 — เสาเข็มห้ามขยับ: coordinate shift → bond breaks
+   ═══════════════════════════════════════════════════════════════ */
+static void test_bond_break(void) {
+    ResidualSpace rs;
+    rs_init(&rs, 64);
+
+    uint8_t d[32];
+    fill_pattern(d, sizeof(d), 99);
+    PoglsPiece p  = pogls_make_piece(0x1111, 5);
+    PoglsPiece p2 = pogls_make_piece(0x1112, 5);  /* same axis, seed+1 = moved pile */
+    PoglsPiece p_same = pogls_make_piece(0x1111, 5); /* re-derived from same seed */
+
+    rs_freeze(&rs, &p, d, sizeof(d), 0);
+
+    CHECK(3, "same seed → identical bond_key (deterministic address)",
+          pogls_bond_key(&p) == pogls_bond_key(&p_same));
+    CHECK(3, "shifted pile → different bond_key (bond broke)",
+          pogls_bond_key(&p) != pogls_bond_key(&p2));
+
+    uint32_t sz = 0;
+    CHECK(3, "thaw via moved pile returns NULL", rs_thaw(&rs, pogls_bond_key(&p2), &sz) == NULL);
+    CHECK(3, "verify(moved pile) == 0", rs_verify(&rs, &p2) == 0);
+    CHECK(3, "rs_contains(moved bond) == 0", rs_contains(&rs, pogls_bond_key(&p2)) == 0);
+    CHECK(3, "original pile still reachable", rs_contains(&rs, pogls_bond_key(&p)) == 1);
+    CHECK(3, "no geo-address lookup API exists (bond-only)",
+          sizeof(ResidualEntry) == RS_ENTRY_HEADER_SZ);
+
+    rs_free(&rs);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   TEST 2: Which slots map TO slot 0 at scale 2x?
-   ═══════════════════════════════════════════════════════════════════════════ */
-static void test_which_slots_hit_singularity(void) {
-    printf("TEST 2: Which Slots Hit the Singularity at Scale 2x?\n");
-    printf("═════════════════════════════════════════════════════════\n");
-    
-    uint32_t scale_1 = (uint32_t)(1.0 * SCALE_FACTOR);
-    uint32_t scale_2 = (uint32_t)(2.0 * SCALE_FACTOR);
-    double ratio = (double)scale_2 / (double)scale_1;
-    
-    uint32_t hit_zero[20736];
-    uint32_t hit_count = 0;
-    
-    for (uint32_t slot = 1; slot < 20736; slot++) {  /* skip slot 0 (residual) */
-        double angle = slot_to_angle(slot);
-        uint8_t axis = select_axis(slot);
-        double new_angle = angle * ratio;
-        uint32_t resolved = angle_to_slot(new_angle, axis);
-        
-        if (resolved == RESIDUAL_SLOT) {
-            hit_zero[hit_count++] = slot;
-        }
+/* ═══════════════════════════════════════════════════════════════
+   T4 — refreeze same piece = update, single entry kept
+   ═══════════════════════════════════════════════════════════════ */
+static void test_update(void) {
+    ResidualSpace rs;
+    rs_init(&rs, 64);
+
+    uint8_t d1[64], d2[128];
+    fill_pattern(d1, sizeof(d1), 1);
+    fill_pattern(d2, sizeof(d2), 2);
+
+    PoglsPiece p = pogls_make_piece(0x2222, 4);
+    uint64_t bk = rs_freeze(&rs, &p, d1, sizeof(d1), 0);
+    rs_freeze(&rs, &p, d2, sizeof(d2), 0);
+
+    CHECK(4, "same bond_key returned on refreeze", bk == pogls_bond_key(&p));
+    uint32_t sz = 0;
+    const void *got = rs_thaw(&rs, bk, &sz);
+    CHECK(4, "thaw returns NEW data after refreeze",
+          got && sz == sizeof(d2) && memcmp(got, d2, sizeof(d2)) == 0);
+    CHECK(4, "count stays 1 (no duplicate entry)", rs.count == 1);
+    CHECK(4, "verify still true after update", rs_verify(&rs, &p) == 1);
+    CHECK(4, "total_bytes tracks latest payload", rs.total_bytes == sizeof(d2));
+
+    rs_free(&rs);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   T5 — tombstone → dead logically → sweep reclaims
+   ═══════════════════════════════════════════════════════════════ */
+static void test_tombstone(void) {
+    ResidualSpace rs;
+    rs_init(&rs, 64);
+
+    uint8_t d[16];
+    fill_pattern(d, sizeof(d), 5);
+    PoglsPiece p = pogls_make_piece(0x3333, 6);
+    uint64_t bk = rs_freeze(&rs, &p, d, sizeof(d), 0);
+
+    CHECK(5, "tombstone succeeds", rs_tombstone(&rs, bk) == 1);
+    CHECK(5, "tombstone twice → 0 (already dead)", rs_tombstone(&rs, bk) == 0);
+    CHECK(5, "rs_contains false after tombstone", rs_contains(&rs, bk) == 0);
+    CHECK(5, "tombstone_count == 1", rs_tombstone_count(&rs) == 1);
+
+    uint32_t swept = rs_tombstone_sweep(&rs);
+    CHECK(5, "sweep reclaims 1 entry", swept == 1);
+    CHECK(5, "tombstone_count == 0 after sweep", rs_tombstone_count(&rs) == 0);
+    CHECK(5, "rs.count == 0 after sweep", rs.count == 0);
+
+    rs_free(&rs);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   T6 — expire_by_origin: bulk death of one pile's entries
+   ═══════════════════════════════════════════════════════════════ */
+static void test_expire_by_origin(void) {
+    ResidualSpace rs;
+    rs_init(&rs, 64);
+
+    uint8_t d[8];
+    fill_pattern(d, sizeof(d), 3);
+    PoglsPiece p1 = pogls_make_piece(0xA001, 1);
+    PoglsPiece p2 = pogls_make_piece(0xA002, 1);
+    PoglsPiece p3 = pogls_make_piece(0xA003, 1);
+    rs_freeze(&rs, &p1, d, sizeof(d), 0);
+    rs_freeze(&rs, &p2, d, sizeof(d), 0);
+    rs_freeze(&rs, &p3, d, sizeof(d), 0);
+
+    uint32_t n = rs_expire_by_origin(&rs, p2.geo_key);
+    CHECK(6, "expire_by_origin kills exactly the matching pile", n == 1);
+    CHECK(6, "pile2 dead", !rs_contains(&rs, pogls_bond_key(&p2)));
+    CHECK(6, "pile1 survives", rs_contains(&rs, pogls_bond_key(&p1)));
+    CHECK(6, "pile3 survives", rs_contains(&rs, pogls_bond_key(&p3)));
+
+    rs_free(&rs);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   T7 — evict_all empties the zone
+   ═══════════════════════════════════════════════════════════════ */
+static void test_evict_all(void) {
+    ResidualSpace rs;
+    rs_init(&rs, 64);
+
+    uint8_t d[16];
+    fill_pattern(d, sizeof(d), 8);
+    for (int i = 0; i < 10; i++) {
+        PoglsPiece p = pogls_make_piece(0xB000 + i, 2);
+        rs_freeze(&rs, &p, d, sizeof(d), 0);
     }
-    
-    printf("  At scale 2x: %u slots map to slot 0 (singularity)\n", hit_count);
-    printf("  These slots: ");
-    for (uint32_t i = 0; i < hit_count && i < 10; i++) {
-        printf("%u ", hit_zero[i]);
-    }
-    if (hit_count > 10) printf("...");
-    printf("\n\n");
-    
-    printf("  WITHOUT residual space: data at these slots → LOST at scale 2x\n");
-    printf("  WITH residual space:    slot 0 is empty → nothing lost\n");
-    printf("  Recovery: restore to creation scale → data reappears\n\n");
-    
-    CHECK(2, "Some slots hit singularity at 2x", hit_count > 0);
-    
-    /* Now test: which slots hit singularity at scale 0.5x? */
-    double ratio_half = 0.5;
-    uint32_t hit_zero_half[20736];
-    uint32_t hit_count_half = 0;
-    
-    for (uint32_t slot = 1; slot < 20736; slot++) {
-        double angle = slot_to_angle(slot);
-        uint8_t axis = select_axis(slot);
-        double new_angle = angle * ratio_half;
-        uint32_t resolved = angle_to_slot(new_angle, axis);
-        
-        if (resolved == RESIDUAL_SLOT) {
-            hit_zero_half[hit_count_half++] = slot;
-        }
-    }
-    
-    printf("  At scale 0.5x: %u slots map to slot 0 (singularity)\n", hit_count_half);
-    
-    /* At scale 0.5x, angle × 0.5 < π < 2π, so nothing wraps to 0 */
-    /* Singularity only hit when angle × ratio = 2π (wrap to 0) */
-    CHECK(3, "Scale 0.5x: no singularity hit (angle×0.5 < 2π)", hit_count_half == 0);
-    printf("\n");
+    CHECK(7, "10 entries frozen", rs.count == 10);
+
+    uint32_t evicted = rs_evict_all(&rs);
+    CHECK(7, "evict_all clears all 10", evicted == 10);
+    CHECK(7, "count == 0", rs.count == 0);
+    CHECK(7, "total_bytes == 0", rs.total_bytes == 0);
+    CHECK(7, "eviction counter advanced", rs.evictions >= 10);
+
+    rs_free(&rs);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   TEST 3: Residual space protection
-   ═══════════════════════════════════════════════════════════════════════════ */
-static void test_residual_protection(void) {
-    printf("TEST 3: Residual Space Protection\n");
-    printf("════════════════════════════════════════════\n");
-    
-    uint32_t scale_1 = (uint32_t)(1.0 * SCALE_FACTOR);
-    uint32_t scale_2 = (uint32_t)(2.0 * SCALE_FACTOR);
-    double ratio = (double)scale_2 / (double)scale_1;
-    
-    printf("  Scenario: store data at slot 3456, scale to 2x\n\n");
-    
-    /* Step 1: append data at slot 3456, scale 1.0 */
-    uint32_t original_slot = 3456;
-    uint8_t original_value = 42;
-    double original_angle = slot_to_angle(original_slot);
-    
-    printf("  Step 1: Append value=%u at slot %u (scale 1.0)\n", 
-           original_value, original_slot);
-    printf("    angle = %.6f\n", original_angle);
-    
-    /* Step 2: scale to 2x — where does it go? */
-    double scaled_angle = original_angle * ratio;
-    uint8_t axis = select_axis(original_slot);
-    uint32_t compressed = angle_to_slot(scaled_angle, axis);
-    
-    printf("  Step 2: Scale to 2x\n");
-    printf("    angle × 2.0 = %.6f\n", scaled_angle);
-    printf("    → slot %u\n", compressed);
-    
-    if (compressed == RESIDUAL_SLOT) {
-        printf("    ⚠️  MAPPED TO SINGULARITY (slot 0)!\n\n");
-        
-        /* WITHOUT residual space: data is LOST */
-        printf("  WITHOUT residual space:\n");
-        printf("    slot 0 now contains value %u (overwritten)\n", original_value);
-        printf("    But slot 0 is ALSO used by other data!\n");
-        printf("    → COLLISION → DATA LOSS\n\n");
-        
-        /* WITH residual space: slot 0 is empty, nothing lost */
-        printf("  WITH residual space:\n");
-        printf("    slot 0 is always empty (residual)\n");
-        printf("    No collision, nothing lost\n");
-        printf("    To recover: restore to scale 1.0\n\n");
-        
-        /* Step 3: restore to scale 1.0 */
-        uint32_t restored = angle_to_slot(original_angle, axis);
-        printf("  Step 3: Restore to scale 1.0\n");
-        printf("    Original angle → slot %u\n", restored);
-        printf("    Match original: %s\n", 
-               (restored == original_slot) ? "YES ✅" : "NO ❌");
-        
-        CHECK(4, "Residual space prevents data loss", restored == original_slot);
-    } else {
-        printf("    → Does NOT hit singularity at this slot\n");
-        printf("    Normal roundtrip works\n");
-        CHECK(4, "Normal roundtrip (non-singularity)", 1);
+/* ═══════════════════════════════════════════════════════════════
+   T8 — high-entropy marking
+   ═══════════════════════════════════════════════════════════════ */
+static void test_high_entropy(void) {
+    ResidualSpace rs;
+    rs_init(&rs, 64);
+
+    uint8_t d[24];
+    fill_pattern(d, sizeof(d), 11);
+    PoglsPiece a = pogls_make_piece(0xC001, 1);
+    PoglsPiece b = pogls_make_piece(0xC002, 1);
+    PoglsPiece c = pogls_make_piece(0xC003, 1);
+    rs_freeze(&rs, &a, d, sizeof(d), 1);   /* high entropy */
+    rs_freeze(&rs, &b, d, sizeof(d), 0);
+    rs_freeze(&rs, &c, d, sizeof(d), 1);   /* high entropy */
+
+    CHECK(8, "2 of 3 marked high entropy", rs_count_high_entropy(&rs) == 2);
+
+    rs_free(&rs);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   T9 — stats consistency
+   ═══════════════════════════════════════════════════════════════ */
+static void test_stats(void) {
+    ResidualSpace rs;
+    rs_init(&rs, 64);
+
+    uint8_t d[30];
+    fill_pattern(d, sizeof(d), 13);
+    PoglsPiece p1 = pogls_make_piece(0xD001, 1);
+    PoglsPiece p2 = pogls_make_piece(0xD002, 1);
+    PoglsPiece p3 = pogls_make_piece(0xD003, 1);
+    rs_freeze(&rs, &p1, d, 10, 1);
+    rs_freeze(&rs, &p2, d, 20, 0);
+    rs_freeze(&rs, &p3, d, 30, 0);
+
+    ResidualSpaceStats s = rs_stats(&rs);
+    CHECK(9, "stats.count == 3", s.count == 3);
+    CHECK(9, "stats.total_bytes == 60", s.total_bytes == 60);
+    CHECK(9, "stats.high_entropy_count == 1", s.high_entropy_count == 1);
+    CHECK(9, "stats.avg_entry_bytes == 20", s.avg_entry_bytes == 20);
+    CHECK(9, "stats.capacity == 64", s.capacity == 64);
+    CHECK(9, "stats.tombstone_count == 0", s.tombstone_count == 0);
+
+    rs_free(&rs);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   T10 — invalid input rejection (RS_BOND_KEY_RESERVED / NULL)
+   ═══════════════════════════════════════════════════════════════ */
+static void test_invalid(void) {
+    ResidualSpace rs;
+    rs_init(&rs, 64);
+
+    uint8_t d[8];
+    fill_pattern(d, sizeof(d), 17);
+    PoglsPiece p = pogls_make_piece(0xE001, 1);
+
+    CHECK(10, "freeze NULL piece → 0", rs_freeze(&rs, NULL, d, 8, 0) == 0);
+    CHECK(10, "freeze size 0 → 0", rs_freeze(&rs, &p, d, 0, 0) == 0);
+    CHECK(10, "freeze size > MAX → 0",
+          rs_freeze(&rs, &p, d, RS_MAX_DATA_SIZE + 1, 0) == 0);
+    CHECK(10, "thaw bond_key 0 → NULL", rs_thaw(&rs, 0, NULL) == NULL);
+    CHECK(10, "thaw unknown bond_key → NULL",
+          rs_thaw(&rs, 0xDEADBEEF, NULL) == NULL);
+    CHECK(10, "tombstone bond_key 0 → 0", rs_tombstone(&rs, 0) == 0);
+    CHECK(10, "rs_verify NULL piece → 0", rs_verify(&rs, NULL) == 0);
+
+    rs_free(&rs);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   T11 — zone full → LRU eviction (no failure, bounded count)
+   ═══════════════════════════════════════════════════════════════ */
+static void test_eviction(void) {
+    ResidualSpace rs;
+    rs_init(&rs, 64);   /* minimal zone — forces the table-full path */
+
+    uint8_t d[4];
+    fill_pattern(d, sizeof(d), 19);
+    uint32_t kept = 0;
+    for (int i = 0; i < 256; i++) {
+        PoglsPiece p = pogls_make_piece(0xF000 + (uint64_t)i, 1);
+        uint64_t bk = rs_freeze(&rs, &p, d, sizeof(d), 0);
+        if (bk != RS_BOND_KEY_RESERVED) kept++;
     }
-    
-    printf("\n");
+
+    CHECK(11, "all 256 freezes accepted (eviction makes room)", kept == 256);
+    CHECK(11, "count bounded by capacity", rs.count <= rs.capacity);
+    CHECK(11, "evictions actually happened", rs.evictions > 0);
+
+    /* last piece still readable (bond survived eviction churn) */
+    PoglsPiece last = pogls_make_piece(0xF000 + 255, 1);
+    uint32_t sz = 0;
+    CHECK(11, "final entry still reachable",
+          rs_thaw(&rs, pogls_bond_key(&last), &sz) != NULL);
+
+    rs_free(&rs);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   TEST 4: "เวลาไม่เดิน นับอีกครั้งหลังเดินจาก 0 ออกไป"
-   ═══════════════════════════════════════════════════════════════════════════ */
-static void test_count_after_moving_from_zero(void) {
-    printf("TEST 4: 'เวลาไม่เดิน นับอีกครั้งหลังเดินจาก 0 ออกไป'\n");
-    printf("═══════════════════════════════════════════════════════════\n");
-    
-    printf("  Concept: when time (scale) is frozen at singularity,\n");
-    printf("  data is 'stuck' at slot 0. To recover, you must\n");
-    printf("  MOVE AWAY from 0 by changing scale.\n\n");
-    
-    uint32_t scale_1 = (uint32_t)(1.0 * SCALE_FACTOR);
-    uint32_t scale_2 = (uint32_t)(2.0 * SCALE_FACTOR);
-    double ratio = (double)scale_2 / (double)scale_1;
-    
-    /* Pick a slot that maps to singularity */
-    uint32_t test_slots[] = {3456, 3457, 3458, 6911};
-    int n_tests = sizeof(test_slots) / sizeof(test_slots[0]);
-    
-    printf("  %-10s %-15s %-15s %-15s %-10s\n", 
-           "Slot", "At Scale 2x", "At Scale 1x", "Restored", "Match?");
-    printf("  %-10s %-15s %-15s %-15s %-10s\n",
-           "────", "───────────", "───────────", "─────────", "──────");
-    
-    for (int t = 0; t < n_tests; t++) {
-        uint32_t slot = test_slots[t];
-        double angle = slot_to_angle(slot);
-        uint8_t axis = select_axis(slot);
-        
-        /* Scale to 2x */
-        uint32_t at_2x = angle_to_slot(angle * ratio, axis);
-        
-        /* Restore to 1x (move away from 0) */
-        uint32_t at_1x = angle_to_slot(angle, axis);
-        
-        printf("  %-10u %-15u %-15u %-15u %-10s\n",
-               slot, at_2x, slot, at_1x,
-               (at_1x == slot) ? "YES" : "NO");
-    }
-    
-    printf("\n  KEY: 'restore to 1x' ALWAYS gives back original slot\n");
-    printf("  Because we use the ORIGINAL angle, not the compressed one\n");
-    printf("  The creation point angle is the 'time machine' back\n\n");
-    
-    CHECK(5, "Move away from 0 restores all slots", 1);
-    printf("\n");
+/* ═══════════════════════════════════════════════════════════════
+   T12 — bond verification: deterministic + symmetric
+   ═══════════════════════════════════════════════════════════════ */
+static void test_bond_verify(void) {
+    PoglsPiece a = pogls_make_piece(0x1001, 3);
+    PoglsPiece b = pogls_make_piece(0x2002, 3);
+
+    PoglsBond ab1 = pogls_bond_verify(&a, &b);
+    PoglsBond ab2 = pogls_bond_verify(&a, &b);
+    PoglsBond ba  = pogls_bond_verify(&b, &a);
+
+    CHECK(12, "verify is deterministic", ab1.valid == ab2.valid && ab1.bond_key == ab2.bond_key);
+    CHECK(12, "verify is symmetric (XOR-based)", ab1.bond_key == ba.bond_key && ab1.valid == ba.valid);
+    CHECK(12, "bond_key exposed is pre-nonce raw_xor",
+          ab1.bond_key == (pogls_bond_key(&a) ^ pogls_bond_key(&b)));
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   TEST 5: Residual space as architectural principle
-   ═══════════════════════════════════════════════════════════════════════════ */
-static void test_architectural_principle(void) {
-    printf("TEST 5: Residual Space = Architectural Principle\n");
-    printf("════════════════════════════════════════════════════════\n");
-    
-    printf("  Analogies:\n");
-    printf("  ┌─────────────────────────────────────────────────────┐\n");
-    printf("  │ Signal Processing: guard band (prevents aliasing)  │\n");
-    printf("  │ String Theory:     null terminator (string end)    │\n");
-    printf("  │ CPU Architecture:  reserved register (always 0)    │\n");
-    printf("  │ Coordinate System: origin (never stores data)      │\n");
-    printf("  │ Hyperbolic:        slot 0 (Cayley singularity)     │\n");
-    printf("  └─────────────────────────────────────────────────────┘\n\n");
-    
-    printf("  In DWGLS:\n");
-    printf("  • Slot 0 = residual space (exists, but empty)\n");
-    printf("  • Data space = slots 1-20735 (20735 usable slots)\n");
-    printf("  • When scale transform maps to slot 0 → nothing lost\n");
-    printf("  • Recovery: change scale back to creation point\n\n");
-    
-    printf("  Storage overhead: 1 slot = 1 byte = negligible\n");
-    printf("  Protection: prevents singularity data loss = invaluable\n\n");
-    
-    CHECK(6, "Architectural principle documented", 1);
-    printf("\n");
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════
    MAIN
-   ═══════════════════════════════════════════════════════════════════════════ */
+   ═══════════════════════════════════════════════════════════════ */
 int main(void) {
-    printf("Residual Space: Singularity Protection\n");
-    printf("═══════════════════════════════════════════════════════════════════\n");
-    printf("'ต้องมี residual space ทำให้ 0 มีอยู่แต่ access ไม่ได้'\n");
-    printf("'เวลาไม่เดิน นับอีกครั้งหลังเดินจาก 0 ออกไป'\n");
-    printf("═══════════════════════════════════════════════════════════════════\n\n");
-    
-    test_singularity();
-    test_which_slots_hit_singularity();
-    test_residual_protection();
-    test_count_after_moving_from_zero();
-    test_architectural_principle();
-    
-    printf("═══════════════════════════════════════════════════════════════════\n");
+    printf("Residual Space — Timeless Bond-Only Storage Zone\n");
+    printf("════════════════════════════════════════════════════════\n\n");
+
+    test_roundtrip();
+    test_verify();
+    test_bond_break();
+    test_update();
+    test_tombstone();
+    test_expire_by_origin();
+    test_evict_all();
+    test_high_entropy();
+    test_stats();
+    test_invalid();
+    test_eviction();
+    test_bond_verify();
+
+    printf("\n════════════════════════════════════════════════════════\n");
     printf("RESULTS: %d/%d PASS\n", pass, pass + fail);
-    printf("═══════════════════════════════════════════════════════════════════\n");
-    
-    return fail > 0 ? 1 : 0;
+    printf("════════════════════════════════════════════════════════\n");
+
+    return fail == 0 ? 0 : 1;
 }

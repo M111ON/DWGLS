@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:06.747Z
+tags: []
+luminaModified: 2026-08-16T06:55:06.747Z
+luminaVersion: 1.3.11
+---
 # Timeline Working Model — แบบจำลองการทำงานฉบับสมบูรณ์
 
 > **สถานะ:** ทุกกลไกในเอกสารนี้มี test + ตัวเลขกำกับ (TIER1 43/43 เขียว)
@@ -256,7 +262,7 @@ deactivate= ปิด link อีกครั้ง — เสาเข็มย
 5. **RAM ≠ Disk — ระบบปัจจุบันประหยัดแค่ working set:** "ย่อเมื่อไม่ใช้" = ในหน่วยความจำทำงาน (inactive = ถือ registry 2 B) — **disk ยังเต็มเสมอ** (store มีค่าเต็มที่เสาเข็ม; registry/index เป็น metadata เพิ่ม) — ใครอ้างว่า "ประหยัด disk" กับระบบปัจจุบัน = ภาพลวงตา (ถูก audit ได้). **ถ้าอยากประหยัด disk จริง มี 2 เส้นทาง:**
    - **(a) reference-to-source:** ระบบเป็น index layer — เก็บแค่ registry/index/path (เล็กจริง), ค่าไม่อยู่ในระบบ — activate = อ่านจากไฟล์ต้นทาง (GGUF) — disk ของระบบเล็กจริง แต่ **ไม่ self-contained** (ต้องมีต้นทางอยู่)
    - **(b) in-place compaction:** ลดค่าจริงตอน inactive — **เจอกำแพง entropy**: lossless บีบได้ ~1.08× (Q8) หรือ lossy (ทิ้งบิต → เก็บ view แทนค่าเต็ม) — ไม่มีทาง "เล็กมาก + lossless + self-contained" พร้อมกัน
-6. **Boundary — จุดอันตราย/กำไรที่ยังเปิด (2026-08-15):** วางข้อมูลที่ scale ขยาย (w₀+k) แล้วอ่านกลับที่ base → view หด 2ᵏ (base-2 contraction ต่อสเกล) = "compression มากกว่าปกติ" โดย lossless (replay กลับบ้านเกิด). **แต่** เสาเข็มที่วางลึกสำรองพื้นที่จริงใหญ่กว่า view ที่โชว์ — ระบบนับ capacity ที่ base (1×) แต่ของจริง 4× (k=2) → **overcommitment แอบซ่อน** ถ้าไฟล์เยอะ+ต้องขยายพร้อมกัน → ชนขอบ → cascade. **Boundary ยังไม่เป็นชั้น first-class:** เสาเข็มต้องประกาศ envelope `(w₀, depth k, ขนาดที่ w₀+k)`, capacity = Σ envelope ≤ 20736, เกิน = reject deterministic (ไม่ silent). นโยบาย = ค่าคงที่ `MAX_EXPANSION_DEPTH` (0 = ห้าม, k = ทำได้พอประมาณ) — **ยังไม่ตัดสินใจ**
+6. **Boundary — จุดอันตราย/กำไรที่ยังเปิด (2026-08-15):** วางข้อมูลที่ scale ขยาย (w₀+k) แล้วอ่านกลับที่ base → view หด 2ᵏ (base-2 contraction ต่อสเกล) = "compression มากกว่าปกติ" โดย lossless (replay กลับบ้านเกิด). **แต่** เสาเข็มที่วางลึกสำรองพื้นที่จริงใหญ่กว่า view ที่โชว์ — ระบบนับ capacity ที่ base (1×) แต่ของจริง 4× (k=2) → **overcommitment แอบซ่อน** ถ้าไฟล์เยอะ+ต้องขยายพร้อมกัน → ชนขอบ → cascade. **Boundary ยังไม่เป็นชั้น first-class:** เสาเข็มต้องประกาศ envelope `(w₀, depth k, ขนาดที่ w₀+k)`, capacity = Σ envelope ≤ 20736, เกิน = reject deterministic (ไม่ silent). นโยบาย = `MAX_EXPANSION_DEPTH = envelope_depth(gate)` — **ตัดสินใจแล้ว (2026-08-16, §15.32)**: depth จำกัดด้วย marginal ROI ของขั้นที่เข้าไป (ต้อง ≥ gate — ค่าเดียวกับ test_tess_leverage): gate 1.0 → depth 5 (k 4-5 เหมาะสมที่สุด), 2.0 → depth 4 (conservative), 0.5 → depth 6; hard ceiling 7 (fp โตกลับ). ขอ depth เกิน envelope → **auto-lift** เป็น ghost (§15.31) แทนการขยายเสาเข็ม — `core/geo_ghost_envelope.h` + `test_ghost_envelope 39/39`
    - **หลัก:** "ค่าเต็มต้องอยู่ที่ไหนสักแห่ง" — entropy คือการันตีของข้อนี้ — ระบบเลี่ยงได้โดยไม่ถือค่าที่ไหนเลย (reference) แต่แลกกับ dependency
 6. **Index/registry เป็น global structure:** cube 0 เสีย = ทั้ง tesseract มองไม่เห็น (แต่ checksum จับได้)
 
@@ -1278,3 +1284,250 @@ serial order ของ belt แลกกับ 0.7% นั้นคุ้มค�
 identity กับ scatter §15.28) — ถ้าวันไหนต้องการ linear speed จริง เก็บ
 belt ไว้เป็น "index" แล้วอ่าน payload แบบ linear ผ่าน map จาก belt address
 (§15.27-15.28 ใช้ stride เดียวกันอยู่แล้ว)
+
+### 15.31 Ghost Lift — hyperbolic track wired into residual_space (test_ghost_lift 47/47)
+
+ต่อจาก §5.2 (passive log) + §15.2 (ghost) — ปิด gap ที่ค้าง: log ของวิญญาณ
+ตอนนี้เก็บลง residual_space จริงแล้ว (`core/geo_ghost_lift.h` + `core/residual_space.h`)
+
+**Mapping rule (address = coordinate, ไม่มี lookup):**
+
+```
+bond = BIRTH IDENTITY  (block_id, from_scale) → seed → piece → bond_key = bond_L XOR bond_R
+log  = ROUTE           {block_id, from→to} = 5 B/event
+```
+
+- `from_scale` เป็นส่วนหนึ่งของที่อยู่ → **เสาเข็มห้ามขยับ**: อ่านด้วย from_scale อื่น
+  → bond_key เปลี่ยน → thaw/verify ล้มอัตโนมัติ (T3)
+- `to_scale` (route) ไม่ใช่ส่วนของ bond → ข้อมูล freeze ครั้งเดียว reach ได้หลาย route
+  (T5: rs.count == 1, log.count == 2) — "วางครั้งเดียว ไม่เคยเขียนซ้ำ"
+- fold axis มาจาก `to_scale % 7 + 1` (I/O/T/S/Z/L/J) = route flavor — ไม่แตะ bond_key
+
+**Lifecycle end-to-end:**
+- **lift** = freeze ข้อมูลลง residual_space + append route → 5 B ต่อ event
+- **read** = ต้องมี live route + bond ตรง → thaw — สองชั้น truth (ผิดจาก → bond แตก;
+  ผิด to → route not found) (T4)
+- **re-attach** = เสาเข็มใหม่ที่ scale เป้าหมาย → `ghost_expire` = rs_expire_by_origin
+  (origin_key = geo_key ของเสาเข็มเก่า) → ข้อมูลตาย, route ถูก flag EXPIRED เก็บเป็น
+  audit trail (เหมือน tombstone) (T7/T8)
+- **telescope**: from 3 → to 140 = 1 entry (ไม่ใช่ 137 ก้าว) — delta ∝ events (T9)
+
+**การตัดสินใจ:** route ซ้ำถูกปฏิเสธ (ไม่ update-in-place — §15.5.3) · log เป็น
+authority: freeze ตรงๆ โดยไม่มี route = เข้าไม่ถึง (T12)
+
+ขั้นต่อไป: กำหนด envelope (§11.6 — ยังไม่ตัดสินใจ) ให้ lift เกิดขึ้นเองเมื่อ
+requested scale เกิน envelope ของก้อน — ตอนนี้ lift เป็น API เรียกตรง
+
+### 15.32 Block Envelope (§11.6 — decided) + Auto Lift (test_ghost_envelope 39/39)
+
+ปิด §11.6: `MAX_EXPANSION_DEPTH = envelope_depth(gate)` — จาก ROI curve
+ตัวเดียวกับ test_tess_leverage (`core/geo_ghost_envelope.h`):
+
+```
+fp(k)       = view(k) + residual(k)      view = 1152>>k, residual = 8k
+roi_step(k) = (fp(k) − fp(k+1)) / 16     marginal ROI ของ 1 ขั้น (ต่อ block, ไม่ ×N)
+envelope_depth(gate) = max{ k : roi_step(k−1) ≥ gate }   (monotonic ↓)
+```
+
+| gate | envelope_depth | หมายเหตุ |
+|---|---|---|
+| **1.0 (default)** | **5** | "k 4–5 เหมาะสมที่สุด" — cliff ที่ depth 6 |
+| 2.0 (conservative) | 4 | GATE=2 → ห้าม depth 5 (ขยับ cliff ลง 1) |
+| 0.5 (aggressive) | 6 | |
+| ≤ 0.001 | 7 | hard ceiling — fp(8) > fp(7) → ลึกไปบวมเอง |
+
+**ย่อฟรี ขยายจ่าย:** depth = `to > from ? to−from : 0` — contraction ไม่ lift
+แม้ไกล (T9); expansion เกิน envelope → lift (T7)
+
+**Auto-lift (`ghost_lift_auto`):** ขอ depth ≤ envelope → `GHOST_AUTO_PLACE`
+(วางในสนามปกติ, ไม่ freeze); ขอ depth > envelope → `GHOST_AUTO_LIFT`
+(freeze ลง residual_space + route — §15.31) — knob = gate ขยับ cliff ระหว่าง
+depth 5↔6 (T8) — deterministic, pure, replay ได้
+
+**ความหมายต่อ §11.6:** capacity accounting (Σ envelope ≤ 20736) ยังเป็นชั้น
+ถัดไป — ตอนนี้ envelope เป็น per-block bound; ก้อนที่ขอเกินไม่ต้องนับ capacity
+เลย (ถูกยกเป็น ghost ไปก่อน) — overcommitment หายตั้งแต่ต้นทาง
+
+### 15.33 Field Capacity Accounting + Gate Tuning on Real GGUF (test_cap_account 23/23 + test_cap_tune_real 6/6)
+
+ปิดครึ่งหลังของ §11.6: capacity = Σ envelope ≤ 20736, เกิน = reject
+deterministic (ไม่ silent) — `core/geo_cap_account.h`
+
+**Accounting:**
+- envelope size ของ block ที่ depth k = fp(k) (ghost footprint — view หด
+  B/2ᵏ + residual 8k) — capacity(k) = 20736/fp(k) ตรงกับ test_tess_leverage
+  เป๊ะ (199 blocks @ depth 4 พอดี, ตัวที่ 200 → REJECT)
+- verdict: **CAP_LIFT** (depth เกิน envelope → deflect ไป ghost store,
+  ใช้ capacity 0 — overcommitment หายตั้งแต่ต้นทาง) · **CAP_REJECT** (ชน
+  20736 — นับไว้ ไม่ silent) · **CAP_ADMIT** (used += fp(k))
+- pure + deterministic — sequence เดิม replay → verdict เดิม (T4/T7)
+
+**Gate tuning บน GGUF จริง 4 โมเดล (SmolLM2-360M, Qwen3-0.6B,
+LFM2.5-2.6B, Qwen2.5-0.5B — home = (rank·37)%20736, depth = w = home%144):**
+
+| gate | k_max | lifts% |
+|---|---|---|
+| 0.5 | 6 | 94.8 |
+| **1.0 (default)** | **5** | **95.5** |
+| 1.5 | 5 | 95.5 |
+| 2.0 | 4 | 96.2 |
+
+- **Plateau ชัด: Δ 0.5→2.0 = 1.4 pp** — lift rate แทบไม่ขยับตาม knob เพราะ
+  w-distribution ของสูตร placement เป็น uniform (ทุก 144 rank มี w ≤ 5 อยู่
+  6 rank) — rate เป็นคุณสมบัติของสูตร ไม่ใช่โมเดล
+- knob เลือกว่า **tensor ตัวไหน**อยู่ใน field (rank ต่ำ + w เล็ก) ไม่ใช่กี่ตัว
+- field footprint @gate1.0 = 24,279 windows vs base 206,659 (ไม่ lift) —
+  **ตัด 8.5×**; ghost 3.4 GB (residual_space — นอก field)
+- **ผลตัดสิน: default gate = 1.0** — plateau ทำให้ 0.5/1.5/2.0 เทียบเท่า
+  กันในแง่ rate → ใช้ค่า ROI knee (envelope_depth 5 = "k 4-5 เหมาะสมที่สุด")
+  ตรงกับหลักการ ไม่ต้องเข้ม/หย่อนไปโดยไม่มีเหตุผล
+
+**หมายเหตุ:** rank-0 tensor (เช่น token_embd ของ SmolLM ~49M elems) อยู่ที่
+w=0 → อยู่ใน field เสมอด้วยราคาเต็ม s — field windows ส่วนใหญ่มาจาก tensor
+ใหญ่ที่ rank ต่ำ — จุดที่ capacity tuning ต่อยอดได้ถ้าต้องการ (เช่น วาง
+tensor ใหญ่ที่ rank สูงให้ lift)
+
+**ต่อ §15.33 — Targeted rank assignment (field 24279 → 4 windows, 6070×):**
+
+ค้นพบจากข้อมูล: field windows ส่วนใหญ่มาจาก tensor ใหญ่ที่ rank ต่ำ —
+SmolLM `token_embd.weight` 47M elems อยู่ rank 0 (w=0) → อยู่ใน field ราคาเต็ม
+(2409/17449 windows); LFM `token_embd` 262M → 14852; Qwen2.5 `output.weight`
+136M → 6663
+
+**Optimization (test_cap_tune_real T7-T9):** field ranks (w ≤ k_max) กระจาย
+อยู่ที่ rank {0,4,39,74,109,113,...} — **เล็ง tensor เล็กสุด 13 ตัวไปที่ field
+ranks เหล่านั้นตรงๆ** (เล็กสุดคู่กับ w น้อยสุด), ตัวใหญ่ไป rank สูง → lift:
+
+| model | field windows (file-order) | targeted | × |
+|---|---|---|---|
+| SmolLM2-360M | 2,409 | **1** | 2,409× |
+| Qwen3-0.6B | 355 | **1** | 355× |
+| LFM2.5-2.6B | 14,852 | **1** | 14,852× |
+| Qwen2.5-0.5B | 6,663 | **1** | 6,663× |
+| **Σ** | **24,279** | **4** | **6,070×** |
+
+**หมายเหตุ:** (1) การสลับ rank ยังคงเป็น permutation → bijection ของ address
+ครบ (ถูกต้องเหมือนเดิม) แต่เปลี่ยนลำดับ chain — locality ของการเดิน +37 ต่าง
+ไป ต้องวัดแยกถ้าจะ adopt เป็นนโยบายจริง (เทียบ §15.30: belt แพงกว่า linear
+1.92× แต่ impact real decode 0.7%) (2) ghost ข้อมูลรวมไม่เปลี่ยน (Σ s เท่าเดิม)
+— แค่สลับว่าใครอยู่ใน field: จาก "tensor ใหญ่ราคาเต็ม" → "tensor เล็ก 13 ตัว
+ราคาเต็ม" (3) นโยบายนี้ = 1 รอบของ sort (N ≤ 320) ตอน placement — deterministic
+
+**ต่อ §15.33 — safetensors จริง (test_cap_tune_safetensors 6/6):**
+
+Pipeline เดียวกันรันบน .safetensors จริง (parse แค่ header — ไม่แตะ data):
+
+| file | tensors | E | field (file-order) | targeted | × |
+|---|---|---|---|---|---|
+| LFM2.5-VL-450M (`embed_tokens` 67M @ rank0) | 349 | 448M | 3,644 | **1** | 3,644× |
+| smolVLM-256M (`lm_head` 28M @ rank0) | 471 | 256M | 1,501 | **1** | 1,501× |
+| zimage-ae (SD autoencoder, conv 512 @ rank0) | 244 | 83M | 15 | **1** | 15× |
+| **Σ** | | | **5,160** | **3** | **1,720×** |
+
+lift rate 95.1/95.8/96.3% — plateau เดียวกับ GGUF (w-distribution ของสูตร
+เป็น uniform) → **ผลสรุปเหมือนกันทุก format: targeted ranks → 1 window/
+ไฟล์; default gate 1.0 ใช้ได้ข้าม format** — ระบบไม่ผูกกับ GGUF
+
+**ต่อ §15.33 — ไฟล์ทั่วไป: pdf / mp4 / zip / folder (test_cap_tune_fs 11/11):**
+
+Pipeline เดียวกันบน F:/notebookLM จริง (1,035 ไฟล์, 7.7 GB — pdf 14,
+mp4 11, wav 71, json 407) + zip จริง (GeoGebra portable 133 MB):
+
+| case | blocks | base windows | field (file-order) | targeted |
+|---|---|---|---|---|
+| folder F:/notebookLM | 1,035 ไฟล์ | 393,203 | 3,578 | **1** |
+| zip (central dir — 1,474 entries) | 1,474 | 16,378 | 27 | **0** |
+| folder as ONE block | 1 | 393,203 | — | chain (ไม่ reject) |
+
+- lifts% 95.7-95.8% — band เดียวกับ tensor (สูตร placement เป็น uniform —
+  **format-agnostic**: ไม่ว่าไฟล์อะไร ขนาดอย่างเดียวที่ระบบดู)
+- zip = container: central directory ระบุ entries (อ่านแค่ tail, ไม่
+  decompress) → entries เป็น blocks เดียวกับไฟล์ตรง
+- ไฟล์ใหญ่กว่า window (20736) → chain ข้าม windows — ไม่ใช่ reject
+- density note: 1 byte = 1 slot (Q8-like); f32 = 4B/slot — เปลี่ยน ratio
+  ของ windows ไม่ใช่ logic
+
+**ต่อ §15.33 — Proof ไฟล์จริงผ่าน chain ทั้งเส้น (test_cap_chain_roundtrip 13/13):**
+
+PDF จริง `Geometric_Logic_Architecture.pdf` (19.8 MB) จาก F:/notebookLM —
+ผ่าน chain ครบ: chunk 16 KB × 1,209 → ทุก chunk ผ่าน `cap_admit` →
+`CAP_LIFT` → `ghost_lift_auto` (freeze + route) / `CAP_ADMIT` → pointer-home:
+
+- 1,158 chunks ยกเป็น ghost (residual_space), 51 chunks อยู่ใน field
+  (pointer-home — data อยู่ต้นทาง, zero-copy)
+- field usage = 20,528/20,736 slots — พอดี (ไม่ reject)
+- **reconstruct ไฟล์ทั้ง 19.8 MB = ต้นฉบับ byte-for-byte** (lossless
+  end-to-end — ทั้งส่วน ghost-read และ pointer-home)
+- integrity: wrong route / wrong from (เสาเข็มห้ามขยับ) / wrong block → NULL
+- deterministic: account ใหม่ → verdict เดิม
+- ระหว่างทาง: `GHOST_LOG_MAX` 256 → 4096 (สมมาตรกับ RS_DEFAULT_CAPACITY —
+  log ต้องจุ routes ของไฟล์จริงได้)
+
+**ต่อ §15.33 — Chain at scale: mp4 57 MB + eviction (test_cap_chain_big 10/10):**
+
+mp4 ใหญ่สุดใน notebookLM (`POGLS_ The Code That Lives.mp4`, 57 MB,
+3,679 chunks × 16 KB) — 3 เฟส:
+
+- **A. forced eviction** (capacity 1024 < 3,679): LRU kick in —
+  `rs.count` คงที่ 1024, evictions = 2,655 (= chunks − capacity),
+  chunk 0 (เก่าสุด) thaw NULL, chunk ใหม่สุด/ล่าสุดรอด — **cache ทำงาน
+  ถูกต้อง, ไม่ silent growth**
+- **B. bounded-window streaming** (§15.2: workspace bounded): 4 windows ×
+  1024 chunks (16 MB) — place → verify → evict ทั้ง window → next —
+  **reconstruct ทั้งไฟล์ byte-for-byte ด้วย memory จำกัด 16 MB ต่อครั้ง**
+- **C. whole-resident** (capacity 4096 ≥ 3,679): 3,525 lifted + 154
+  pointer-home, 0 evictions — **byte-for-byte**
+
+**ความหมาย:** residual_space = LRU cache (บังคับด้วย capacity) — ไฟล์ใหญ่
+กว่า cache → ต้อง streaming เป็น windows (พิสูจน์แล้ว lossless) หรือขยาย
+capacity ให้จุทั้งไฟล์ — ตัวเลือกทั้งคู่ใช้ได้จริง; determinism ครบ (account
+ใหม่ → verdict เดิม)
+
+**ต่อ §15.33 — สแกนทั้ง folder 7.7 GB (tools/cap_chain_scan.c, `make cap_scan`):**
+
+chain ครบทุกไฟล์ใน F:/notebookLM (1,035 ไฟล์, 7,775 MB, 498,355 chunks ×
+16 KB, 1m33s):
+
+| metric | ค่า |
+|---|---|
+| **checksum** | **1,035/1,035 byte-for-byte (0 fail, 0 skip)** |
+| base windows (naive chain) | 393,954 |
+| stream windows (16 MB bounded) | 1,447 teardowns |
+| field slots (Σ envelope admitted) | 3,439,088 (~166 windows) |
+| lifted → residual_space | 476,763 chunks |
+| eviction pressure | peak rs.count 982/1024 (96%) — forced 0 |
+
+**ข้อสังเกต:** field slots = per-file accounting (rank 0 ของทุกไฟล์ = w=0 →
+fp(0)=1152 — 1,035 × 1152 จากไฟล์เล็ก 1-chunk) — เป็น worst case; ถ้า chain
+ทั้ง folder เป็น rank ลำดับเดียว + targeted assignment (§15.33) field จะ
+เหลือไม่กี่ windows — ตัวเลขที่รายงานคือ per-file bound ที่อนุรักษ์นิยม
+eviction: 0 forced (window ≤ capacity โดย construction) — peak 96% แสดงว่า
+bounded window ใกล้เต็มแต่ไม่เคยล้น
+
+**ต่อ §15.33 — Adaptive scheme chooser (test_cap_scheme 12/12 + tools/cap_scheme_choose.c):**
+
+ตอบคำถาม "ไฟล์เริ่มเยอะไม่คุ้ม → สลับไปอีกแบบได้ไหม" — ได้: เลือกได้แบบ
+deterministic (`core/geo_placement_choose.h`)
+
+- **PER_FILE**: ทุกไฟล์เริ่ม rank 0 → chunk แรก w=0 ราคาเต็ม (ค่าแรกเข้า
+  × จำนวนไฟล์) — locality ดี (ไฟล์ติดกัน)
+- **GLOBAL**: chain rank ลำดับเดียว + targeted assignment (§15.33) — field
+  ranks ได้ chunk เล็กสุด — cost ต่ำสุดเสมอ (global ≤ per-file ทุกกรณี)
+- **pc_choose(per_file, global, margin)**: GLOBAL ต่อเมื่อ per_file > global ×
+  (1 + margin) — margin 50 default (สลับเมื่อประหยัด ≥ ⅓)
+
+| case | per-file | global | ratio | เลือก |
+|---|---|---|---|---|
+| 1 ไฟล์ใหญ่ 1000 ch | 225,792 | 225,792 | 1.0× | **PER_FILE** (locality) |
+| 1,000 ไฟล์เล็ก 1 ch | 16,384,000 | 225,792 | **72.6×** | **GLOBAL** |
+| 5 big + 100 tiny | 12.86M | 11.23M | 1.15× | PER_FILE (คุ้มไม่พอ) |
+| **folder จริง 7.7 GB** | 116.3M | 100.0M | 1.2× | **PER_FILE** @margin50 |
+
+**folder จริง:** ค่าแรกเข้า 1,035×16,384 = 17M จริง แต่เล็กเมื่อเทียบกับ
+field ของไฟล์ใหญ่ → ประหยัดแค่ 16% (786 windows) → margin 50 ตัดสินใจ
+**PER_FILE** (เก็บ locality); margin 0 → GLOBAL — ตัวเลือกปรับตามเนื้อหา
+
+**หมายเหตุสอง model:** scan ก่อนหน้า (field 3.44M) ใช้ fp block model
+(cap_admit); ตัวเลือก scheme ใช้ size model (view_of ขนาดจริง) — ต่างคำถาม
+กัน: accounting (limit) vs footprint จริง (เปรียบเทียบ scheme) — ตัวเลือก
+ต้องใช้ size model เพราะ fp ไม่แยก scheme (จำนวน block เท่ากันทั้ง 2 แบบ)

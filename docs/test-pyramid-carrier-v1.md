@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:06.417Z
+tags: []
+luminaModified: 2026-08-16T06:55:06.417Z
+luminaVersion: 1.3.11
+---
 # Pyramid Swing Carrier v1 — ผลทดสอบ (Aug 10)
 
 ## สรุป

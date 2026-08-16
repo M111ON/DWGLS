@@ -8,9 +8,9 @@
  * Tests:
  *   T1: Volume init / default state
  *   T2: Block allocation (contiguous)
- *   T3: File create + geometric address
+ *   T3: File summon + geometric address
  *   T4: File find by name
- *   T5: File delete + block free
+ *   T5: File unsummon + block free
  *   T6: Entropy computation (all-same vs random)
  *   T7: Tier classification (tier 0..3)
  *   T8: Compression savings (tier 3 → tier 0)
@@ -23,7 +23,7 @@
  *  T15: Visualization (smoke test — prints without crashing)
  *  T16: Multiple files, different tiers
  *  T17: Block allocation exhaustion
- *  T18: Delete + re-create (block reuse)
+ *  T18: Unsummon + re-summon (block reuse)
  *  T19: KIS timeline integration (frame_enc for inode creation)
  *  T20: Geometric summary (stat output)
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -98,20 +98,22 @@ static void test_block_alloc(void) {
    T3: File create
    ═══════════════════════════════════════════════════════════ */
 static void test_file_create(void) {
-    TEST("File create + geometric address");
+    TEST("File summon + geometric address");
     GeosVolume v;
     geos_volume_init(&v);
 
     uint8_t data[64] = {0};
     memset(data, 0x42, 64);
 
-    GeosInode *inode = geos_create(&v, "test.bin", 64, data);
-    ASSERT(inode != NULL, "create should succeed");
+    GeosInode *inode = geos_summon(&v, "test.bin", 64, data, 0, 0, 0);
+    ASSERT(inode != NULL, "summon should succeed");
     ASSERT(strcmp(inode->name, "test.bin") == 0, "wrong name");
     ASSERT(inode->size_bytes == 64, "wrong size");
     ASSERT(inode->block_count == 1, "should be 1 block");
     ASSERT(inode->block_start == GEOS_VOL_DATA_START, "wrong block_start");
-    ASSERT(inode->addr.flat_id == GEOS_VOL_DATA_START, "wrong flat_id");
+    ASSERT(inode->addr.generation == 0, "addr gen should match summon coord");
+    ASSERT(inode->addr.face == 0, "addr face should match summon coord");
+    ASSERT(inode->addr.slot == 0, "addr slot should match summon coord");
     ASSERT(v.inode_count == 1, "should have 1 inode");
     ASSERT(v.n_files == 1, "n_files should be 1");
 
@@ -127,8 +129,8 @@ static void test_file_find(void) {
     geos_volume_init(&v);
 
     uint8_t data[32] = {0};
-    geos_create(&v, "alpha.dat", 32, data);
-    geos_create(&v, "beta.dat", 32, data);
+    geos_summon(&v, "alpha.dat", 32, data, 0, 0, 0);
+    geos_summon(&v, "beta.dat", 32, data, 0, 1, 0);
 
     GeosInode *found = geos_find(&v, "alpha.dat");
     ASSERT(found != NULL, "should find alpha.dat");
@@ -144,18 +146,18 @@ static void test_file_find(void) {
    T5: File delete
    ═══════════════════════════════════════════════════════════ */
 static void test_file_delete(void) {
-    TEST("File delete + block free");
+    TEST("File unsummon + block free");
     GeosVolume v;
     geos_volume_init(&v);
 
     uint8_t data[128] = {0};
-    geos_create(&v, "temp.dat", 128, data);
+    geos_summon(&v, "temp.dat", 128, data, 0, 0, 0);
 
     uint32_t used_before = v.total_blocks_used;
     ASSERT(used_before == 2, "should have 2 blocks used");
 
-    int rc = geos_delete(&v, "temp.dat");
-    ASSERT(rc == 0, "delete should succeed");
+    int rc = geos_unsummon(&v, "temp.dat");
+    ASSERT(rc == 0, "unsummon should succeed");
     ASSERT(v.total_blocks_used == 0, "blocks should be freed");
     ASSERT(v.inode_count == 0, "inode should be removed");
     ASSERT(v.n_files == 0, "n_files should be 0");
@@ -182,14 +184,14 @@ static void test_entropy(void) {
     /* All-same data → low entropy */
     uint8_t same[64];
     memset(same, 0x42, 64);
-    GeosInode *same_inode = geos_create(&v, "same.dat", 64, same);
-    ASSERT(same_inode != NULL, "create same.dat");
+    GeosInode *same_inode = geos_summon(&v, "same.dat", 64, same, 0, 0, 0);
+    ASSERT(same_inode != NULL, "summon same.dat");
 
     /* Random-ish data → higher entropy */
     uint8_t random[256];
     for (int i = 0; i < 256; i++) random[i] = (uint8_t)i;
-    GeosInode *rand_inode = geos_create(&v, "random.dat", 256, random);
-    ASSERT(rand_inode != NULL, "create random.dat");
+    GeosInode *rand_inode = geos_summon(&v, "random.dat", 256, random, 0, 1, 0);
+    ASSERT(rand_inode != NULL, "summon random.dat");
 
     ASSERT(rand_inode->entropy > same_inode->entropy,
            "random should have higher entropy than same");
@@ -208,13 +210,13 @@ static void test_tier(void) {
     /* Very low entropy → tier 0 */
     uint8_t low[64];
     memset(low, 0x01, 64);
-    GeosInode *low_e = geos_create(&v, "low.dat", 64, low);
+    GeosInode *low_e = geos_summon(&v, "low.dat", 64, low, 0, 0, 0);
     ASSERT(low_e->tier == 0, "low entropy should be tier 0");
 
     /* High entropy → higher tier */
     uint8_t high[64];
     for (int i = 0; i < 64; i++) high[i] = (uint8_t)(i * 7 + 3);
-    GeosInode *high_e = geos_create(&v, "high.dat", 256, high);
+    GeosInode *high_e = geos_summon(&v, "high.dat", 256, high, 0, 1, 0);
     ASSERT(high_e->tier >= 1, "high entropy should be tier >= 1");
 
     PASS();
@@ -318,14 +320,14 @@ static void test_serialize(void) {
     geos_volume_init(&v);
 
     uint8_t data[64] = {0};
-    geos_create(&v, "persist.dat", 64, data);
+    geos_summon(&v, "persist.dat", 64, data, 0, 0, 0);
 
-    int rc = geos_serialize(&v, "test_volume.geofs");
+    int rc = geos_serialize(&v, "build/test_volume.geofs");
     ASSERT(rc == 0, "serialize should succeed");
 
     GeosVolume v2;
     geos_volume_init(&v2);
-    rc = geos_deserialize(&v2, "test_volume.geofs");
+    rc = geos_deserialize(&v2, "build/test_volume.geofs");
     ASSERT(rc == 0, "deserialize should succeed");
 
     ASSERT(v2.inode_count == 1, "should have 1 inode");
@@ -334,7 +336,7 @@ static void test_serialize(void) {
     ASSERT(v2.inodes[0].block_start == v.inodes[0].block_start,
            "block_start mismatch");
 
-    remove("test_volume.geofs");
+    remove("build/test_volume.geofs");
     PASS();
 }
 
@@ -382,10 +384,14 @@ static void test_compression_tier3(void) {
     GeosVolume v;
     geos_volume_init(&v);
 
-    /* Test bijection forward for several coordinates */
-    uint8_t test_gens[] = {0, 1, 2, 5};
+    /* slot is an 8-bit field (CELL_SLOT_BITS=8 in geo_cell_addr.h) — the
+     * REVERSE mapping only ever produces slot 0..255. FORWARD accepts any
+     * (gen,face,slot) whose packed flat < 20736 (slot up to 323 at
+     * gen=0,face=0) and rejects the rest (zeroed result). Coordinates with
+     * slot >= 324 overflow the 14-bit flat and are invalid inputs. */
+    uint8_t test_gens[]  = {0, 1, 2, 5};
     uint8_t test_faces[] = {0, 1, 3, 5};
-    uint16_t test_slots[] = {0, 100, 500, 20735};
+    uint16_t test_slots[] = {0, 100, 200, 255};
 
     for (int i = 0; i < 4; i++) {
         GeosBijection b = geos_bijection_forward(test_gens[i], test_faces[i], test_slots[i]);
@@ -395,6 +401,27 @@ static void test_compression_tier3(void) {
         ASSERT(b.face == test_faces[i], "face stored");
         ASSERT(b.slot == test_slots[i], "slot stored");
     }
+
+    /* Twin bijection: forward∘reverse is identity over [0, 2^14) —
+       the full range representable by (gen:3, face:3, slot:8) */
+    uint32_t bad = 0;
+    for (uint32_t flat = 0; flat < (1u << 14); flat++) {
+        GeosBijection rev = geos_bijection_reverse(flat);
+        GeosBijection fwd = geos_bijection_forward(rev.gen, rev.face, rev.slot);
+        if (fwd.block_flat != flat || fwd.gen != rev.gen ||
+            fwd.face != rev.face || fwd.slot != rev.slot) bad++;
+    }
+    ASSERT(bad == 0, "forward∘reverse identity over [0, 16384)");
+
+    /* Max representable coordinate still roundtrips */
+    GeosBijection maxc = geos_bijection_forward(7, 7, 255);
+    ASSERT(maxc.block_flat == 16383, "max coord (7,7,255) → flat 16383");
+
+    /* Out-of-range coordinates must be rejected (zeroed result):
+       slot 324 → packed flat 20736 >= GEOS_ADDR_SPACE → rejected */
+    GeosBijection oob = geos_bijection_forward(0, 0, 324);
+    ASSERT(oob.block_flat == 0 && oob.gen == 0 && oob.slot == 0,
+           "slot 324 rejected (flat overflows 20736)");
 
     PASS();
 }
@@ -408,8 +435,8 @@ static void test_visualize(void) {
     geos_volume_init(&v);
 
     uint8_t data[128] = {0};
-    geos_create(&v, "model.bin", 128, data);
-    geos_create(&v, "config.json", 64, data);
+    geos_summon(&v, "model.bin", 128, data, 0, 0, 0);
+    geos_summon(&v, "config.json", 64, data, 0, 1, 0);
 
     geos_visualize(&v, "model.bin");
 
@@ -427,12 +454,12 @@ static void test_multi_files(void) {
     /* Low entropy file */
     uint8_t low[64];
     memset(low, 0x01, 64);
-    geos_create(&v, "low.dat", 64, low);
+    geos_summon(&v, "low.dat", 64, low, 0, 0, 0);
 
     /* High entropy file — 256 bytes covers all 256 possible values */
     uint8_t high[256];
     for (int i = 0; i < 256; i++) high[i] = (uint8_t)i;
-    geos_create(&v, "high.dat", 64, high);
+    geos_summon(&v, "high.dat", 64, high, 0, 1, 0);
 
     ASSERT(v.inode_count == 2, "should have 2 inodes");
     ASSERT(v.n_files == 2, "n_files should be 2");
@@ -487,13 +514,13 @@ static void test_delete_reuse(void) {
     geos_volume_init(&v);
 
     uint8_t data[64] = {0};
-    geos_create(&v, "temp.dat", 64, data);
+    geos_summon(&v, "temp.dat", 64, data, 0, 0, 0);
     uint32_t start1 = v.inodes[0].block_start;
 
-    geos_delete(&v, "temp.dat");
+    geos_unsummon(&v, "temp.dat");
     ASSERT(v.total_blocks_used == 0, "should have 0 blocks used");
 
-    geos_create(&v, "temp.dat", 64, data);
+    geos_summon(&v, "temp.dat", 64, data, 0, 0, 0);
     uint32_t start2 = v.inodes[0].block_start;
 
     /* Should reuse same blocks (first fit) */
@@ -511,8 +538,8 @@ static void test_kis_timeline(void) {
     geos_volume_init(&v);
 
     uint8_t data[32] = {0};
-    GeosInode *inode = geos_create(&v, "timeline.dat", 32, data);
-    ASSERT(inode != NULL, "create should succeed");
+    GeosInode *inode = geos_summon(&v, "timeline.dat", 32, data, 0, 0, 0);
+    ASSERT(inode != NULL, "summon should succeed");
 
     /* created_kis_enc should be frame_enc(inode_count-1) */
     uint64_t expected_enc = frame_enc(v.inode_count - 1);
@@ -532,7 +559,7 @@ static void test_stat(void) {
 
     uint8_t data[128] = {0};
     memset(data, 0x42, 128);
-    geos_create(&v, "stat_test.dat", 128, data);
+    geos_summon(&v, "stat_test.dat", 128, data, 0, 0, 0);
 
     GeosStat st;
     int rc = geos_stat(&v, "stat_test.dat", &st);

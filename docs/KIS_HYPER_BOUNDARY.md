@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.743Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.743Z
+luminaVersion: 1.3.11
+---
 # KIS ↔ Hyperbolic Dual Boundary — Documentation
 
 ## วันที่: 7 สิงหาคม 2026

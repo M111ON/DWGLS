@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.305Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.305Z
+luminaVersion: 1.3.11
+---
 # Cube-in-Dodecahedron — Critical Research Finding
 ## Source: Research collaborator (Aug 2026)
 

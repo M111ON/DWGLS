@@ -33,16 +33,13 @@
 #include "llama.h"
 #include "ggml-backend.h"
 #include "../core/gguf_box.h"
+#include "../core/geo_belt.h"
 
-#define WIN            20736u      /* field window = one belt cycle (144²)   */
-#define BELT_STRIDE    37u         /* the +37 walk — gcd(37,20736)=1         */
-#define ALIGN          32u
+/* P2: WIN/BELT_STRIDE/belt_addr now live in core/geo_belt.h (single source).
+ * Local aliases keep the rest of this file readable. */
+#define WIN         BELT_WIN
+#define ALIGN       32u
 #define align32(x) (((x) + (ALIGN - 1)) & ~((uint64_t)(ALIGN - 1)))
-
-/* belt address — serial position k of a window, from start slot s */
-static uint32_t belt_addr(uint32_t start, uint32_t k) {
-    return (start + BELT_STRIDE * k) % WIN;
-}
 
 /* ── wall clock (QueryPerformanceCounter on Windows, CLOCK_MONOTONIC else) ── */
 static double now_sec(void) {
@@ -181,29 +178,38 @@ typedef struct {
 static Capture *capture_generate(const char *gguf_path, const char *prompt,
                                  int n_gen) {
     Capture *c = NULL;
+    llama_token *toks = NULL, *out = NULL;
+    float *lg = NULL;
+    struct llama_model *model = NULL;
+    struct llama_context *ctx = NULL;
+    int total = 0, n_prompt = 0;
+    double dms = 0.0;
+    uint32_t n_vocab = 0;
+
     struct llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
-    struct llama_model *model = llama_model_load_from_file(gguf_path, mp);
+    model = llama_model_load_from_file(gguf_path, mp);
     if (!model) return NULL;
     struct llama_context_params cp = llama_context_default_params();
     cp.n_ctx = 512; cp.n_batch = 64; cp.n_threads = 4; cp.n_threads_batch = 4;
-    struct llama_context *ctx = llama_init_from_model(model, cp);
-    if (!ctx) { llama_model_free(model); return NULL; }
+    ctx = llama_init_from_model(model, cp);
+    if (!ctx) goto fail;
     const struct llama_vocab *vocab = llama_model_get_vocab(model);
-    uint32_t n_vocab = (uint32_t)llama_vocab_n_tokens(vocab);
+    n_vocab = (uint32_t)llama_vocab_n_tokens(vocab);
     llama_token eos = llama_vocab_eos(vocab);
 
-    int n_prompt = llama_tokenize(vocab, prompt, (int32_t)strlen(prompt), NULL, 0, true, false);
+    n_prompt = llama_tokenize(vocab, prompt, (int32_t)strlen(prompt), NULL, 0, true, false);
     if (n_prompt < 0) n_prompt = -n_prompt;
-    llama_token *toks = (llama_token *)malloc((size_t)(n_prompt + 1) * sizeof(llama_token));
+    toks = (llama_token *)malloc((size_t)(n_prompt + 1) * sizeof(llama_token));
+    if (!toks) goto fail;
     int n2 = llama_tokenize(vocab, prompt, (int32_t)strlen(prompt), toks, n_prompt, true, false);
     if (n2 < 0) n2 = -n2;
     n_prompt = n2;
 
-    llama_token *out = (llama_token *)malloc((size_t)(n_gen + 1) * sizeof(llama_token));
-    float *lg = (float *)malloc((size_t)n_gen * (size_t)n_vocab * sizeof(float));
-    int total = 0;
-    double dms = 0.0;
+    out = (llama_token *)malloc((size_t)(n_gen + 1) * sizeof(llama_token));
+    lg  = (float *)malloc((size_t)n_gen * (size_t)n_vocab * sizeof(float));
+    if (!out || !lg) goto fail;
+
     {
         double t0 = now_sec();
         int rc = llama_decode(ctx, llama_batch_get_one(toks, n_prompt));
@@ -224,10 +230,18 @@ static Capture *capture_generate(const char *gguf_path, const char *prompt,
         if (rc != 0) break;
     }
     c = (Capture *)calloc(1, sizeof(Capture));
+    if (!c) goto fail;
     c->toks = out; c->n = total; c->n_vocab = n_vocab; c->logits = lg;
     c->decode_ms = dms;
+    /* ownership transferred to c; prevent fail-label free */
+    out = NULL; lg = NULL;
 fail:
-    free(toks); llama_free(ctx); llama_model_free(model);
+    free(toks);
+    if (ctx) llama_free(ctx);
+    if (model) llama_model_free(model);
+    /* free only on the failure path — on success out/lg belong to c */
+    free(out);
+    free(lg);
     return c;
 }
 
@@ -253,7 +267,14 @@ static int pass_count = 0, fail_count = 0;
 } while (0)
 
 int main(int argc, char **argv) {
-    const char *gguf   = (argc > 1) ? argv[1] : "I:/model/Qwen2.5-0.5B-Instruct-Q8_0.gguf";
+    /* P0: env-var fallbacks (DWGLS_GGUF / DWGLS_LLAMA_DLL) — no more
+     * machine-locked hardcoded paths. The legacy I:/... values survive as
+     * last-resort defaults so the original dev box still runs unconfigured. */
+    const char *gguf_def = getenv("DWGLS_GGUF");
+    if (!gguf_def || !*gguf_def) gguf_def = "I:/model/Qwen2.5-0.5B-Instruct-Q8_0.gguf";
+    const char *dll_def = getenv("DWGLS_LLAMA_DLL");
+    if (!dll_def || !*dll_def) dll_def = "I:/llama/llama-b9733-bin-win-vulkan-x64";
+    const char *gguf   = (argc > 1) ? argv[1] : gguf_def;
     const char *prompt = (argc > 2) ? argv[2] : "The capital of France is";
     int n_gen = (argc > 3) ? atoi(argv[3]) : 40;
     if (n_gen <= 0) n_gen = 40;
@@ -265,7 +286,7 @@ int main(int argc, char **argv) {
 
     llama_backend_init();
     llama_log_set(quiet_log, NULL);
-    ggml_backend_load_all_from_path("I:/llama/llama-b9733-bin-win-vulkan-x64");
+    ggml_backend_load_all_from_path(dll_def);
 
     GGUFBox box;
     if (gguf_box_open(&box, gguf) != 0) {
@@ -278,6 +299,7 @@ int main(int argc, char **argv) {
     /* ── step ①: bake model body into the field (chain order) ── */
     uint32_t *order = (uint32_t *)calloc(N, sizeof(uint32_t));
     uint64_t *chain_off = (uint64_t *)calloc(N, sizeof(uint64_t));
+    if (!order || !chain_off) { printf("(cannot allocate order/chain_off)\n"); return 1; }
     sort_inference(&box, order, N);
 
     uint64_t total_bytes = 0;
@@ -303,6 +325,7 @@ int main(int argc, char **argv) {
 
     size_t hdr_cap = (size_t)box.reader.data_offset + 4096;
     uint8_t *hdr = (uint8_t *)calloc(1, hdr_cap);
+    if (!hdr) { printf("(cannot allocate %zu-byte header buffer)\n", hdr_cap); return 1; }
     size_t data_off = rebuild_header(&box, order, chain_off, hdr, hdr_cap, &data_off);
     CHECK("F2: rebuilt header (KV verbatim + tensor infos in chain order)", data_off > 0);
 
@@ -361,6 +384,7 @@ int main(int argc, char **argv) {
     /* embed into one window in +37 belt order, read back, compare */
     {
         uint8_t *win = (uint8_t *)calloc(1, WIN);
+        if (!win) { printf("(cannot allocate belt window)\n"); return 1; }
         for (size_t k = 0; k < tok_bytes; k++) win[belt_addr(0u, (uint32_t)k)] = tok_stream[k];
         int ok = 1;
         for (size_t k = 0; k < tok_bytes; k++)
@@ -375,6 +399,7 @@ int main(int argc, char **argv) {
         size_t n_log = (size_t)g->n * (size_t)g->n_vocab * sizeof(float);
         size_t n_lw = (n_log + WIN - 1) / WIN;
         uint8_t *lf = (uint8_t *)calloc(1, n_lw * WIN);
+        if (!lf) { printf("(cannot allocate logits field for belt)\n"); return 1; }
         for (size_t w = 0; w < n_lw; w++)
             for (uint32_t j = 0; j < WIN; j++) {
                 size_t src = w * WIN + j;
@@ -395,14 +420,15 @@ int main(int argc, char **argv) {
 
     /* ── step ④: belt invariants ── */
     {
-        uint8_t seen[WIN];
-        memset(seen, 0, sizeof(seen));
+        uint8_t *seen = (uint8_t *)calloc(1, WIN);   /* 20KB — heap, not stack */
+        if (!seen) { printf("(cannot allocate belt-invariant seen)\n"); return 1; }
         int full = 1;
         for (uint32_t k = 0; k < WIN; k++) {
             uint32_t a = belt_addr(0u, k);
             if (seen[a]) { full = 0; break; }
             seen[a] = 1;
         }
+        free(seen);
         CHECK("T5: belt walk visits all 20736 slots exactly once (gcd(37,20736)=1 — no collision, no overwrite)",
               full);
     }
@@ -413,12 +439,13 @@ int main(int argc, char **argv) {
         uint32_t s1 = 11u, s2 = 5000u;
         int64_t d = (int64_t)s2 - (int64_t)s1;
         if (d < 0) d += (int64_t)WIN;
-        /* 37⁻¹ mod 20736 via extended Euclid: s0·37 + t0·20736 = gcd = 1 */
-        int64_t r0 = 37, r1 = (int64_t)WIN, s0 = 1, s1_ = 0, t0 = 0, t1 = 1;
+        /* 37⁻¹ mod 20736 via extended Euclid: s0·37 + t0·20736 = gcd = 1.
+         * P3: inner coeff renamed s_coeff (was s1_) to avoid shadowing s1. */
+        int64_t r0 = 37, r1 = (int64_t)WIN, s0 = 1, s_coeff = 0, t0 = 0, t1 = 1;
         while (r1) {
             int64_t q = r0 / r1;
             int64_t nr = r0 - q * r1; r0 = r1; r1 = nr;
-            int64_t ns = s0 - q * s1_; s0 = s1_; s1_ = ns;
+            int64_t ns = s0 - q * s_coeff; s0 = s_coeff; s_coeff = ns;
             int64_t nt = t0 - q * t1;  t0 = t1;  t1 = nt;
         }
         int64_t inv = s0; if (inv < 0) inv += (int64_t)WIN;
@@ -430,6 +457,7 @@ int main(int argc, char **argv) {
         if (delta < 0) delta += (int64_t)WIN;
         size_t n = tok_bytes;
         uint8_t *win = (uint8_t *)calloc(1, WIN);
+        if (!win) { printf("(cannot allocate belt enter-anywhere window)\n"); return 1; }
         for (size_t k = 0; k < n; k++) win[belt_addr(s1, (uint32_t)k)] = tok_stream[k];
         int ok = 1;
         for (size_t k = 0; k < n && ok; k++) {
@@ -452,6 +480,7 @@ int main(int argc, char **argv) {
         /* build both placements of the SAME stream */
         uint8_t *fl = (uint8_t *)calloc(1, n_lw * WIN);   /* linear: byte k → k */
         uint8_t *fb = (uint8_t *)calloc(1, n_lw * WIN);   /* belt:   byte k → w·WIN + (37j)%WIN */
+        if (!fl || !fb) { printf("(cannot allocate locality buffers)\n"); return 1; }
         memcpy(fl, g->logits, n_log);
         for (size_t w = 0; w < n_lw; w++)
             for (uint32_t j = 0; j < WIN; j++) {
@@ -492,6 +521,7 @@ int main(int argc, char **argv) {
         /* distinct cache lines (64 B) touched per full sweep, both placements */
         uint8_t *lset = (uint8_t *)calloc(1, (n_lw * WIN) / 64);
         uint8_t *bset = (uint8_t *)calloc(1, (n_lw * WIN) / 64);
+        if (!lset || !bset) { printf("(cannot allocate cache-line sets)\n"); return 1; }
         size_t nl = 0, nb = 0;
         size_t n_full_win = n_log / WIN;   /* full windows: both cover all 324 lines */
         for (size_t w = 0; w < n_lw; w++) {
@@ -539,8 +569,9 @@ int main(int argc, char **argv) {
     }
 
     free(g->toks); free(g->logits); free(g);
-    free(o->toks); free(o->logits); free(o);
-    remove(out_path);
+    if (o) { free(o->toks); free(o->logits); free(o); }
+    if (remove(out_path) != 0)
+        printf("(warn: could not remove %s)\n", out_path);
     gguf_box_close(&box);
     llama_backend_free();
 

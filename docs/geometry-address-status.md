@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.578Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.578Z
+luminaVersion: 1.3.11
+---
 # DWGLS Geometry Address — Status & Architecture
 
 ## วันที่: 2026-08-08

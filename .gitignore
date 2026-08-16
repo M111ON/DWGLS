@@ -43,3 +43,6 @@ tests/test_cli_full.c
 tests/test_cli_minimal.c
 tests/test_size.c
 tests/test_verify.c
+
+# Tooling state (client metadata — not project code)
+.freebuff/

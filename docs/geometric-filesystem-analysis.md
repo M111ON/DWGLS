@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.563Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.563Z
+luminaVersion: 1.3.11
+---
 # DWGLS → Geometric Filesystem: Capability Analysis
 
 **Date:** 2026-08-06  

@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.412Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.412Z
+luminaVersion: 1.3.11
+---
 # Geo Jump Explorer — Experiment Results (2026-08-09)
 
 ## 🔬 บทสรุปการทดลอง

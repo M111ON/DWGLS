@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.897Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.897Z
+luminaVersion: 1.3.11
+---
 # Memory Zone Planning — 7B on 4GB GPU
 ## Date: 2026-08-06 | Status: Phase 2.5
 

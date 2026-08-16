@@ -90,9 +90,10 @@ int main(void) {
     /* ── T2: the +12 walk is a closed 1728-cycle on the torus ─────────── */
     {
         int ok = 1, ok_any = 1;
+        uint8_t *seen = (uint8_t *)calloc(GSW_FULL, 1);   /* 20KB — heap, not stack */
+        if (!seen) { printf("  T: FAIL — alloc\n"); return 1; }
         for (uint32_t s = 0; s < TT_ORBITS; s++) {          /* entry at orbit head */
-            uint8_t seen[GSW_FULL];
-            memset(seen, 0, sizeof(seen));
+            memset(seen, 0, GSW_FULL);
             uint32_t n = s, steps = 0;
             do {
                 uint32_t slot = TT_SLOT(gsw_scale_of_node(n), gsw_pos_of_node(n));
@@ -106,8 +107,7 @@ int main(void) {
         for (uint32_t s = 0; s < TT_ORBITS && ok_any; s++) { /* deep entry: no origin */
             uint32_t mid = (s + 7u * TT_STRIDE) % GSW_FULL;  /* any node of orbit s */
             uint32_t n = mid, steps = 0;
-            uint8_t seen[GSW_FULL];
-            memset(seen, 0, sizeof(seen));
+            memset(seen, 0, GSW_FULL);
             do {
                 uint32_t slot = TT_SLOT(gsw_scale_of_node(n), gsw_pos_of_node(n));
                 if (seen[slot]) { ok_any = 0; break; }
@@ -118,6 +118,7 @@ int main(void) {
             if (steps != TT_ORB_SZ) ok_any = 0;
             if (mid % TT_ORBITS != s) ok_any = 0;
         }
+        free(seen);
         CHECK("T2a: the +12 walk closes after exactly 1728 steps on the torus — no (w,pos) revisited before close",
               ok);
         CHECK("T2b: ANY node of the orbit is a valid entry — same closed cycle, no start no 0",

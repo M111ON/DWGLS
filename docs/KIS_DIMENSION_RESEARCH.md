@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.654Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.654Z
+luminaVersion: 1.3.11
+---
 # KIS Dimension — Information Gathering
 ## Status: Collecting, not building yet
 

@@ -71,7 +71,28 @@ TIER1 := \
   test_bfs_seek_anchor \
   test_bfs_breath \
   twin_seeker_test \
-  twin_seeker_hard_test
+  twin_seeker_hard_test \
+  test_6ico_tesseract \
+  test_hyper_delta_format \
+  test_residual_space \
+  test_ghost_lift \
+  test_ghost_envelope \
+  test_cap_account \
+  test_cap_tune_real \
+  test_cap_tune_safetensors \
+  test_cap_tune_fs \
+  test_cap_chain_roundtrip \
+  test_cap_chain_big \
+  test_cap_scheme \
+  test_breathing_fs \
+  test_shell \
+  test_tess_header \
+  test_geofs \
+  test_tess_codec
+
+# ── เทสต์ที่เหลือ (ไม่ได้อยู่ใน TIER1/TIER2) = legacy ประวัติการพัฒนา ──
+# เขียนก่อน rescope 2026-08-14 — เก็บไว้ย้อนดูเท่านั้น ไม่ใช้ยืนยันระบบปัจจุบัน
+# รายละเอียด: docs/LEGACY_TESTS.md
 
 # ── Tier 2: need gguf_reader.h or geo_frame_seek.h ────
 # (removed: kis_codec_v5_test, kis_codec_v6_test, kis_map_roundtrip,
@@ -152,6 +173,18 @@ bench_mdim_timeline: tools/bench_mdim_timeline.c core/geofs_mdim.h | $(BUILD)
 	@echo "▶ BUILD  bench_mdim_timeline"
 	$(CC) $(CFLAGS) -o $(BUILD)/bench_mdim_timeline tools/bench_mdim_timeline.c $(LDFLAGS)
 	@echo "✅ bench ready → ./$(BUILD)/bench_mdim_timeline"
+
+# ── Streaming chain scan (whole folder — manual, not TIER1) ──
+cap_scan: tools/cap_chain_scan.c core/geo_cap_account.h core/geo_ghost_lift.h | $(BUILD)
+	@echo "▶ BUILD  cap_chain_scan"
+	$(CC) $(CFLAGS) -o $(BUILD)/cap_chain_scan tools/cap_chain_scan.c $(LDFLAGS)
+	@echo "✅ cap_scan ready → ./$(BUILD)/cap_chain_scan [root] (default F:/notebookLM)"
+
+# ── Adaptive scheme decision (per-file vs global — manual) ──
+cap_scheme: tools/cap_scheme_choose.c core/geo_placement_choose.h | $(BUILD)
+	@echo "▶ BUILD  cap_scheme_choose"
+	$(CC) $(CFLAGS) -o $(BUILD)/cap_scheme_choose tools/cap_scheme_choose.c $(LDFLAGS)
+	@echo "✅ cap_scheme ready → ./$(BUILD)/cap_scheme_choose [root]"
 
 # ── Housekeeping ──────────────────────────────────────
 $(BUILD):
@@ -249,7 +282,8 @@ graft-belt: | $(BUILD)
 	    -I core -I $(LLAMA_INC) -o $(BUILD)/gguf_graft_belt tools/gguf_graft_belt.c \
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
-	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_graft_belt $(LLAMA_GGUF) "The capital of France is" 40
+	DWGLS_GGUF="$(LLAMA_GGUF)" DWGLS_LLAMA_DLL="$(LLAMA_DLL)" \
+	  PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_graft_belt "$(LLAMA_GGUF)" "The capital of France is" 40
 
 # ── Page field: tokenizer KV → field, graft header 5.9MB → ~20KB ──
 # Tokenizer strings live in the window chain; the graft header only carries

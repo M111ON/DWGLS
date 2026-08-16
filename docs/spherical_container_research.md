@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:05.866Z
+tags: []
+luminaModified: 2026-08-16T06:55:05.866Z
+luminaVersion: 1.3.11
+---
 # Spherical Container with Golden-Ratio Voxels: Natural Compression through Geometry
 
 **Research Document — August 2026**

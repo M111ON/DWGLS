@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:02.090Z
+tags: []
+luminaModified: 2026-08-16T06:55:02.090Z
+luminaVersion: 1.3.11
+---
 # REPORT — GeoFS MDIM Multi-Frame Runs
 **2026-08-12 · branch `feat/geo-native-fs` · worktree `I:/DWGLS-native-fs`**
 

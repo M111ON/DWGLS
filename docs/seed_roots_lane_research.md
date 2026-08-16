@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:02.145Z
+tags: []
+luminaModified: 2026-08-16T06:55:02.145Z
+luminaVersion: 1.3.11
+---
 # Seed Roots Lane — Access Bigger Space Without Exploding Memory
 
 **Research Document — August 2026**  

@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.910Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.910Z
+luminaVersion: 1.3.11
+---
 # Q8_0 Mirror Symmetry Analysis — Results
 
 ## Executive Summary

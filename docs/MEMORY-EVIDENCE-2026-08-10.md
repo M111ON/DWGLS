@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.871Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.871Z
+luminaVersion: 1.3.11
+---
 # MEMORY EVIDENCE REPORT — GGUF-Direct Pipeline (2026-08-10)
 
 ## Machine

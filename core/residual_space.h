@@ -12,7 +12,7 @@
  *   Bond-keyed hash table with open addressing (power-of-2)
  *   Each entry stores:
  *     bond_key (8B)  → lookup key (never zero)
- *     origin_key (8B) → bond_key at birth, survives any reroute
+ *     origin_key (8B) → geo_key at birth (pile identity), survives any reroute
  *     data_size (4B)  → bytes of payload
  *     data      (flex) → payload bytes
  *
@@ -247,7 +247,7 @@ static inline uint64_t rs_freeze(ResidualSpace *rs,
     if (!entry) return RS_BOND_KEY_RESERVED;
 
     entry->bond_key   = bond_key;
-    entry->origin_key = pogls_bond_key(piece);
+    entry->origin_key = piece->geo_key;   /* birth pile identity — matches rs_verify */
     entry->geo_key    = piece->geo_key;
     entry->data_size  = size;
     entry->timestamp  = rs->next_timestamp++;

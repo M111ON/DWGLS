@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.396Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.396Z
+luminaVersion: 1.3.11
+---
 # Breathing FS Image Format Spec (BIMG v3)
 
 **Status**: Implemented — `core/bfs_persist.h` (v3, Aug 10 2026, consensus round 1)

@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.639Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.639Z
+luminaVersion: 1.3.11
+---
 # DWGLS Handoff — 2026-08-12 (GeoFS MDIM multi-frame runs)
 
 ## สถานะปัจจุบัน

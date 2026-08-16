@@ -1,3 +1,9 @@
+---
+luminaCreated: 2026-08-16T06:55:01.353Z
+tags: []
+luminaModified: 2026-08-16T06:55:01.353Z
+luminaVersion: 1.3.11
+---
 # DWGLS Integration Points — Full Pipeline Map
 
 **Date:** 2026-08-06
