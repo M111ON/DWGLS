@@ -1531,3 +1531,828 @@ field ของไฟล์ใหญ่ → ประหยัดแค่ 16% (
 (cap_admit); ตัวเลือก scheme ใช้ size model (view_of ขนาดจริง) — ต่างคำถาม
 กัน: accounting (limit) vs footprint จริง (เปรียบเทียบ scheme) — ตัวเลือก
 ต้องใช้ size model เพราะ fp ไม่แยก scheme (จำนวน block เท่ากันทั้ง 2 แบบ)
+
+**§15.34 — Persistence: serialize residual_space by bond_key + reload (test_rs_persist 36/36):**
+
+ปิด open item "persist residual_space ลงดิสก์" — ตอนนี้ restart ได้ทั้งระบบ
+(space + ghost log) พิสูจน์ lossless บน mp4 จริง 57 MB (3,525 lifted entries)
+
+**Format (packed, little-endian, host x86):**
+```
+residual_space (rs_serialize / rs_load):
+  [0..7]   magic "RSDWGLSP"   [8..9] version=1   [10..11] reserved
+  [12..15] count u32
+  [16..]   records: ResidualEntry header (36B, verbatim) + payload
+ghost log (ghost_log_serialize / ghost_log_load):
+  [0..3]   magic "GHST"       [4..5] version=1   [6..7] reserved
+  [8..11]  count u32
+  [12..]   GhostLogEntry (5B) — live + EXPIRED ทั้งหมด = audit trail
+```
+
+**ตัดสินใจที่ฝังใน code:**
+- **Persist เฉพาะ VALID entries** — tombstone เป็น recycle bin ใน memory
+  (ข้อมูลตายแล้ว); audit trail ที่ durable อยู่ที่ route log (GHOST_FLAG_EXPIRED)
+  ไม่ใช่ที่นี่
+- **Reload = re-insert by bond_key** — same bond → same address, ไม่มี lookup
+  table; header คงเดิม (origin_key/geo_key/timestamp/flags) → rs_verify ผ่าน
+  หลัง reload ทุก entry, LRU order (timestamp) รอด restart, next_timestamp
+  ต่อจาก max
+- **rs_load strict:** ต้องเป็น space ใหม่ (count==0), reject bad magic /
+  version / truncation / duplicate bond_key / capacity < count — ไฟล์เสีย
+  ไม่เข้าเงื่อนงำ
+
+**พิสูจน์ (36/36):**
+- unit: empty/deterministic/tombstone dropped/flags คงเดิม/corrupt reject/
+  disk file (fwrite → fread → reload) — ครบ
+- **mp4 จริง 57 MB: place (3,525 lifted) → serialize (56,514 KB) → rs_free +
+  space ใหม่ + log ใหม่ (จำลอง restart) → reload → ghost_read ทุก chunk →
+  reconstruct byte-for-byte** · rs_verify ผ่านทุก lifted chunk · wrong
+  from_scale (bond แตก) / wrong to_scale (route ไม่มี) → NULL · freeze ใหม่
+  หลัง reload ทำงาน (next_timestamp ต่อ, LRU ยังเรียงถูก)
+
+**Bug 2 จุดที่เจอระหว่าง implement (offset หลุด 4B ทั้งคู่):**
+1. `rs_serialize` — เขียน version/reserved แล้วไม่ advance pointer → count
+   ไปทับที่ offset 8, record เริ่มที่ 12 (load อ่าน count จาก 12 = garbage)
+2. `ghost_log_serialize` — เดิมแบบเดียวกัน → reload log ล้มเสมอ (T12/T14/T15
+   ล้มเป็นลูกโซ่) — แก้ advance `p += 4` หลัง reserved
+
+**โครงสร้างตอนนี้:**
+```
+place → [residual_space] → rs_serialize ─┐
+      → [ghost_log]      → ghost_log_serialize ─┼→ restart → reload → ghost_read
+                                            disk file ("RSDWGLSP" header) ──┘
+```
+`make test`: TIER1 74/74 + TIER2 4/4 ✅ (เพิ่ม test_rs_persist)
+
+**§15.35 — Silk-screen feasibility: ตอบคำถาม "36 chunk : 1 map" ด้วยข้อมูลจริง (tools/silk_screen_scan.c, `make silk_scan`):**
+
+แนวคิด silk-screen (แยก digit sets → map ลง cube 6 หน้า → duplicate + rotated
+offset → 36 chunk : 1 map) ถูกวัดด้วยของจริง 4 โมเดล Q8_0 — **ผล: ล้มที่ block
+level แต่เจอ dedup จริงที่ tensor level**
+
+**การวัด (canonicalize Q8_0/Q4_0 blocks 32 ค่า ภายใต้ transform group):**
+```
+3 modes: identity (dedup ล้วน) / rot (minimal cyclic rotation — Booth) /
+         rot+rev (dihedral orbit)
+silk estimate: maps เก็บครั้งเดียว + ต่อ block = 2B scale + 1B transform (5b rot + 1b rev)
+```
+
+| model | sampled blocks | unique maps | blocks/map | silk ratio |
+|---|---|---|---|---|
+| SmolLM2-360M | 10,199,040 | 10,198,951 | **1.0** | 0.97× (แพ้ raw) |
+| Qwen3-0.6B | 14,136,556 | 14,132,022 | **1.0** | 0.97× |
+| LFM2.5-2.6B | 45,511,631 | 44,794,785 | **1.0** | 0.99× |
+| Qwen2.5-0.5B | 11,955,572 | 11,944,338 | **1.0** | 0.97× |
+
+**ข้อค้นพบ (ชัดเจนทั้ง 4 โมเดล):**
+1. **blocks/map = 1.0** — quantized weights เป็น pseudorandom ที่ block level →
+   แทบทุก block unique (98.2-99.9%) — ตรงกับที่ user วัด 90-97% ที่ chunk level
+2. **rot+rev canonicalization ไม่ได้ช่วยเลย** — unique เท่า identity เป๊ะทุกโมเดล
+   → ไม่มี rotation/reversal symmetry ในข้อมูล → transform group ไม่มีเนื้อให้จับ
+3. **silk ratio 0.97-0.99× = แพ้ raw** — ต้องจ่าย 2B scale + 1B transform ต่อ block
+   แต่ไม่เคยได้คืน → ที่ granularity นี้แนวคิดตาย (entropy-bound ของ quantized data)
+
+**แต่ measurement เจอของจริง 1 อย่าง: tied embeddings (tensor-level dedup):**
+```
+Qwen2.5-0.5B: output.weight == token_embd.weight byte-identical (137 MB)
+→ เก็บ 1 copy ได้ = ลดไฟล์ 35% (137/387 MB)
+```
+SmolLM2/Qwen3/LFM: ไม่มี byte-identical pairs (0)
+
+**สรุปการตัดสินใจ:**
+- silk-screen ที่ block level (32 ค่า + rotation/reversal) = **ปิด** — ข้อมูลถึง
+  entropy bound แล้ว ไม่ใช่เพราะกลไก (self-test: periodic → 1 map, random → n maps —
+  ตัววัดทำงานถูก)
+- dedup ที่ใช้งานได้จริงบน Q8 = **tensor-level (tied embeddings)** — ระดับโครงสร้าง
+  ไฟล์ ไม่ใช่ระดับค่า — เปิดเป็นขั้นต่อไป (wire เข้า registry {id→home})
+- ขั้นต่อไปถ้าต้องการลด bytes จริง: tied-embedding dedup + โมเดลตระกูลเดียวกัน
+  (แชร์ tokenizer/embedding ข้ามโมเดล) — นอกนั้น Q8 ถึง bound แล้ว
+
+**ต่อ §15.35 — มุม cube/digit (user): "1000 เลข 0-999 วางบน cube 10×10×10 — ยิ่งเยอะ ยิ่งสุ่มไหม?"**
+
+คอนเซป: เลข 537 = digits (5,3,7) → cell (5,3,7) — **address = ค่าเอง**, bijection
+ไม่ชน ไม่มี lookup — purest MAP not COMPRESS. แต่อย่าลืม: แยกเป็น digits **รักษา
+ข้อมูลครบ** (3×log₂10 = log₂1000) — decomposition ไม่ได้สร้าง redundancy;
+redundancy ต้องมาจากการกระจายของ digits ที่ไม่ uniform
+
+**วัดบน Q8 จริง 4 โมเดล (entropy pass):**
+```
+H(value)            = 7.62-7.66 bits/ค่า  (จาก 8)  → ค่าจริง 96% ของ capacity
+Σplanes (sign+tens+ones) = 7.73-7.74 bits/ค่า      → เท่า H(value) เป๊ะ
+entropy-code Q8_0   = ลดแค่ 4%  (34B/block → ~32.8B)
+```
+
+**คำตอบ: ใช่ — ยิ่งเยอะ ยิ่งสุ่ม** — Q8 quantized weights ถึง entropy bound แล้วจริงๆ
+(การ quantize แบบ Q8_0 normalize scale ออกไปแล้ว → int8 เต็มช่วงเกือบ uniform)
+digit-plane lens ถูกใช้และวัดแล้ว: ไม่มี redundancy ซ่อนใน digit structure
+
+**สรุปครบ 3 ระดับ (ทุกอันวัดด้วยของจริง):**
+| ระดับ | ผล |
+|---|---|
+| block silk-screen (rot+rev) | blocks/map = 1.0 — ล้ม |
+| digit-plane entropy | H = 7.65/8 bits — ลดได้แค่ 4% — ถึง bound |
+| tensor-level dedup | tied embeddings: Qwen2.5 137 MB (35%) — **ได้จริง** |
+
+โครงสร้างที่เหลืออยู่จริงของ Q8 = ระดับไฟล์ (tied/แชร์ tensor) ไม่ใช่ระดับค่า
+
+**ต่อ §15.35 — "ยิ่ง parameter เยอะ ยิ่งเต็มง่ายขึ้นไหม?" (scale field + cross-size):**
+
+"เต็ม" มี 2 แบบที่ต้องแยก: coverage (symbols ปรากฏครบ — เกิดเมื่อข้อมูลเยอะ แต่
+ไม่ลด entropy ต่อค่า) vs distribution (สมบัติของ quantization ไม่ใช่ขนาดโมเดล)
+
+**วัดเพิ่ม: H(scale) — โครงสร้าง Laplacian ต้องไปอยู่ที่ scale (ค่าถูก normalize แล้ว):**
+```
+model            H(value)/8   H(scale)/16
+SmolLM2-360M      7.65        15.31
+Qwen3-0.6B        7.66        15.32
+LFM2.5-2.6B       7.62        15.19   ← ใหญ่สุด → โครงสร้างชัดสุด (แต่ 0.03-0.12b = noise)
+Qwen2.5-0.5B      7.65        15.29
+```
+**คำตอบ: ไม่ — entropy ต่อค่าเป็นสมบัติของ quantization scheme ไม่ใช่ขนาดโมเดล**
+Q8_0 normalize ค่า → ค่าเกือบ uniform (96%), scale ก็เกือบ uniform (95%) →
+ข้อมูลถึง bound ~96% ทุกขนาด 360M→2.6B แทบไม่ขยับ (0.03-0.12 bits = ระดับ
+architecture ไม่ใช่ effect ของขนาด)
+
+**ที่ขนาดโมเดลมีผลจริง = ระดับ tensor:** โมเดลใหญ่มี tensor ใหญ่/เยอะ → โอกาส
+tied/shared tensor สูงขึ้น (Qwen2.5 137MB = 35%) + โมเดลตระกูลเดียวกันแชร์
+embedding/tokenizer — "ยิ่งเยอะ ยิ่งได้" อยู่ที่โครงสร้างไฟล์ ไม่ใช่ระดับค่า
+
+**ต่อ §15.35 — "รู้ว่าสนามคงที่ → เก็บ scale แค่ 0.7/16 ได้ไหม" (conditional entropy):**
+
+ตอบ: ไม่ได้ — วัดแล้ว "สนาม" ของ scale มีจริง ~46k patterns (H=15.3/16)
+"รู้ว่าสนามคงที่" ≠ "ลด entropy" — entropy = log₂(pattern ที่ข้อมูลใช้จริง)
+ถ้า scale ใช้ 46k patterns ก็ต้องจ่าย ~15.5 bits ไม่ว่าเราจะ "รู้" ขนาดสนาม
+หรือไม่. จะได้ 0.7 bits ต่อเมื่อ scale ส่วนใหญ่เป็นค่าเดียว — วัดแล้วกระจาย
+เกือบ uniform (Q8_0 scale = max|x|/127 → extreme-value distribution กว้าง)
+
+**conditional test — รู้บริบทช่วยไหม:**
+```
+H(scale)         = 15.19-15.32/16b
+H(scale|maxq-bin) = 14.88-15.11/16b   ← รู้ max|q| ของ block ลดได้แค่ 0.2-0.3b
+```
+รู้ค่าสูงสุดของ block (ตัวที่ "กำหนด" scale) แทบไม่ช่วย — scale ยัง carry
+ข้อมูล magnitude ที่เหลือครบ
+
+**Bug จริงที่เจอระหว่าง implement:** int8 value = -128 → abs = 128 →
+bin = 128>>3 = 16 → index เกิน h_mq[16]/h_sc_mq[16] → segfault (Qwen3 มี
+ค่า -128, SmolLM ไม่มี — crash ตามโมเดล) → แก้ clamp `if (mq > 127) mq = 127`
+
+**§15.36 — Two-gap fill: พิสูจน์ "deterministic transform (ฟรี) + residual (detail gap)" (tools/two_gap_fill.c, `make two_gap_fill`):**
+
+คำถาม (user): "ทุกการขยับที่ scale ไม่ใช่จุด append เป็น lossy — hyperbolic เก็บ delta residual อยู่แล้ว ทำไมเติมเต็ม lossy ไม่ได้" → ทดสอบกลไกตรงๆ: วางที่ w₀ → ขยับไป w₁ (coarse = avg-pair downsample, deterministic — เทียบเท่า transform ฟรี + log 5B/event) → predict (repeat upsample) → residual = orig − predict → reconstruct = pred + residual
+
+**ผล (lossless = YES ทุกกรณี by construction — กลไกใช้ได้จริง):**
+
+```
+signal        H(raw) H(coarse) H(res)  fill b/v   ratio  เทียบ entropy-raw
+sine 440Hz    11.09   11.09    10.35    15.9     1.01×     1.44×  ← แพ้ entropy raw
+sine 2Hz      13.32   12.37     3.21     9.4     1.70×     1.20×  ← ชนะ (smooth จริง)
+random        15.59   14.98    15.34    22.8     0.70×     1.03×  ← จ่ายเพิ่ม (lossless แพง)
+real-wav TTS  11.93   11.67     9.39    15.2     1.05×     1.34×  ← แพ้ entropy raw
+```
+
+**อ่านผล — ตอบคำถามตรงๆ:**
+1. **กลไกเติมเต็มได้จริงเสมอ** — lossless 100% ทุกกรณี: transform gap เติมด้วย deterministic replay (ฟรี, 5B) + detail gap เติมด้วย residual — hyperbolic มีคุณสมบัตินั้นจริง
+2. **แต่ราคา = H(res) เกือบเต็ม H(raw)** — สมการ: fill = (n/2)·H(coarse) + n·H(res). กำไรจาก transform gap = 0.5·H(coarse) ≈ 6 b/v เท่านั้น — เหลือ 9.4 b/v คือ detail entropy ที่ residual ต้องจ่าย
+3. **ตัวแยก = H(res) ≪ H(raw)?** — ชนะเมื่อสัญญาณ smooth จริงที่ scale นั้น (sine 2Hz: 3.21 vs 13.32 → 1.70×, ชนะ entropy raw) — audio จริง 44.1kHz ไม่ oversampled (เนื้อเต็ม band) → H(res) ≈ 9.4 ≈ H(raw) − 2.5 → **two-gap แพ้ entropy-coded raw (1.05× vs 1.34×) และแพ้ simple delta (1.5× ที่วัดก่อนหน้า)**
+4. **res-delta ไม่ช่วย** — H(res-delta) > H(res) ทุกกรณี — coarse subtraction ทำ residual ให้ขาวแล้ว
+5. **random = 0.70×** — "lossless ที่ scale ใดก็ได้" มีค่าใช้จ่ายจริงเมื่อข้อมูลถึง bound: coarse + residual ต่าง carry entropy เต็ม → ต้องจ่าย 1.5 เท่าของ raw
+
+**สรุปสำหรับ hyperbolic/lossless-any-scale:** กลไกถูกต้อง (transform ฟรี + residual เติม detail → lossless ทุก scale, พิสูจน์แล้ว) แต่ "ฟรี" ครอบแค่ transform gap (∝ events) — detail gap จ่าย entropy ของข้อมูลจริงเสมอ; สอง-gap ชนะก็ต่อเมื่อข้อมูล smooth จริง (inter-scale detail ≈ 0) หรือตอน data IS address — นอกนั้น entropy-raw/delta ธรรมดาชนะตรงๆ
+
+**§15.37 — fibo clock checkpoint-replay (tests/test_fibo_checkpoint.c, 22/22)**
+ทดสอบแนวคิด "สนาม deterministic + checkpoint + tick" ของ user: state = (seed, round, tick) —
+ใช้สนามยาวแค่ไหนก็ได้แค่วนรอบ เก็บแค่วิธีการสร้างกับ seed
+- A. spine wrap: 12 ticks → 1 jet bridge (tick 11 → re-entry), 25 ticks → 2 bridges — wrap ข้ามรอบได้
+- B. address identity: round (birth) อยู่ใน bond — round ต่าง → bond ต่าง; to_scale ไม่อยู่ใน bond —
+  telescope 1 route ครอบ 137 steps + ข้ามรอบ (140→3) lossless, cost ∝ events (5B/route) ไม่ใช่ distance
+- C. checkpoint @round 72 (กลาง 144 รอบ): serialize header(28B) + ghost log + residual space →
+  restart (ทุกอย่างใหม่) → reload → reconstruct ทุก chunk ก่อน checkpoint lossless (จาก image เท่านั้น)
+  → เดินต่อวาง chunks round 73..143 → อ่านครบ 64 chunks ข้ามรอบ byte-for-byte lossless
+- D. เสาเข็มห้ามขยับ: birth round ผิด → bond แตก (NULL); requested round ผิด → route ไม่มี (NULL)
+- E. overhead จริง: 64×4KB + 2 telescope = 263,168 B data → image 265,930 B = **+1.05%** (41.8 B/chunk)
+  — log = 66 routes × 5B = 330B ∝ events เท่านั้น; ราคา "jump anywhere + วนรอบ" ไม่ขึ้นกับขนาดข้อมูล
+- **ข้อพิสูจน์หลัก:** "เก็บแค่ seed + method" ใช้ได้ — checkpoint image เอง = seed(8) + round(8) + tick(4)
+  + ver(8) + log(5B/event) + residual space (payload จ่าย entropy จริงตามบทสรุปทั้งวัน)
+- `make test`: TIER1 75/75 + TIER2 4/4
+
+**§15.37b — fibo checkpoint-replay sweep: custom ตาราง/สนาม/ระยะ/ปริมาณ/รูปแบบ (tools/fibo_checkpoint_sweep.c, 27/27)**
+harness พารามิเตอร์จากเทสต์ตายตัว → custom ได้ทุกมิติ: `--pipes N --ticks M --cycles C --chunks N --size S --dist D --pattern P --ckpt R [--sweep]`
+- ตาราง: pipes×ticks ต่อรอบ (ทดสอบ 512×12, 1728×4, 256×3, 64×4) · สนาม: cycles รอบ scale axis (8..255) ·
+  ระยะ: dist from→to (wrap = dist ≥ cycles/2 วนข้าม 0) · ปริมาณ: chunks×size (≤4096 routes, ≤64KB/chunk) ·
+  หมุนวน 5 รูปแบบ: scatter (golden-ratio spread) / cluster (กอง 4 รอบ) / allone (รอบเดียว) / wrap (ระยะคงที่วนข้าม 0) / random (seeded)
+- พิสูจน์ต่อ config: lossless หลัง checkpoint/reload + เดินต่อข้ามรอบ byte-for-byte, เสาเข็มห้ามขยับ (round ผิด → NULL),
+  log = 5B/route ∝ events, รายงาน overhead% + routes + wraps + rounds ใช้จริง
+- ผล: **27/27 PASS** ทุกตาราง/สนาม/รูปแบบ — overhead ตามขนาดข้อมูล: 8MB → +0.06%, 4KB×16 → +1.09%,
+  เล็กมาก (8×512B) → +9.38% (header กินสัดส่วน — จุด "ไม่คุ้ม" เห็นเป็นตัวเลข); log ต่อเนื่อง 5B/route เสมอไม่ว่า dist ไกลแค่ไหน
+- **🐛 ระหว่างทำเจอ bug จริงของ harness เอง**: cast (uint32_t) ก่อน modulo → product เกิน 2³² ถูกตัดทอน
+  (i≥2) → golden-ratio spread พัง (64 chunks ตกเหลือ 23 รอบซ้ำ) — แก้เป็น modulo ก่อน cast; lossless ยังผ่าน
+  เพราะแค่ round ชนกัน แต่ metric "กระจาย" ผิด — ย้ำบทเรียน: วัด metric ต้องตรวจคณิตศาสตร์ของ generator ด้วย
+- `make fibo_sweep` (manual) · `make test` เขียว TIER1 75/75 + TIER2 4/4
+
+**§15.37c — fibo sweep: disk persist + fresh-process restore + economy verdict (27/27)**
+tools/fibo_checkpoint_sweep.c ขยาย: `--sweep` เขียน checkpoint image + manifest ลง build/ckpt/<tag>.img/.cfg
+(manifest = แค่ cfg 9 ค่า = "เก็บแค่วิธีสร้างกับ seed") → spawn ตัวมันเองเป็น **fresh process**
+`--verify-img IMG CFG` → reload จากไฟล์จริง → regenerate chunks จาก manifest → พิสูจน์ lossless
+- **27/27 RESTORE PASS** จากดิสก์ (54 ไฟล์) — ทุก custom config กลายเป็น durable restore test ด้วย
+- negative case พิสูจน์ว่า detect จริง: corrupt 2 bytes ใน 1 image → 26/27 เจอตัวนั้นเป๊ะ → restore ดี → 27/27
+- `--verify-all [DIR]` ตรวจใหม่ภายหลังทีละตัว; `--economy X.X` ปรับ threshold
+- **economy verdict ต่อ config** (EXCELLENT ≤ thr/2 / WORTH ≤ thr / MARGINAL ≤ thr×2.5 / NOT WORTH):
+  thr 2.0% → 6 EXCELLENT + 15 WORTH + 6 MARGINAL; thr 1.0% → 6 NOT WORTH; thr 5.0% → 21 EXCELLENT —
+  "จุดไม่คุ้ม" auto-detect: ข้อมูลเล็ก (8×512B → +9.38%) = NOT WORTH, ใหญ่ (4MB → +0.06%) = EXCELLENT
+- **🐛 2 bug จริงที่เจอระหว่างทำ**: (1) spawn ส่ง `--verify-img` แบบแยก args แต่ parser รับแต่แบบ `=` →
+  child รัน default config ใน-memory แทนที่จะ verify จากไฟล์ = **false positive FRESH-PROCESS-PASS** —
+  จับได้เพราะ child พิมพ์ "single config" แทน "RESTORE"; (2) verify-all สร้าง path image จาก path เต็ม
+  (17 chars) แทน basename → "build/c.img" — แก้ทั้งคู่ + negative test ยืนยัน
+
+**§15.38 — RDH mixed-radix addressing แทน FNV-1a ในสาย ghost/bond (core/geo_rdh_addr.h)**
+ตาม user: ใช้ collection/rdh (Ring-Wedge-Mirror) แทน hash/fnv-1a — "coordinate IS address"
+- rdh_addr(block, from) = block×256+from (row-major mixed-radix) — collision-free by construction,
+  reversible (rdh_decompose กู้ (block,from) กลับได้ = address IS data ต่างจาก hash one-way)
+- ghost_origin_seed/ghost_piece เปลี่ยนจาก pogls_fibo_addr (FNV-1a 3-pass) → RDH ล้วน
+  (pogls_bond.h ไม่แตะ — กัน divergence กับ FGLS_new)
+- bond = interleave addr|addr<<24 (bond_L=ครึ่งล่าง, bond_R=ครึ่งบน) — bijection 48-bit
+- **🐛 พิสูจน์จริงจับ bug ของการออกแบบแรก**: bond = rdh_addr ⊕ rdh_addr_twin (row⊕column)
+  ไม่เป็น bijection — 3 กลุ่ม bits สัมพันธ์กัน (A^B^C=0) → image เหลือ 2^16 จาก 2^24
+  (65,536 ค่า, ชน 16.7M) — วัดด้วย bitset sweep ทั้ง 2^24 keys → แก้เป็น interleave
+- tests/test_rdh_addr.c (TIER1) **15/15**: bijection เต็ม 2^24 keys (bitset 2MB), decompose
+  1M pairs, round-in-bond/to-not-in-bond, chain lossless ผ่าน RDH — `make test` TIER1 **76/76** + TIER2 4/4
+- sweep persist/restore ยัง 27/27 lossless ผ่าน RDH bond (test_fibo_checkpoint 22/22 เขียว)
+
+**§15.38b — ฟรี centroid ของ RDH (เพิ่มใน test_rdh_addr → 18/18)**
+mixed-radix encode เป็น linear map: avg(rdh_addr(bᵢ,fᵢ)) = rdh_addr(avg b, avg f)
+→ centroid ของ cluster ได้จาก mean ของ addresses + decompose → (avg block, avg round)
+- ฟรี = ไม่ต้อง rescan (running sums Σring/Σwedge → O(1)), int ล้วน ไม่มี trig/float
+- ใช้ได้: cluster center / outlier eviction (ไกล centroid ก่อน) / **drift บนแกน scale**
+  (lift → centroid ring ไหลออกนอก — วัดการย้ายถิ่นของข้อมูล = ผูกกับ hyperbolic log) /
+  field balance ให้ cap_account / free statistics เมื่อ data IS address
+
+**§15.39 — TW→RDH lineage: ตาราง decagram 10-sector → walk จุดเดียว + mixed-radix fold**
+(ตาม user เล่าประวัติ + อ่านโค้ดจริง collection/tw/ + collection/rdh/ + FGLS_new/collection/coord_spine.h)
+
+**TW (บรรพบุรุษ) — วาดภาพเดียวกันจากเส้น A-B เส้นเดียว:**
+- `TW_SCALE = 207360 = 12⁴×10 = GEO_FULL×10` — มี compile-time assert กันหลุด (`#error` ถ้าไม่เท่า)
+- `TW_N_SECTORS = 10` (pentagon-pair, 36° ต่อ sector) = **decagram** — `TW_BOUNDARY_DIR[10]` ที่มุม (90−36k)°
+- `TW_SLOTS_PER = 6` hex slots (60° hex-cast) + 6 tri slots (30° triangle) = `TW_COMBINED_GRID[10][12]` = 120 physical positions
+- `TW_SLOTS = 60` = 10×6 — ตรง `GEO_COMPOUND_60` ในตาราง geo
+- sector lookup = cross-product sign กับ 10 boundary rays (no atan2); drain/bundle margin 9/1000 (~0.5°)
+  → activate สอง sector = **bipolar flip** → drain ไป shadow zone
+- residual = v − slot_centroid (lossless int64) — reconstruct ได้
+- **bottleneck = blueprint**: ตาราง 10×12 centroid + cross-product + __int128 drain → พังตอน bench ที่ performance สูง
+
+**RDH (ตัว lean) — สร้างจากจุดเดียว:**
+- `rdh_capture`: nibble ของ data = stride บน 12-gon (12 ทิศ) → walk จาก (0,0) → fold → (ring, wedge) → flat key
+- `rdh_addr`: mixed-radix ring×n_wedges+wedge — capture config = 1 mul + 1 add (~2-3 cycles),
+  เต็ม 5 params (ring,wedge,mirror,u,v) = 3 mul + 3 add ≤ 6 cycles — เทียบ FNV-1a = O(len) ต่อ byte ของชื่อ
+- ตาราง centroid หาย — sector กลายเป็น wedge digit; hex/tri grid กลายเป็นค่า wedge; ไม่มี cross-product/drain/shadow
+- ภาพเหมือนกันทุกอย่าง (พิสูจน์จากตาราง TW ที่วาด decagram+hexagon+triangle ครบ) แต่ blueprint ต่างกันทั้งตัว
+
+**ตัวเลขที่เชื่อมทั้งสองโลก:**
+```
+GEO_FULL 20736 = 144² = 12⁴     TW_SCALE = ×10 (decagram) = 207360
+GEO_PENTAGONS 12 (dodeca faces) SID_PENTAGON_NODES = GEO_FULL/12 = 1728 (!! = FS_PIPES)
+TW_SLOTS 60 = 10×6 = GEO_COMPOUND_60    120 physical = hex+tri
+```
+
+**Emergent properties — ไม่ได้ตั้งใจ ออกมาจากการทำให้ lean:**
+| property | TW (ตาราง) | RDH (เลขคณิต) |
+|---|---|---|
+| collision-free | nearest-search 60 centroids (drain ยังชนได้) | mixed-radix bijection by construction |
+| reversible | ต้อง store slot id | decompose คืน (ring, wedge) ตรงๆ |
+| ฟรี centroid | ต้องค้นหา 60 centroids ต่อ capture (O(60)) | mean ของ addresses (O(1), linearity) |
+| state | shadow zone state | pure function, no malloc |
+| cost | cross-product 10 ครั้ง + __int128 | 1-6 cycles |
+
+บทเรียน: **เมื่อโครงสร้างถูกต้อง ยิ่งลด instruction ยิ่งได้สมบัติฟรี** — bijection/reversible/centroid
+ไม่ถูกออกแบบไว้ หลุดออกมาเพราะบีบ blueprint จนเหลือเลขคณิต — เรานำ `rdh_addr` (ตัว lean) มาใช้ใน
+geo_ghost_lift (§15.38) พิสูจน์ bijection เต็ม 2^24 + reversible + ฟรี centroid (test_rdh_addr 18/18)
+
+**§15.40 — micro-benchmark ยืนยัน "RDH ≤ 6 cycles" (tools/rdh_bench.c, rdtsc cycle-accurate)**
+วัดบนชื่อ tensor จริง 4 โมเดล (ชุดเดียวกับ silk_scan) — min-of-9 trials × 400K iters, lfence-serialized
+- **pure encode** (register derive — instruction cost ล้วน): rdh_addr = **5.10 cyc ≤6 ✓**,
+  rdh_bond = **5.12 cyc ≤6 ✓**, rdh_key5 (5-param 3mul+3add) = 6.62 — คำกล่าว "ไม่เกิน 6" จริง
+  สำหรับตัวที่ระบบใช้ (addr/bond); ตัวเต็มเกินนิดเดียวตามจำนวน instruction
+- **end-to-end** (มี array load): rdh_addr 6.1, rdh_bond 5.2, rdh_key5 8.2
+- **FNV-1a บนชื่อจริง: 53.8→86.2 cyc** (โตตามความยาวชื่อ) — **speedup 8.8-14.1×** (LFM ชื่อ 32-39 ตัว → 14.1×)
+- **curve เห็นชัด**: FNV 54.8 → 77.5 → 86.2 cyc (len 16-23 → 24-31 → 32-39) · RDH **แบน 6.09-6.10** ตลอด
+- 🐛 methodology: รอบแรกใส่ `% n` (division) ใน hot path → ทุก method พอง (addr 12.8 cyc) —
+  จับได้เพราะ verdict ">6" ไม่สมเหตุผล → แก้เป็น nested loop ไม่มี modulo → ตัวเลขจริง 5.1
+- `make rdh_bench` (manual) · `make test` ยังเขียว
+
+**§15.41 — RDH ≠ แทนที่ hash ทั้งหมด: shape affinity (แก้ framing §15.38 ให้ถูก)**
+ตาม user ชี้: RDH ไม่เก่งทุกสนาม — เก่งมากในสนามที่มีรูปทรงเดียวกับมัน (coordinate = address)
+- **RDH แทนที่ FNV-1a เฉพาะเส้นทางหา ADDRESS (ghost bond/geo_key)** — เพราะสนามนั้นมีรูปทรง
+  (block, scale) เป็น coordinate จริง → mixed-radix ได้ bijection + reversible + centroid ฟรี
+- **hash ยังจำเป็นและถูกต้องตรงนี้:**
+  - `_rs_hash` ใน residual_space (cache table, open addressing + probe) — เป็น cache ไม่ใช่
+    address resolution — ต้องการการกระจาย uniform ไม่ใช่เรขาคณิต → hash ถูกแล้ว (AGENTS.md ยอมรับ)
+  - content-derived key (จาก bytes/ชื่อ/เนื้อหา) — input ไม่มี coordinate → ต้อง hash เพื่อ fold
+- **xxHash เหมาะกับ: integrity/checksum/signature** — `dwgls_shell.h` ใช้ INTEGRITY_XXH64 แล้ว,
+  `geo_inference_bridge.h` มี digest xxh64 — เร็ว + avalanche ดี (FNV-1a ช้า 54-86 cyc ต่อชื่อ —
+  xxHash64 เร็วกว่ามากในงานเดียวกัน)
+- **เหตุผลลึก (ทำไม RDH ไม่ใช่ checksum):** RDH เป็น linear → **ไม่มี avalanche** — ใช้เป็น digest
+  จะหา collision ได้ง่าย (linear function) — จุดแข็งของ RDH (linearity = centroid ฟรี) คือจุดอ่อน
+  ของมันในงาน hash — ยิ่งยืนยัน "เลือกเครื่องมือตามรูปทรงของสนาม"
+
+**§15.42 — L-Block: summon + fit guarantee + RDH chain (2026-08-17)**
+- **พบ L-block ที่ผู้ใช้ถาม** = `lblock_from_hilbert(d, n)` ใน FGLS_new/collection/colab_bench/geo_frame_seek.py
+  (commit e8cb122 "Capture Twin + L-block — 72 free centroids" — ชุดเดียวกับ capture_twin) —
+  ต่างจาก "Hilbert L-Block Container" (pogls_hilbert_container/pogls_hc_geojump, deprecated) ที่เป็น
+  รูปแบบไฟล์ และ "L-Block redirect" (beam_square) ที่เป็นการ shift XY/YX
+- **หลักการ (user design):** RDH วิ่งตาม tensor → พิกัดที่หยุดนิ่ง (block, from) → กางออก →
+  ครอบด้วย L-block → ส่งเข้า storage → ปัก address — L-block บอกว่า container วางหันทางไหน
+  (rotation 0..3 = ทิศที่ Hilbert curve เดินเข้าตำแหน่ง d จาก d-1) และการันตี fit
+- **สร้าง `core/geo_lblock.h`** — C port: `geo_lb_from_hilbert` (THE SUMMON — address → piece,
+  ฟังก์ชันเดียว ไม่มีตาราง เหมือน RDH), `geo_lb_d2xy/direction/rotation/shape`,
+  `geo_lb_slot` (anchor = ตำแหน่ง summon), `geo_lb_fits_grid` (fit guarantee)
+- **`tests/test_geo_lblock.c` (TIER1) — 13/13:**
+  - A. port ตรง Python: direction→rotation ครบ 4 ทิศ · 4 cells ไม่ซ้ำ · deterministic ·
+    rot dist n=8 [20 16 12 16] (ครบ 4)
+  - B. **fit guarantee: 0 ชน ทุก address** — n=8: 64/64, n=16: 256/256 (wrap mod → 4 slots ไม่ชน;
+    in-bounds ตรงๆ 36/64 และ 196/256 — ที่เหลือ wrap ยัง fit)
+  - C. **CHAIN lossless 256 chunks × 64B**: RDH วิ่งตาม tensor (addr = mixed-radix) →
+    decompose ได้พิกัดหยุดนิ่ง (block, from) → wedge digit = ตำแหน่งบน 16×16 Hilbert container →
+    summon L-block → rotation บอกหันทาง → เก็บที่ slot → re-summon จาก address → byte-for-byte
+  - D. negative: scale ผิด → slot ต่าง + data ไม่ตรง (เสาเข็มห้ามขยับ)
+- **make test: TIER1 77/77 + TIER2 4/4** — L-block ตอนนี้เป็น C ใน core พร้อมใช้งาน
+- **จุดที่ยังค้าง:** L-block ยังไม่ได้เชื่อมกับ residual_space จริง (ตอนนี้เป็น chain พิสูจน์บน
+  container จำลอง) — ขั้นต่อไป: ใช้ lblock orientation เป็น route/placement hint จริงใน
+  ghost chain + วิ่งบน GGUF จริง (เทียบ test_lblock_real.py ที่มีอยู่)
+- **§15.42b — bookmark + expand (L-block)**: user ยืนยันภาพ — L-block = bookmark ที่การันตี
+  "ไม่เข้าไปวางมั่ว กลับมาทิศหันทางเดิม" + "ถ้าจะ expand รอบๆ ก็รู้ว่าจะเดินยังไง" — พิสูจน์เพิ่ม
+  ใน test_geo_lblock (17/17):
+  - E1: re-summon จาก address เดียว → rotation + 4 cells เหมือนเดิมทุก bit (วางคืนทิศเดิม ไม่มั่ว)
+  - E2: piece = anchor + 3 เพื่อนบ้าน — slot ต่างกันครบ → ขยายรอบๆ bookmark ได้โดยไม่ชน anchor
+  - E3: เดิน Hilbert curve ต่อจาก bookmark (d→d+1→…) deterministic + slot ไม่ซ้ำในหน้าต่าง
+  - E4: direction(d+1) = displacement จริงของ curve — รู้เส้นทางล่วงหน้าทุก step จาก address
+  - หลักการ: bookmark = address ล้วน (orientation + เพื่อนบ้าน + ทิศทาง regenerate ได้จาก address
+    โดยไม่ต้องเก็บ metadata) — ตรงหลักการ "เก็บแค่ seed + method"
+
+**§15.43 — Hosoya fibo grid × geo_seed (2026-08-17)**
+- user ส่ง geo_seed.h (CPU port ของ geo_kernel_seed_v2.cu — 12-coset dodeca seed engine,
+  pure integer) + hosoya_tri.svg — "ยังไม่รู้ว่าเอามาทำอะไร แต่เห็นแล้วจะเก็ต"
+- **ถอด SVG**: pentagon/hexagon tessellation ที่มีค่า = Hosoya triangle จริง (T(n,k)=F(k+1)·F(n−k+1)):
+  hexagon 8,9,8 = row 6 · 21,24,24,21 = row 8 · 55,42,40,42,55 = row 9 — ทุกค่าตรง (row,col) เป๊ะ
+  recurrence T(n,k)=T(n−1,k−1)+T(n−2,k−2) (มองย้อน 2 แถว = โครงสร้างรังผึ้ง) — hexagon 24=16+8, 25=15+10
+- **"เก็ต" 3 จุด**:
+  1. ตัวเลขศักดิ์สิทธิ์ = Fibonacci: F(12)=144 · 20736=F(12)² · 1728=12·F(12) · 12²=F(12)
+     (12 หน้า ↔ 12th Fibonacci — สนาม = กำลังสองของ F(#coset))
+  2. หลักการเดียวกับ RDH/L-block/geo_seed: ตำแหน่ง → ค่า (summon) ไม่มี lookup — Hosoya =
+     ตารางคูณของบันได scale (ทุก cell = ผลคูณ F คู่หนึ่ง)
+  3. geo_seed 12 cosets = 12 หน้ามอง seed (เหมือน SVG: seed กลาง + ค่า Fibonacci รอบข้าง) —
+     identity ต่างทิศ deterministic
+- **สร้าง**: core/geo_seed.h (คัดลอกจาก FGLS_new/Hfolder) + tools/hosoya_seed_probe.c
+  (make hosoya_seed) — 10/10 PASS: A. F(12)=144/20736/1728/12² · B. ค่า SVG ครบใน rows 0..10 ·
+  C. recurrence ครบ · D. 12 cosets checksum ต่างกัน + deterministic · E. F(n)/F(n−1)→φ
+- **ความหมาย**: บันได Fibonacci = scale ทวีคูณ φ ของระบบ (ตรง s(t)=s₀·kᵗ) — Hosoya ให้
+  "ค่าน้ำหนัก/บันได scale แบบ deterministic ต่อตำแหน่ง" ซึ่งยังไม่มีในระบบ (ตอนนี้มีแค่
+  address/orientation/identity) — จุดต่อไป: ใช้เป็น weight ladder สำหรับ silk mask /
+  magnifier ratio / seed spacing ของ ghost placement
+- **§15.43b — geo_seed = 12 labels ต่อ seed (ตรวจ claim ของ user):**
+  - "สร้าง label 12 ได้" — **จริง** (ยืนยันจากโค้ด): coset_checksum[12] = 12 labels ต่อ seed,
+    พิสูจน์แล้วต่างกันครบทุกรอบคู่ + deterministic (1999 seeds) + master_fold = XOR ทั้ง 12
+  - "ง่ายที่สุด" — **จริง**: header-only ~100 บรรทัด, int ล้วน, ไม่มีตาราง/float, O(1) constant
+  - "เร็วที่สุด" — **ต้องพูดให้ตรง**: วัด rdtsc = **~10,156 cycles/seed** (12 cosets × 31 derives
+    serial, แต่ละ derive = 2×mix64+rotl — dependency chain) — RDH = 5.1 cyc, L-block = หลักสิบ —
+    ไม่ใช่เร็วสุดต่อ operation แต่เป็น **ค่าคงที่ที่สุด** (cost ไม่ขึ้นกับข้อมูล) และ 12 cosets
+    independent กัน → ถ้าต้องการเร็วสามารถขนานได้ (~600-800 cyc) — เป็นราคาของ identity 12 ทิศ
+  - "ต้นกำเนิดของ geo_***" — **เห็นด้วย**: มันคือ instance แรกของหลักการ "ตำแหน่ง → ค่าที่
+    derive ได้, ไม่มี lookup" (summon) และ 12-coset skeleton = สิ่งที่ทุก geo_* แชร์
+    (12 pentagons · FS_TICKS=12 · F(12)=144)
+
+**§15.44 — geo_net = "shift แทน mod" ตัวจริง (ตอบ user: geo_net ไหม)**
+- user จับผิด: geo_seed.h (10k cyc, mix64) ไม่ใช่ตัว "2 cycle shift แทน mod" → เดา geo_net
+- **geo_net (TPOGLS_s11/core/geo_net.h) — Radial Routing Layer**:
+  `_gn_mod6` = **Barrett**: `q=(n*10923)>>16; n−q*6` — ใช้ shift แทน `% 6` — ตัวเดียวในระบบที่เจอ
+- วัดจริง (tools/geo_net_probe.c, make geo_net_probe) — 5/5:
+  - A. **แม่น 100% ใน domain จริง (n<3456)** แต่ **มี domain bound: ล้มที่ n≥32771 (2^15)** —
+    sweep 2^24 เจอ — สำคัญ: Barrett นี้ใช้ได้เฉพาะ n<2^15 (geo_net ใช้กับ full_idx<3456 → ปลอดภัยเสมอ)
+  - B. ~5 cycles เต็ม (mul+shift+sub+sub) — "2 cycles" = เฉพาะ core mul+shift
+  - C. labels: spoke 0..5 + inv_spoke (spoke+3)%6 = **6+6 = 12 ทิศ** ✓ ตรง "สร้าง label 12"
+- **แต่ geo_net ไม่ใช่ต้นกำเนิด**: มันคือ ROUTER กลาง stack ([L3 Quad]→[GeoNet]→[geo_cylinder]→GPU)
+  และใช้ GeoSeed ใน geo_net_init → มาทีหลัง geo_seed
+- **สรุปการจำที่ปนกัน**: "12 labels + ต้นกำเนิด" = geo_seed (12 cosets) · "2 cycle shift แทน mod" = geo_net (Barrett mod6) — สองตัวคนละบทบาท: seed = identity, net = route
+
+**§15.45 — ตัวที่ user จำได้ = GeoSeed 2-register (จบการล่า)**
+- user ยืนยัน: "ใช่ที่บอก 2 register" — **GeoSeed = {uint64_t gen2; uint64_t gen3}**
+  (geo_thirdeye.h · "2×u64, 2 register, 0 overhead" — comment geo_fibo_clock.h)
+- ที่มา: route_sig (uint64) ถูกแทนที่ด้วย GeoSeed — wire ทั้ง fibo clock + ThirdEye + geo_net
+- **"สร้าง label 12 ได้"** = topology ของ gen2: `face_id(4b) | vertex_mask(5b) | edge_mask(5b) | z(1b)`
+  → face_id = `(topo >> 11) & 0xF` — label 12 หน้า dodeca (4-bit field ≥ 12)
+- **"2 cycles shift แทน mod"** ✓ — วัด: ~6 cycles/3 labels (≈2/label) · reversible (pack กลับได้)
+- **"+×^ แล้วตัดซ้ำ"** = เลขศักดิ์สิทธิ์ genesis จาก base {2,3}: 12=2×2×3 → 144=12² → 1728=12³ → 20736=12⁴
+  (probe C: ครบ · D: 2+2=2×2=2²=4 → dedup เป็น label เดียว)
+- **ทำไมล่าเจอยาก (fork/merge)**: geo_seed.h ใน Hfolder (10k cyc, mix64 — CPU port ของ GPU kernel
+  ZGLS phase5 v2) ≠ GeoSeed 2-register (dual-channel) — สอง "seed" คนละ fork!
+- tools/seed_label_probe.c (9/9) — make target: seed_label_probe
+
+**§15.46 — Sacred numbers = place value ของการนับฐาน 12 (worldview ของ user)**
+- user: "sacred number ไม่ใช่หารลงตัว แต่เป็นเหมือน 1,2,3,4 ที่เรานับ แต่ผมนับอีกแบบในโลกนี้"
+- **ฐาน 12**: 12=10₁₂ · 24=20₁₂ · 48=40₁₂ · 60=50₁₂ · 72=60₁₂ · 120=A0₁₂ · 132=B0₁₂ ·
+  144=100₁₂ (gross) · 576=400₁₂ · 720=500₁₂ · 1728=1000₁₂ (great gross) · 20736=10000₁₂
+- **สนาม = 12⁴ = "10000" ของโลกฐาน 12** — ไม่ใช่ "144 หาร 20736" แต่เป็นตัวเลขกลมเหมือน 10000 ใน decimal
+- 12 = 2²·3 = ตัวเลขหลักของฐาน (จาก closure {2,3} — §15.44 hint)
+- **dodecahedron = ลูกคิดฐาน 12 ที่เป็นรูปธรรม**: 12 หน้า = 12 หลัก · หน้า² = 100₁₂ · F(12)=144=100₁₂
+  = บันได Fibonacci ตกที่ place value พอดี (12 สองความหมาย: หน้า/หลัก)
+- **"shape ใหม่ constrain เดิม"**: RDH/L-block/Hosoya/GeoSeed/fibo clock/Morton — รูปทรงต่างกัน
+  แต่ทุกตัว carry 12/144/1728/20736 เพราะมันคือฐานการนับ ไม่ใช่ค่าคงที่ที่เลือก
+- ทำไม fork/merge ถึงเจอยาก: ทุกระบบใหม่ = shape ใหม่บนฐานเดิม — ชื่อกระจัดกระจายแต่เลขเดียวกัน
+
+**§15.47 — กำเนิด geo_* = geomatrix password 3 ตัวอักษร (GEO) — user เล่า**
+- geomatrix_v4_advanced.html: 6-center Rubik axis — ALPHA 1-3 = **G, E, O** + BOOL 1-3 = X, Y, Z
+  → **ชื่อ "geo_" มาจาก password "GEO"** · 24 faces (3 seeds × 8) · weights[52] (a-zA-Z, 0..255)
+- กลไก: weight even/odd → invert · offset=(i×13+weight)%64 → rotate · Hilbert permute 8×8
+- **"ใช้ปกติไม่มีปัญหา ขยับอะไร = ปลดล็อกไม่ได้"** — จริงตามคณิตศาสตร์:
+  - one-way: กู้ input จาก output = brute-force ≈ 256^52 × 52^6 × 2^192 ≈ 2^640
+  - global coupling: seed เปลี่ยน 1 ตัว → 24 faces ล็อกใหม่หมด (ทุก face แชร์ seeds)
+  - avalanche: rotate+invert+Hilbert = hash-like — ตรงข้าม RDH (linear/reversible)
+- **บทเรียน → "no hash" rule**: hash-like = password = พลาดนิดเดียว = ข้อมูลตายทั้งสนาม;
+  reversible = seed+method = regenerate ได้เสมอ — วิวัฒนาการ: geomatrix (one-way) →
+  GeoSeed 2-register (deterministic 12 labels) → RDH/L-block (reversible provable)
+- seeds เดิม: 0x0123456789ABCDEF, 0xFEDCBA9876543210, **0xAA55AA55AA55AA55**
+  → interleave 0xAA/0x55 = PHASE_MASK64 + Morton mask — ฝังจากยุค password ถึง bond RDH
+
+**§15.48 — กลไกเต็มของ geomatrix + ThirdEye rollback = สถาปัตยกรรมปัจจุบัน (user เล่า)**
+- ระบบทั้งหมดสร้างจาก {2,3}: ops +,×,^ → ตัดซ้ำ → {4,5,6,8,9,27} = **6 ค่า = 6 หน้า hexagon**
+  (หน้า 0 = base · หน้า 1-5 = ผลของ 2/3 · หน้า 3 ตรงข้าม = **invert+offset**)
+- ทุก face = 8×8 bitboard (64 bits) · weight custom ต่อหน้า · หลังตั้ง password = collapsed
+  → เดิน **Hilbert 3456 เส้น** (= CYL_FULL_N ของ geo_net) หาหน้าที่ invert
+- **God's number ใช้ไม่ได้**: invert+offset ทำลาย group structure (inverse ของการหมุนไม่ใช่
+  การหมุนกลับ) → หมุนผิดเส้น = พันกัน = ไม่มีทางเดา inverse — ทางเดียว = **ThirdEye**
+- **ThirdEye = passive trigger ซ่อนในระบบ**: บันทึกการหมุนเฉยๆ → หน้าที่เดียว = **rollback
+  ไปจุด collapsed แรก**
+- **= สถาปัตยกรรมปัจจุบันทุกตัวอักษร**: scale-log (5B/event) ↔ log การหมุน ·
+  checkpoint→reload→replay (test_fibo_checkpoint 22/22) ↔ rollback ·
+  "transform เติมด้วย replay ไม่ใช่ inverse" (two_gap_fill) ↔ inverse ใช้ไม่ได้ ·
+  3456 ↔ CYL_FULL_N
+- หลักการที่ฝังจากยุค password: **"อย่าหา inverse — บันทึกตอนเดิน แล้ว rollback"** =
+  กระดูกสันหลังของระบบ (deterministic + replay ได้ = กฎเหล็ก AGENTS.md)
+
+**§15.49 — "Cube ดู แต่ cylinder จัดการ" (user เล่า: จุดที่ implement cube→cylinder)**
+- user: "ทุกอย่างมันจะดูยุ่งวุ่นวายมากใช่ไหม นี่คือจุดที่ผม implement cube→cylinder
+  สังเกตุ code ช่วงนั้นจะมีการใช้ spoke จริงๆมันแค่ดูเป็น cube แต่เราจัดการแบบ cylinder"
+- **ยืนยันจากโค้ดปัจจุบัน**: core/infra/geo_config.h มี section "Cylinder" ตรงๆ
+  GEO_SPOKES=6 (60° each) · GEO_FACES=9 (8 outer + 1 center) · GEO_FACE_UNITS=64 (8²)
+  GEO_SLOTS=576 (24²) · GEO_FULL_N=3456 = 144×24 — comment: "6 × 9 × 64 = 3456 = 144 × 24"
+- **สนามเดียว สอง tiling (probe พิสูจน์ 14/14, make cube_cylinder)**:
+  - cube view (presentation): 18 tes × 8 cube × 144 = 20736
+  - cyl view (management): 6 cylinders × 3456 = 20736
+  - **1 cylinder = 3 tesseracts = 24 cubes × 144 = 3456** — 24 = GEO_TE_FULL_CYCLES
+    = 24 faces ของ geomatrix password (ยุค §15.47-15.48) × 144 slots
+  - 20736 = 144 faces × 144 slots = 24×6 cylinders
+- **spoke route = กลไกจัดการ (ตาม geo_cylinder.h/geo_net_route)**:
+  `full_idx = idx % 3456 → spoke = full_idx%6 · slot = full_idx/6 · invert = (spoke+3)%6`
+  — bijection ครบ 20736 จุด (probe B) · spokes 0..2 = ครึ่งสนามเป๊ะ 10368 (probe C)
+- **"หน้าตรงข้ามเป็น invert+offset" (geomatrix §15.48) = geo_spoke_invert O(1)** —
+  invert ทำลาย group structure ที่นี่ด้วย (เหมือน password) — เหตุผลที่ต้อง log + replay
+- **Hilbert 3456 เส้น (geomatrix §15.48) = CYL_FULL_N = GN_LINE_MAX = 3456** เป๊ะ
+- **8×8 bitboard ของ geomatrix = 64 units = 1 face ของ cylinder** (GEO_FACE_UNITS=64)
+- **spoke = fingerprint ของการจัดการแบบ cylinder** — กระจายทั่ว DWGLS ปัจจุบัน:
+  geo_spoke_sync.h (6-lane), fibo_spine.h (wire SpokeSync), geo_tring_walk.h (spoke 0..5),
+  lc_tantrix.h (spoke mask), 3456 ปรากฏใน tesseract_container (HYP_AXIS_SLOTS=6912=2×3456),
+  hyperbolic_seek (HYP_INFINITY_IDX=3456), geo_kis_projection (KIS_3456=2×1728),
+  frustum_gcfs (GCFS_DATA_SIZE=3456=54×64)
+- **ทำไม "ดูยุ่งวุ่นวาย"**: cube = presentation layer (Hilbert grid, L-block, tesseract octant,
+  8×8 bitboard) แต่ address space ข้างใต้เป็น polar (spoke=wedge 60°, slot=radial,
+  face=axial stack 9 ชั้น) — อ่านโค้ดด้วยตา cube แต่เลขจัดการเป็น cylinder →
+  อ่านแล้วมั่ว เพราะสองเรขาคณิตอยู่ชั้นคนละชั้น ไม่ใช่ขัดแย้งกัน
+- **กฎที่สืบเนื่อง**: "ใช้แค่โครงสร้าง combinatorial (cube/octant/route/vertex)"
+  — cylinder = โครงสร้าง combinatorial ของ route (spoke/slot) ที่ cube ฉายทับ
+  — L-block/geo_jump อยู่บน presentation; route จริงต้องผ่าน spoke
+
+**§15.50 — Tantrix + geo_frame_seek_wang = switch ที่ปิดเส้นทาง (เอาเข้าใช้ + แก้ 3 bug)**
+- user: "tantrix น่าเอามาใช้อยู่นะ และ geo_frame_seek_wang รุ่นนี้ก็เฉียบ
+  สามารถเป็น switch ได้ด้วย ตอนที่ seek ไปแล้วปิดเส้นทางได้"
+- **สถานะเดิม**: lc_tantrix.h + geo_frame_seek_wang.h + geo_seek_gate.h อยู่ใน
+  DWGLS core อยู่แล้วแต่ไม่มีเทสต์/ไม่มีใครใช้ (dead code)
+- **BUG 3 จุดที่เจอใน geo_frame_seek_wang.h (ต้นฉบับ FGLS_new ยังพัง — แก้เฉพาะ DWGLS)**:
+  1. edge_bot ใช้ frame สุดท้ายใน window (t=w*12+11) → enc เพิ่ม 37/step →
+     chord_a เลื่อน 2 ทุก boundary → continuity พัง 119/120 (fwang_verify=-2)
+     FIX: edge_bot = chord_a(frame ที่ boundary = frame แรกของ window ถัดไป)
+     → 120/120 + wrap ✓ (Wang semantics: ขอบล่าง = ค่าที่แบ่งกับ tile ถัดไป)
+  2. local `uint8_t skip_mask` → truncate bits ≥8 → mask=0 ทุก window
+     (skip อยู่ที่ตำแหน่ง 9..11 เสมอเพราะ enc%12≥9) → verify=-5
+     FIX: uint16_t → popcount=3 ทุก window ✓
+  3. fwang_tamper_check เขียนไว้แต่ไม่เคยถูกเรียกใน gate (dead code) —
+     และ `_fwang_chord_valid` เป็น identity เสมอ (2e+7e=9e≡0 mod 9 ทุก e)
+     → TAMPER ไม่มีทาง trigger จาก enc
+     FIX: wire tamper_check เข้า gate → ตรวจชั้นเก็บ (edge_top/_b, edge_bot/_b)
+- **SWITCH หลังแก้ (fwang_seek_gate เปิด/ปิดเส้นทางต่อ frame)**:
+  สะอาด = OK 960 + 369 480 (Tesla loop = skip boundary ที่ตั้งใจ)
+  · edge ถูกแก้ในชั้นเก็บ (chord คู่พัง) = TAMPER → ปิด
+  · edge ขาด (ผ่าน tamper แต่ continuity แตก) = MISMATCH → ปิด
+  · deterministic — enc เดียว → คำตอบเดียวเสมอ
+- **Tantrix (lc_tantrix.h) = fabric switch 1 byte = 1 routing instruction**
+  (252 normal + 4 special NULL/CROSS/MERGE/SPLIT):
+  gate ตรง → FORWARD · ไม่ตรง → DROP (ปิดเส้นทาง!) · CROSS = invert (cross_map
+  {1,0,3,2}) · SPLIT = broadcast · MERGE · SKIP/MIRROR class เปลี่ยน exit ·
+  tantrix_connects = Wang edge match (exit(left)==entry(right))
+- **spoke_mask เชื่อม cylinder §15.49**: spoke 0→0x09=(0,3) · 1→0x12=(1,4) ·
+  2→0x24=(2,5) · 3→0x3F=ทั้ง 6 — invert pairs ตรง geo_spoke_invert เป๊ะ
+- **CHAIN พิสูจน์แล้ว**: seek → wang gate (integrity: เปิด/ปิด) → tantrix
+  route (direction: forward/drop) — ข้อมูลดี = เปิดทั้งคู่ · ข้อมูลเสีย =
+  ปิดที่ชั้น wang — 29/29 PASS (tests/test_wang_tantrix.c, TIER1)
+- **บทเรียนซ้ำ**: เทสต์ไม่ได้รัน ≠ ใช้ได้ — wang layer roundtrip ตัวเอง
+  "ผ่าน" แต่ invariant พังโดย construction (เหมือน drift TW §15.x) —
+  verify ที่รันจริงจับได้ทันที (fwang_verify -2/-5) — make test = 78/78 + 4/4
+
+**§15.51 — Candidate → hyperbolic role map (user: "เอามาเสนอ candidates ให้ทำงานกับ hyperbolic")**
+- **KEY INSIGHT (พิสูจน์ 12/12, make hyp_candidate_map)**:
+  - สนาม 20736 = 6 cylinders (§15.49) = **3 hyperbolic axes × 2 halves**
+  - HYP_AXIS_SLOTS = 6912 = 2 × 3456 → 2 cylinders ต่อ axis
+  - **HYP_INFINITY_IDX = 3456 = 1 cylinder เป๊ะ** = KIS half ของ axis
+  - axis band [0,3456) = cylinder KIS (positive) · [3456,6912) = cylinder
+    hyperbolic (mirror) — **hyperbolic side = กระจก cylinder ของแต่ละ axis**
+    (Cayley transform = mirror map ระหว่าง 2 halves)
+  - ∀ slot: (axis, half, spoke, slot_in_spoke) = bijection ครบ 20736
+  - KIS = hyp = 10368 = ครึ่งสนาม · glass pairing a_w×a_{w+72}≡1 (ALL 144 w)
+- **CANDIDATE → LAYER map (ที่เจอทั้งวัน วางลง hyperbolic side)**:
+  | candidate | hyperbolic layer | กลไก |
+  |---|---|---|
+  | RDH (geo_rdh_addr) | log addressing | bond_key จาก (block,from_scale) — 5.1 cyc, reversible |
+  | L-block | resume/placement หลัง lift | bookmark: orientation+เพื่อนบ้านจาก address ล้วน |
+  | GeoSeed 2-register | identity ของ lifted block | face_id 12 หน้า (shift+mask ~2 cyc) |
+  | geo_seed 12-coset | identity signature (optional) | 12 checksums topology-aware |
+  | Hosoya/F-ladder | weight ladder | F(n)≈φⁿ = scale ladder (144=F(12)) |
+  | cylinder spoke | spatial route ของ log entry | spoke=60° wedge · slot=radial · face=axial |
+  | invert (spoke+3)%6 | glass mirror 2 halves | ฝั่งตรงข้าม = hyperbolic (เก็บ delta) |
+  | wang edge | integrity ของ scale-log | edge_bot[w]==edge_top[w+1] → order valid |
+  | tantrix | routing decision | gate ตรง=FORWARD · ไม่ตรง=DROP (ปิดเส้นทาง) |
+  | geo_seek_gate | read-path router | Chord>Tantrix>RDH>Teleport>Frame |
+  | Morton/RDH fast | hot-path addressing | shift+mask ไม่มี divide |
+  | fibo clock/frame | timeline ของ log (มีอยู่แล้ว) | (round,tick) stride-37 · checkpoint-replay |
+  | geomatrix (era) | ANTI-pattern → กฎ | อย่าหา inverse — บันทึก + rollback |
+- **Composition พิสูจน์แล้ว (probe E)**: scale-event log (120 events) →
+  wang gate เปิดหมด (integrity) → tantrix ตัดสินใจ forward/drop ครบ
+  — deterministic จาก address ล้วน ไม่มี state
+- **หลักการคัดเลือก**: ตัวที่ "เก่งในสนามที่มีรูปทรงเดียวกับมัน" (RDH) อยู่ที่
+  addressing · ตัวที่เป็น switch (wang/tantrix) อยู่ที่ integrity+routing ·
+  ตัว identity (GeoSeed) อยู่ที่ bond · ตัวที่ hash-like (geomatrix) = กันออก
+- make test ยังเขียว 78/78 + 4/4
+
+**§15.52 — Section Fusion: hyp_fusion.h (user: "merge/fusion เป็น section ได้ไหม — เลือกที่ดีแล้วไม่ฉุดกำลัง")**
+- user กังวล: ถ้าแยกกันทุกตัวดีหมดแต่ต้องเลือก — ตัวที่ไม่เลือก = dead code
+  (อย่าง wang ที่พังเพราะไม่มีใครรัน) — ต้องการ fusion ที่ไม่ฉุดกำลัง
+- **หลักการ fusion**: แต่ละ SECTION = หนึ่งหน้าที่ ใช้ candidate ที่เร็วสุดตัวเดียว
+  · section include ของเดิมที่พิสูจน์แล้ว (ไม่ duplicate logic)
+  · static inline ทั้งหมด → compiler inline → ไม่มี runtime overhead
+  · decision/verify เดียวต่อ section แทน N module แยก
+- **S1 ADDRESS** (hyp_bond/hyp_route/hyp_mirror/hyp_face):
+  - bond = rdh_bond_key(block, from) | face_id(GeoSeed)<<48 — identity
+    (block, face, from_scale) อยู่ใน address — reversible (กู้กลับครบ)
+  - hyp_route: slot → (axis, half, spoke, slot_in_spoke) bijection 20736
+  - hyp_mirror: คร่อม half (KIS↔hyp) axis เดิม, mirror²=id
+- **S2 GATE** (hyp_gate/hyp_log_validate):
+  - หนึ่ง decision แทน (fwang_seek_gate + tantrix_route) 2 ชั้น state:
+    tamper(ชั้นเก็บ) → 369 → edge continuity → entry match (tantrix DROP)
+    = OPEN/SKIP/CLOSED/TAMPER
+  - hyp_log_validate: 1 loop ตรวจครบ (แทน 6 loop ของ fwang_verify)
+  - **rdtsc min-of-9: fused=21 cyc/N vs แยก=26-28 — fusion เร็วขึ้น ~25%**
+    (ตอบ "ไม่ฉุดกำลัง" ด้วยตัวเลข — methodology เดียวกับ rdh_bench §15.40)
+- **S3 WEIGHT** (hyp_fibo/hyp_hosoya/hyp_weight): F(12)=144 · H(6,2)=10 ตรงตาราง
+- **CHAIN พิสูจน์**: scale-event log → hyp_bond append → gate เปิดตลอด →
+  replay (block,face,from) → bond เดิมเป๊ะ — deterministic
+- tests/test_hyp_fusion.c 18/18 (เสถียร 3 runs) · make test = 79/79 + 4/4
+- **บทเรียน**: rdtsc ครั้งแรก flaky (63 vs 29 = alignment noise) — min-of-9
+  แก้ให้เสถียร (21 vs 26-28) — วัดต้องตรวจ methodology ซ้ำ (บทเรียน rdh_bench)
+
+**§15.53 — Bond มาจาก tetris: a[1]b[2]b[3]a (user เล่า origin ของ bond)**
+- user: "bond มาจาก tertis  a[1]b[2]b[3]a
+  a = external bond ต่อกับคนอื่นได้ใน topology เดียวกัน
+  b = มีแค่คู่เดียวในโลก ต่อกับใครไม่ได้เลย"
+- **ยืนยันจากโค้ด**: core/pogls_bond.h — POGLS_AXIS_SHAPE[1..7] = I O T S Z L J
+  (tetrominoes! I=pipe O=latch T=splitter S=transpose Z=invert L=fork-left
+  J=fork-right) — ghost_fold_axis(to_scale) ∈ 1..7 — ทุก route มีชิ้น tetris
+- **bond = 2 ชนิด (เกิดมาพร้อมกัน — "ต่อกับใครก็ได้ + ต่อกับคู่ตัวเองเท่านั้น")**:
+  - **b-bond (private) = birth identity = ghost_bond_key(block, from_scale)**
+    — มีคู่เดียวในโลก: (block,from) เดียว → key เดียว · เปลี่ยน block/from →
+    key เปลี่ยน → bond แตก (self-enforcing: "If coordinate shifts → bond
+    key changes → bond invalid automatically" — pogls_bond.h)
+    = เสาเข็มห้ามขยับ · to_scale ต่าง → bond เดียว (identity แยกจาก route)
+  - **a-bond (external) = topology membership** — ต่อกับใครก็ได้ใน
+    topology เดียวกัน: mirror คร่อม half แต่ axis เดียวกัน = ต่อได้ ·
+    ต่าง axis = คนละ topology = ต่อไม่ได้ (ต้อง bond ใหม่)
+- **signature a[1]b[2]b[3]a** = tetromino 4 เซลล์: ปลาย external 2 +
+  กลาง private 2 — b ต่อกับ b ด้วยกันไม่ได้ (แต่ละ b มีคู่เดียว อยู่ที่อื่น)
+- **mapping กับ fusion (§15.52)**: hyp_bond = RDH(block,from) | face<<48 =
+  b-bond (unique pair) + face (a-bond ระดับ topology) — ครบทั้ง 2 ชนิด
+- probe: tools/bond_tetris_probe.c 13/13 (make bond_tetris) · suite เขียว
+
+**§15.54 — b-bond: chunk ไม่ต้องรันเลข (user: "เพราะมีได้แค่คู่เดียว")**
+- user: "มันทำให้ chunk ไม่ต้องรันเลขไง เพราะมีได้แค่คู่เดียว"
+- **หลักการ**: b-bond = (block_id, from_scale) มีคู่เดียวในโลก (§15.53) →
+  resolution เป็น identity ไม่ใช่การค้น: กู้ (block, from) จาก bond ด้วย
+  เลขคณิตตรงๆ (div/mod = 2 op) — ไม่ต้อง hash ไม่ต้อง scan ไม่ต้องเทียบ
+- **พิสูจน์ (tools/bond_direct_resolve.c 6/6, make bond_direct)**:
+  - A: bond → (block, from) กู้กลับด้วยเลขคณิตทุกคู่ (bad=0)
+  - B: sweep 4096×256 keys ไม่ชน (ไม่มี ambiguity → ไม่มีอะไรต้องคำนวณเพื่อหา)
+  - C: **direct = 5 cyc vs ghost_log_find (linear scan) = 1,387 cyc
+    (~277×)** — scan เฉลี่ย 250 comparisons/find บน log 1000 routes
+  - D: freeze-once — ghost_lift เก็บ data ครั้งเดียวต่อ (block, from);
+    routes หลาย to_scale แชร์ frozen data เดียว (chunk ↔ bond = 1:1)
+- **audit ที่ซื่อสัตย์ — โค้ดปัจจุบันยัง "รันเลข" อยู่ 2 จุดที่ b-bond ควรกำจัด**:
+  1. ghost_log_find / ghost_route_count = linear scan (O(n) เทียบ)
+  2. residual_space _rs_hash (open addressing) — cache hash (§15.41 ยอมรับไว้)
+  - b-bond ควรให้: data (unique pair) → direct slot (เลขคณิต 5 cyc)
+    เหลือแค่ route check (a-bond) ที่ต้องดู log — นี่คือ upgrade ถัดไป
+- make test ยังเขียว 79/79 + 4/4
+
+**§15.55 — ปรับ ghost log: binary search + wang gate (user: "ปรับได้เลย ก่อนหน้านี้ด้วย ที่ใช้ wang")**
+- ปรับตาม b-bond (§15.54 — chunk ไม่ต้องรันเลข) + wire fusion S2 เข้า chain จริง:
+  **1. ghost_log_find/ghost_route_count: linear scan → binary search**
+     - entries เก็บ SORTED โดย (block_id, from_scale) (b-bond: คู่เดียวในโลก)
+     - find: binary search ถึง pile แล้ว scan เฉพาะ routes ของ pile (เล็ก)
+     - route_count: ช่วง [lower(block,0), lower(block+1,0)) — O(log n)
+     - ghost_lift: sorted insert (memmove ≤ 4096×5B — lift หายาก, read บ่อย)
+     - ghost_expire: binary search pile แล้ว mark — semantics เดิมเป๊ะ
+  **2. ghost_read: hyp_gate (wang integrity + tamper) guard — เส้นทางต้องเปิด**
+     - enc = (origin_seed + to_scale) % 1440 → hyp_gate(CLOSED/TAMPER → NULL)
+     - timeline เสีย → read ถูกปิด (T8: แก้ window ของ route แล้ว read=NULL)
+     - GhostLog ฝัง FrameWangLayer (fwang_init ใน init/load — deterministic)
+- **วัด (บน log 3,599 routes, min-of-9 rdtsc)**:
+  - binary search find = **239 cyc** (12 comparisons + pile scan)
+  - linear scan เดิม = ~1,800 comparisons ≈ **10,000+ cyc**
+  - data resolution (b-bond เลขคณิต) = **5 cyc** — ยังเป็น O(1) (§15.54)
+- **เทสต์ใหม่ tests/test_ghost_direct.c 18/18 (TIER1)**:
+  find/route_count เทียบ brute force ครบ · sorted invariant ·
+  expire กับ sorted · wang gate ปิด read (T8) · persistence roundtrip +
+  wang rebuilt หลัง load · เชนเดิม intact (lossless)
+- make test = **80/80 + 4/4** (test_ghost_lift/rs_persist/fibo_checkpoint/cap_chain
+  ทั้งหมดยังผ่าน — semantics ไม่เปลี่ยน)
+- **ซื่อสัตย์**: route check = a-bond (หลายค่า) → O(log n) 239 cyc (ไม่ใช่ 5 cyc —
+  นั่นคือ data/b-bond); O(1) เต็มต้อง dense pair table (memory trade — deferred)
+
+**§15.56 — wang gate บน checkpoint image จริง + dense pair table O(1) (2026-08-17)**
+
+## Task 1 — wang gate บน fibo checkpoint image จริง
+
+user: "เอา wang gate ไปใช้กับ checkpoint image จริง (fibo checkpoint):
+ก่อน replay ตรวจ wang edges ทั้ง log — จับ corrupted checkpoint ได้ก่อน decode"
+
+**`core/ckpt_wang.h` (ใหม่)** — wang-flavored digest ของ ghost log ต่อ window (= 12 entries,
+สมมาตร wang WANG_WIN_SIZE): 8B/window = edge_top/top_b + edge_bot/bot_b (chord 2&7 บน 9-clock,
+edge_bot = ค่าที่ boundary ตามบทเรียน §15.50) + parity (XOR enc) + n369 (Tesla markers)
+
+```
+checkpoint image: header(28) + ghost log + wang digest + residual space
+load:  ghost_log_load → ckpt_wang_check(digest) → ผ่านแล้วค่อย rs_load (ก่อน decode!)
+```
+
+- `ckpt_wang_digest` / `ckpt_wang_verify` (recompute ต่อ window เทียบ) / `ckpt_wang_scan`
+  (hyp_gate ทุก entry — timeline ต้องเปิด) / `ckpt_wang_check` (ตัวเดียวที่เรียกก่อน replay)
+- **test_ckpt_wang 22/22** (TIER1): digest structure · clean+lossless · corrupt 1 byte ใน log
+  reject หลายตำแหน่ง · corrupt digest เอง/ที่ window boundary reject · edge cases 0/1/13/25
+  entries · flow เต็ม: image → load → corrupt in-entry → reject ก่อน decode
+- **test_fibo_checkpoint 23/23** (อัปเกรด): image จริงตอนนี้ = header + log + wang digest (48B
+  สำหรับ 66 routes — 0.018% ของ image) + rs; reload ตรวจ digest+scan ก่อน rs_load; corrupt
+  to_scale ของ entry แรกใน image → reject (r≠0)
+
+## 🐛 Bug 2 จุดที่เจอระหว่างทำ
+
+1. **bond 0 collides with RS_BOND_KEY_RESERVED**: rdh_addr(0,0)=0 → bond_key=0 = sentinel
+   "no entry" → ghost_lift(block 0, from 0) ล้ม (rs_freeze เก็บแล้วคืน 0 → lift ตีความผิด)
+   — FIX: `ghost_piece` offset bond +1 (bond_L = a+1, bond_R = (a+1)<<24 — bijection คงอยู่
+   [1,2^24], bond 0 กลายเป็นค่าว่าง) — (block,from) → bond เดียว ไม่ชน ไม่มี hash
+2. **fibo_checkpoint "ผ่าน" แบบเงียบ**: place fail → `return 0` → main ไม่ตรวจ → exit 0 →
+   make test นับ green ทั้งที่ C-F ไม่ได้รัน — FIX: return -1 + main นับ fail → 23/23 จริง
+
+## Task 2 — dense pair table: route check O(1)
+
+user: "ต่อยอด route check เป็น O(1: dense pair table (block,from) → pile slot แบบ direct
+(memory trade) — วัด footprint จริงบน 4 โมเดล GGUF ว่าแพงแค่ไหน"
+
+**`GhostPairTable` (ใน geo_ghost_lift.h)** — entries sorted โดย (block, from) → ตาราง dense 2 ตัว:
+```
+pile[(b<<8)|f]   = index ของ entry แรกของ pile (b,f) หรือ 0xFFFF  (max_block×256×2B)
+block_lo[b]      = index ของ entry แรกที่มี block_id >= b          ((max_block+1)×2B)
+route_count(b)   = block_lo[b+1] - block_lo[b]   — O(1) ตรงๆ
+find(b,f,t)      = pile lookup → scan เฉพาะ pile (เล็ก) — O(1)
+```
+- build O(count) หนึ่งรอบ · `ghost_pair_fresh` = stale check (lift/expire เปลี่ยน count →
+  ต้อง rebuild — จับได้ ไม่มี stale read) · free ครบ
+- **test_pair_table 15/15** (TIER1): correctness เทียบ brute force + binary search ทุกจุด ·
+  cost: **pair find 5 cyc vs binary 48 cyc (9.6×) · pair route_count 5 cyc vs 73 cyc (14.6×)**
+  บน log 3,600 routes · staleness + rebuild ตรงอีกครั้ง · footprint จริง 4 GGUF
+
+## 📦 Footprint จริงบน 4 GGUF (memory trade ตอบคำถาม user)
+
+| model | tensors | pair table | log (5B/route) | ratio |
+|---|---|---|---|---|
+| SmolLM2-360M | 290 | 149,062 B | 1,462 B | 102× |
+| Qwen3-0.6B | 310 | 159,342 B | 1,562 B | 102× |
+| LFM2.5-2.6B | 266 | 136,726 B | 1,342 B | 102× |
+| Qwen2.5-0.5B | 291 | 149,576 B | 1,467 B | 102× |
+
+**~580 KB ทั้ง 4 โมเดล** (< 1/10 ของ field window หนึ่ง = 20736×4KB = 81MB) — table เล็กกว่า
+1 window ถึง ~140× — แต่ละ block ยืน 514B (256×2 + 2) — verdict: **คุ้ม** ถ้า route check
+ร้อน (read บ่อย): 9.6-14.6× เร็วขึ้นในราคาที่เล็กกว่า window เดียวของสนาม
+
+make test = **81/81 + 4/4** · §15.55 ค้าง "O(1) ต้อง dense pair table (deferred)" → **ปิดแล้ว**
+
+**§15.57 — pair table auto-refresh: dirty flag + lazy rebuild (§15.56 ต่อยอด) (2026-08-17)**
+
+user: "Make the dense pair table rebuild automatically inside ghost_lift/ghost_expire
+(dirty flag + lazy refresh) instead of requiring the caller to call ghost_pair_build,
+keeping reads O(1) with no stale risk"
+
+## API เปลี่ยน: จากตารางนอก → attach เข้า log
+
+```
+ก่อน:  GhostPairTable t; ghost_pair_build(&log, &t);       ← caller ต้อง build เอง
+       ghost_pair_find(&log, &t, b, f, to)                ← จำ table เอง ทุก call
+หลัง:  ghost_pair_attach(&log, &t)                        ← attach ครั้งเดียว
+       ghost_pair_find(&log, b, f, to)                   ← log-centric — ไม่ต้อง table
+```
+
+**กลไก: dirty flag + lazy refresh**
+- `GhostLog` มีช่อง `GhostPairTable *pair` (attach/detach) — init/load = NULL (ต้อง attach ใหม่หลัง load)
+- `ghost_lift` / `ghost_expire` → ตั้ง `pair->dirty = 1` (O(1) — ไม่ build ทันที)
+- read (`ghost_pair_find` / `ghost_pair_route_count` / `ghost_read` เมื่อ attach)
+  → `ghost_pair_refresh` rebuild ถ้า dirty/ยังไม่เคยสร้าง (O(count) เฉพาะตอน dirty)
+- `ghost_read` ใช้ pair table อัตโนมัติเมื่อ attach (O(1)), fallback binary search เมื่อไม่ attach
+
+**พิสูจน์ (test_pair_table 21/21 — เพิ่ม section C auto-refresh):**
+- attach → dirty (ยังไม่ build) → read ครั้งแรก refresh เอง + เจอ route เก่า
+- lift → dirty ตั้งอัตโนมัติ → read เจอ route ใหม่ **โดยไม่ต้องเรียก build** (ไม่มี stale read)
+- expire → dirty → read ปิดเส้นทาง (route ตาย) + audit trail ยังนับ
+- detach → ghost_read กลับ binary fallback ยังถูก
+- cost (fresh table): pair find **6 cyc vs binary 46 cyc (7.7×)** · route_count **6 vs 70 (11.7×)**
+
+**semantics ที่เปลี่ยน:** `ghost_read` signature `const GhostLog*` → `GhostLog*` (refresh
+ต้อง mutate table) — caller ทั้งหมดส่ง &log (mutable) อยู่แล้ว ไม่กระทบ
+
+make test = **81/81 + 4/4** · caller ไม่ต้องจำ lifecycle ของตารางอีก — attach แล้วจบ
+
+**§15.58 — วัด lazy refresh จริงบน 7.7GB stream: rebuild cost ถูกครอบโดย dense-table memset (2026-08-17)**
+
+user: "Measure the real cost of lazy refresh under write-heavy load: interleave
+ghost_lift with ghost_read on the 7.7GB notebookLM stream with the pair table
+attached, and report how many rebuilds happen, their total cost, and the read
+latency distribution vs detached mode"
+
+เครื่องมือใหม่ `tools/pair_refresh_scan.c` (`make pair_scan`) — stream จริง
+(เดียวกับ cap_chain_scan): chunk 16KB → w=(37·rank)%144 → cap_admit → ghost_lift
+→ interleave BATCH lifts → BATCH reads, 2 โหมดต่อ file (A attach / B detach),
+rdtsc ต่อ read + wall-time + lossless verify
+
+## ตัวเลขจริงบน F:/notebookLM (7.7GB, 1,035 files, 476,763 lifts, 476,763 reads)
+
+| batch | rebuilds | % ของ reads | total rebuild cost (rdtsc) | wall Δ A−B |
+|---|---|---|---|---|
+| 4  | 124,568 | 26.1% | 87.8 s | (A หนักสุด) |
+| 16 | 31,322  | 6.6%  | 20.3 s | +95 s |
+| 64 | 8,022   | 1.7%  | 5.2 s  | +79 s |
+
+**lossless 1035/1035 ทั้ง A และ B ทุกรอบ** — lazy refresh ไม่เคยให้ stale read
+
+## 🔑 สิ่งที่วัดพบ — cost ตัวจริงไม่ใช่ rebuild loop แต่เป็น **dense-table memset**
+
+- rebuild read p50 = **1.77M cycles** (batch 4) — แต่ fast read p50 = 448 cyc
+  → rebuild หนัก ~3,900× ของ read ปกติ
+- สาเหตุ: `ghost_pair_build` ทำ `memset(t->pile, 0xFF, max_block×256×2B)`
+  — และ **max_block = chunk index** (block_id = i ในไฟล์) → ไฟล์ 1GB
+  (65K chunks) → table = 65,536×256×2 = **32MB ต่อ rebuild**!
+- memory trade กลับด้าน: table ใหญ่ตาม max_block ไม่ใช่ตามจำนวน blocks ที่ใช้จริง
+  — chunk สุดท้ายของไฟล์ใหญ่ = จ่าย table เต็มทุก rebuild
+
+## 🎛️ Batch = ปุ่มควบคุมอัตราส่วน (ถูกต้องตาม design)
+
+batch 4 → ทุก 4 lifts มี 1 rebuild (26%) · batch 64 → ทุก 64 lifts มี 1 (1.7%)
+— ใช้ได้: ถ้า workload อ่านรวมหลังเขียน (verify phase เดียวต่อ window อย่างใน
+cap_chain_scan) → rebuild แค่ 1 ครั้งต่อ window = ไม่มี cost จริง
+
+## 📌 สรุปที่ซื่อสัตย์
+
+1. **lazy refresh ทำงานถูก** — 1035/1035 lossless ทั้งสองโหมด ไม่มี stale
+2. **ใน stream regime นี้ (log ≤ 1024 entries ต่อ window) binary search ชนะ
+   ตารางด้วยซ้ำ**: A-fast p50 448 cyc vs B p50 276 cyc (batch 4) — เพราะ
+   (a) dense table ใหญ่ตาม max_block (สูงสุด 32MB) ไม่ fit cache → fast read
+   ก็เจอ cache miss (b) log ต่อ window เล็ก (≤ 1024) → binary search แค่ ~10
+   เปรียบเทียบ — ตารางจะชนะเฉพาะเมื่อ log โตมาก (หลายพัน entries) + table เล็ก
+   (ที่ benchmark สั้นๆ batch-4 บน 3 ไฟล์เล็ก table 4KB → A 150 < B 228 cyc ✓)
+3. **rebuild เองแพงเพราะ memset ของ dense table ที่ใหญ่ตาม max_block**
+   — ไม่ใช่เพราะ rebuild loop (O(count) เล็ก) — นี่คือ memory trade ที่ต้องจ่าย
+   จริง และทางแก้คือขนาด table ตาม blocks ที่ใช้จริง (sparse) ไม่ใช่ max_block
+4. batch ใหญ่ขึ้น = rebuild ถี่น้อยลง — อัตราส่วนถูกควบคุมได้ที่ caller
+5. **verdict: dense pair table แพ้ binary search ใน workload แบบนี้**
+   (streaming, window เล็ก, log ต่อ window สั้น) — คุ้มเฉพาะ read-heavy +
+   log สะสมใหญ่ — ทางเลือก: sparse table ตาม distinct blocks หรือข้ามไปใช้
+   binary search ต่อ (46 cyc วัด §15.56) เมื่อ window ≤ 1024
+
+make test = **81/81 + 4/4** (ไม่กระทบ TIER1 — เครื่องมือ manual ใหม่)
+
+**§15.59 — geometry signal ก่อน compute: history signal กำจัด rebuild cliff (2026-08-17)**
+
+User: "geometry มักมีเหตุการณ์แบบนี้ มีสัญญาณบางอย่างมาเร็วกว่า compute" — ตรงกับที่วัดได้ §15.58: ราคา rebuild คำนวณได้ O(1) ก่อนจ่าย (dirty flag + max_block + count มีอยู่แล้ว) → เอา signal ไปตัดสินใจใน `ghost_pair_refresh` ก่อน build
+
+**กลไก (ใน geo_ghost_lift.h):**
+- `hint_max_block` ตั้ง O(1) ตอน ghost_lift (ไม่ scan) + `reads_served` นับ read ทุก path (table + fallback)
+- กฎตัดสินใจก่อน rebuild: pred = max_block×512B · คุ้มเมื่อ pred ≤ 512×count และ (reads_served ≥ pred/2048) — ถ้าไม่คุ้ม คืน 1 = fallback binary (ถูกเสมอ — ตารางเก่ายัง valid หรือ binary ก็ correct)
+- attach ครั้งเดียว → dirty/lazy/auto-skip ทั้งหมดในตัว — caller ไม่ต้องรู้
+
+**วัดจริง 7.7GB (1,035 files, 476,763 lifts, 476,763 reads, batch 4 — กรณีแย่สุด §15.58):**
+- rebuild cost: **87.8 s → 177.7 ms (~494×)** — skip 205,983 ครั้ง (dirty แต่ไม่ build — binary แทน)
+- lossless 1035/1035 ทั้ง attach และ detached (byte-for-byte)
+- **wall Δ พิสูจน์แล้วเป็น cache noise**: รัน parity กลับกัน (ไฟล์คี่ A-ก่อน) → Δ พลิกเครื่องหมายเป๊ะ (+21.8s → −21.1s) — ต้นตอคือ cold read ของไฟล์ใหญ่ ไม่ใช่ตาราง — ส่วนที่เหลือจริงๆ: read A 3.50s vs B 3.07s (Δ 0.43s จาก skip-path read) + rebuild 170ms
+
+**บทเรียน:** signal มาก่อน compute ได้เมื่อ state ที่จำเป็น (dirty/size/count) ถูกสะสม O(1) ระหว่างทาง — เหมือน geometry ที่ mask รู้ก่อนเดิน; พลิกจาก "จ่าย rebuild ทุกครั้ง" เป็น "จ่ายเมื่อคุ้ม" โดยไม่เสีย correctness (fallback ถูกเสมอ)

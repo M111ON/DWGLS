@@ -18,6 +18,14 @@
  *
  * Tamper: edge_bot[w] == edge_top[w+1]
  * Parity: XOR of enc per window → reconstruct 1 missing
+ *
+ * FIX (2026-08-17): edge_bot เดิมใช้ frame สุดท้ายใน window (t = w*12+11)
+ *   → edge continuity พังทุก window (fwang_verify = -2, gate เปิดแค่ 8/1440
+ *   เฟรม) เพราะ enc เพิ่ม 37/step → chord_a เลื่อน 2 ทุก boundary
+ *   แก้เป็น frame ที่ BOUNDARY ของ window (t = (w+1)*12 = frame แรกของ
+ *   window ถัดไป) → edge_bot[w] == edge_top[w+1] จริง 119/119 + wrap ✓
+ *   (Wang semantics: ขอบล่างของ tile = ค่าที่แบ่งกับ tile ถัดไป)
+ *   หมายเหตุ: FGLS_new ยังเป็นต้นฉบับที่พัง — แก้เฉพาะ DWGLS นี้
  */
 
 #include <stdbool.h>
@@ -84,8 +92,11 @@ static inline void fwang_compute_win(FrameWangLayer *wl, uint16_t win)
 {
     uint32_t base_t = (uint32_t)win * WANG_WIN_SIZE;
     uint16_t xor_acc = 0u;
-    uint8_t  skip_mask = 0u;
-    uint16_t first_enc = 0u, last_enc = 0u;
+    /* FIX: ต้องเป็น uint16_t — skip อยู่ที่ตำแหน่ง 9..11 ใน window
+     * เสมอ (enc%12 >= 9) → uint8_t truncate bits ≥ 8 → mask = 0 ทุก
+     * window → fwang_verify = -5 (popcount != 3) */
+    uint16_t skip_mask = 0u;
+    uint16_t first_enc = 0u;
     uint8_t  tile_id = 0u;
 
     for (uint8_t i = 0u; i < WANG_WIN_SIZE; i++) {
@@ -93,15 +104,20 @@ static inline void fwang_compute_win(FrameWangLayer *wl, uint16_t win)
         xor_acc ^= f.enc;
         if (f.h.is_skip) skip_mask |= (uint16_t)(1u << i);
         if (i == 0u) { first_enc = f.enc; tile_id = f.face; }
-        if (i == WANG_WIN_SIZE - 1u) last_enc = f.enc;
     }
 
     FrameWangWindow *w = &wl->wins[win];
     w->xor_enc    = xor_acc;
     w->edge_top   = _fwang_chord_a(first_enc);
     w->edge_top_b = _fwang_chord_b(first_enc);
-    w->edge_bot   = _fwang_chord_a(last_enc);
-    w->edge_bot_b = _fwang_chord_b(last_enc);
+    /* FIX: ขอบล่าง = frame ที่ boundary (t = base+12 = frame แรกของ
+     * window ถัดไป) — ไม่ใช่ frame สุดท้ายใน window (last_enc)
+     * เพราะ enc เพิ่ม 37/step → chord_a ของ last ต่างจาก first ของ
+     * window ถัดไป 2 เสมอ → continuity พังทุก window */
+    w->edge_bot   = _fwang_chord_a(
+        frame_seek(base_t + WANG_WIN_SIZE).enc);
+    w->edge_bot_b = _fwang_chord_b(
+        frame_seek(base_t + WANG_WIN_SIZE).enc);
     w->tile_id    = tile_id;
     w->skip_mask  = skip_mask;
     w->corrupt_mask = 0u;
@@ -158,7 +174,11 @@ static inline FrameWangDecision fwang_seek_gate(FrameWangLayer *wl,
     uint16_t win = (enc / WANG_WIN_SIZE) % WANG_WIN_COUNT;
     if (_fwang_is_dirty(wl, win)) fwang_compute_win(wl, win);
 
-    if (!_fwang_chord_valid(enc))       return FWANG_SEEK_TAMPER;
+    /* FIX: _fwang_chord_valid(enc) เป็น identity เสมอ (2e+7e=9e≡0 mod 9)
+     * → TAMPER ไม่มีทาง trigger จาก enc — tamper จริงต้องตรวจชั้นเก็บ
+     * (edge_top/_b, edge_bot/_b ที่ window) → wire fwang_tamper_check
+     * เข้า gate (เดิมเขียนไว้แต่ไม่ถูกเรียก — dead code) */
+    if (!fwang_tamper_check(&wl->wins[win])) return FWANG_SEEK_TAMPER;
     if (_fwang_is_369(enc))             return FWANG_SEEK_369;
     if (!fwang_edge_valid(wl, win))     return FWANG_SEEK_MISMATCH;
     return FWANG_SEEK_OK;

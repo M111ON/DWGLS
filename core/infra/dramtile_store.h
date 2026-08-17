@@ -999,3 +999,129 @@ static inline int dt_store_foreach(DRamTileStore *store,
 static inline size_t dt_store_total_bytes(DRamTileStore *store) {
     return store->used + store->kv_used + store->cold_used;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * HYBRID SLOT REGION — direct geometric addressing (MAP path, 54× proven)
+ *
+ * benchmark (docs/BENCH_GEOMETRIC_FS_SPEED-2026-08-17.md, workload 3/4):
+ *   tiny random-access → dram_addr × slot_sz ชนะ fseek+fread 18–54×
+ *   เพราะ syscall ต่อ op (fseek+fread ~2000ns) vs pointer ตรง (~40ns)
+ *
+ * ต่างจาก dt_put_kv/dt_put (hash 512 slots → 49152 KV blocks collide):
+ *   ที่นี่ address = dense geometric address ตรงๆ → offset = addr × slot_sz
+ *   collision-free, O(1), zero-copy — slot region แยก mmap ของตัวเอง
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+typedef struct {
+    uint8_t  *base;
+    size_t    slot_sz;
+    size_t    n_slots;
+    size_t    n_used;
+    int       is_twin;
+    char      filepath[DT_MAX_PATH];
+#if defined(_WIN32)
+    HANDLE    hSlotFile;
+    HANDLE    hSlotMapping;
+#else
+    int       slot_fd;
+#endif
+} DtSlotRegion;
+
+static inline int dt_slot_init(DtSlotRegion *r, size_t n_slots, size_t slot_sz) {
+    memset(r, 0, sizeof(*r));
+    r->slot_sz = slot_sz;
+    r->n_slots = n_slots;
+    size_t cap = n_slots * slot_sz;
+#if defined(_WIN32)
+    r->base = (uint8_t*)VirtualAlloc(NULL, cap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!r->base) return -1;
+#else
+    r->base = (uint8_t*)mmap(NULL, cap, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (r->base == MAP_FAILED) { r->base = NULL; return -1; }
+#endif
+    r->is_twin = 0;
+    return 0;
+}
+
+static inline int dt_slot_init_twin(DtSlotRegion *r, const char *path,
+                                    size_t n_slots, size_t slot_sz) {
+    memset(r, 0, sizeof(*r));
+    r->slot_sz = slot_sz;
+    r->n_slots = n_slots;
+    size_t cap = n_slots * slot_sz;
+#if defined(_WIN32)
+    r->hSlotFile = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                               OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (r->hSlotFile == INVALID_HANDLE_VALUE) return -1;
+    LARGE_INTEGER sz; sz.QuadPart = (LONGLONG)cap;
+    SetFilePointerEx(r->hSlotFile, sz, NULL, FILE_BEGIN);
+    SetEndOfFile(r->hSlotFile);
+    r->hSlotMapping = CreateFileMappingA(r->hSlotFile, NULL, PAGE_READWRITE,
+                                         (DWORD)(cap >> 32), (DWORD)cap, NULL);
+    if (!r->hSlotMapping) { CloseHandle(r->hSlotFile); return -1; }
+    r->base = (uint8_t*)MapViewOfFile(r->hSlotMapping, FILE_MAP_ALL_ACCESS, 0, 0, cap);
+    if (!r->base) { CloseHandle(r->hSlotMapping); CloseHandle(r->hSlotFile); return -1; }
+#else
+    r->slot_fd = open(path, O_RDWR | O_CREAT, 0644);
+    if (r->slot_fd < 0) return -1;
+    if (ftruncate(r->slot_fd, (off_t)cap) != 0) { close(r->slot_fd); return -1; }
+    r->base = (uint8_t*)mmap(NULL, cap, PROT_READ | PROT_WRITE, MAP_SHARED, r->slot_fd, 0);
+    if (r->base == MAP_FAILED) { r->base = NULL; close(r->slot_fd); return -1; }
+#endif
+    r->is_twin = 1;
+    strncpy(r->filepath, path, DT_MAX_PATH - 1);
+    r->filepath[DT_MAX_PATH - 1] = '\0';
+    return 0;
+}
+
+static inline uint8_t *dt_slot_ptr(DtSlotRegion *r, uint32_t addr) {
+    if (!r->base || addr >= r->n_slots) return NULL;
+    return r->base + (size_t)addr * r->slot_sz;
+}
+
+static inline uint8_t *dt_slot_put(DtSlotRegion *r, uint32_t addr,
+                                   const uint8_t *data, size_t sz) {
+    uint8_t *p = dt_slot_ptr(r, addr);
+    if (!p) return NULL;
+    if (sz > r->slot_sz) return NULL;
+    memcpy(p, data, sz);
+    if (addr + 1 > r->n_used) r->n_used = addr + 1;
+    return p;
+}
+
+static inline int dt_slot_get(DtSlotRegion *r, uint32_t addr,
+                              uint8_t *dst, size_t sz) {
+    uint8_t *p = dt_slot_ptr(r, addr);
+    if (!p) return -1;
+    if (sz > r->slot_sz) return -1;
+    memcpy(dst, p, sz);
+    return 0;
+}
+
+static inline void dt_slot_destroy(DtSlotRegion *r) {
+    if (!r || !r->base) return;
+#if defined(_WIN32)
+    if (r->is_twin) {
+        UnmapViewOfFile(r->base);
+        if (r->hSlotMapping) CloseHandle(r->hSlotMapping);
+        if (r->hSlotFile && r->hSlotFile != INVALID_HANDLE_VALUE) CloseHandle(r->hSlotFile);
+    } else {
+        VirtualFree(r->base, 0, MEM_RELEASE);
+    }
+#else
+    if (r->is_twin) {
+        munmap(r->base, r->n_slots * r->slot_sz);
+        if (r->slot_fd >= 0) close(r->slot_fd);
+    } else {
+        munmap(r->base, r->n_slots * r->slot_sz);
+    }
+#endif
+    memset(r, 0, sizeof(*r));
+}
+
+/* geo slot address: dense geometric address ที่มาจาก dram_addr ตรงๆ
+ * (ไม่ผ่าน hash) — KV block (layer,pos) → slot id ต่อเนื่อง */
+static inline uint32_t dt_slot_kv_addr(int layer, uint32_t pos, uint32_t n_ctx) {
+    return (uint32_t)((size_t)layer * n_ctx + pos);
+}

@@ -83,12 +83,21 @@ TIER1 := \
   test_cap_tune_fs \
   test_cap_chain_roundtrip \
   test_cap_chain_big \
+  test_rs_persist \
   test_cap_scheme \
   test_breathing_fs \
   test_shell \
   test_tess_header \
   test_geofs \
-  test_tess_codec
+  test_tess_codec \
+  test_fibo_checkpoint \
+  test_rdh_addr \
+  test_geo_lblock \
+  test_wang_tantrix \
+  test_hyp_fusion \
+  test_ghost_direct \
+  test_pair_table \
+  test_hybrid_kv \
 
 # ── เทสต์ที่เหลือ (ไม่ได้อยู่ใน TIER1/TIER2) = legacy ประวัติการพัฒนา ──
 # เขียนก่อน rescope 2026-08-14 — เก็บไว้ย้อนดูเท่านั้น ไม่ใช้ยืนยันระบบปัจจุบัน
@@ -180,11 +189,92 @@ cap_scan: tools/cap_chain_scan.c core/geo_cap_account.h core/geo_ghost_lift.h | 
 	$(CC) $(CFLAGS) -o $(BUILD)/cap_chain_scan tools/cap_chain_scan.c $(LDFLAGS)
 	@echo "✅ cap_scan ready → ./$(BUILD)/cap_chain_scan [root] (default F:/notebookLM)"
 
+# ── Pair-table lazy refresh cost (write-heavy stream — manual) ──
+pair_scan: tools/pair_refresh_scan.c core/geo_cap_account.h core/geo_ghost_lift.h | $(BUILD)
+	@echo "▶ BUILD  pair_refresh_scan"
+	$(CC) $(CFLAGS) -o $(BUILD)/pair_refresh_scan tools/pair_refresh_scan.c $(LDFLAGS)
+	@echo "✅ pair_scan ready → ./$(BUILD)/pair_refresh_scan [root] [batch] [max_files]"
+
 # ── Adaptive scheme decision (per-file vs global — manual) ──
 cap_scheme: tools/cap_scheme_choose.c core/geo_placement_choose.h | $(BUILD)
 	@echo "▶ BUILD  cap_scheme_choose"
 	$(CC) $(CFLAGS) -o $(BUILD)/cap_scheme_choose tools/cap_scheme_choose.c $(LDFLAGS)
 	@echo "✅ cap_scheme ready → ./$(BUILD)/cap_scheme_choose [root]"
+
+# ── Silk-screen feasibility (unique maps under rotation+reversal — manual) ──
+silk_scan: tools/silk_screen_scan.c core/gguf_box.h | $(BUILD)
+	@echo "▶ BUILD  silk_screen_scan"
+	$(CC) $(CFLAGS) -o $(BUILD)/silk_screen_scan tools/silk_screen_scan.c $(LDFLAGS)
+	@echo "✅ silk_scan ready → ./$(BUILD)/silk_screen_scan [model.gguf ...]"
+
+# ── Two-gap fill probe (deterministic transform + residual — manual) ──
+two_gap_fill: tools/two_gap_fill.c | $(BUILD)
+	@echo "▶ BUILD  two_gap_fill"
+	$(CC) $(CFLAGS) -o $(BUILD)/two_gap_fill tools/two_gap_fill.c $(LDFLAGS)
+	@echo "✅ two_gap_fill ready → ./$(BUILD)/two_gap_fill [wav]"
+
+# ── Hosoya fibo grid × geo_seed 12-coset (SVG decode + coupling — manual) ──
+hosoya_seed: tools/hosoya_seed_probe.c core/geo_seed.h | $(BUILD)
+	@echo "▶ BUILD  hosoya_seed_probe"
+	$(CC) $(CFLAGS) -o $(BUILD)/hosoya_seed_probe tools/hosoya_seed_probe.c $(LDFLAGS)
+	@echo "✅ hosoya_seed ready → ./$(BUILD)/hosoya_seed_probe"
+
+# ── b-bond: direct resolve vs scan — chunk ไม่ต้องรันเลข (manual) ──
+bond_direct: tools/bond_direct_resolve.c | $(BUILD)
+	@echo "▶ BUILD  bond_direct_resolve"
+	$(CC) $(CFLAGS) -o $(BUILD)/bond_direct_resolve tools/bond_direct_resolve.c $(LDFLAGS)
+	@echo "✅ bond_direct ready → ./$(BUILD)/bond_direct_resolve"
+
+# ── Bond จาก tetris: a[1]b[2]b[3]a — external/private semantics (manual) ──
+bond_tetris: tools/bond_tetris_probe.c | $(BUILD)
+	@echo "▶ BUILD  bond_tetris_probe"
+	$(CC) $(CFLAGS) -o $(BUILD)/bond_tetris_probe tools/bond_tetris_probe.c $(LDFLAGS)
+	@echo "✅ bond_tetris ready → ./$(BUILD)/bond_tetris_probe"
+
+# ── Candidate → hyperbolic role map (20736 = 3 axes × 2 cylinders — manual) ──
+hyp_candidate_map: tools/hyp_candidate_map.c | $(BUILD)
+	@echo "▶ BUILD  hyp_candidate_map"
+	$(CC) $(CFLAGS) -o $(BUILD)/hyp_candidate_map tools/hyp_candidate_map.c $(LDFLAGS)
+	@echo "✅ hyp_candidate_map ready → ./$(BUILD)/hyp_candidate_map"
+
+# ── Cube-look vs Cylinder-manage probe (20736 = 18×8×144 = 6×3456 — manual) ──
+cube_cylinder: tools/cube_cylinder_probe.c | $(BUILD)
+	@echo "▶ BUILD  cube_cylinder_probe"
+	$(CC) $(CFLAGS) -o $(BUILD)/cube_cylinder_probe tools/cube_cylinder_probe.c $(LDFLAGS)
+	@echo "✅ cube_cylinder ready → ./$(BUILD)/cube_cylinder_probe"
+
+# ── RDH vs FNV-1a micro-benchmark (rdtsc cycle-accurate — manual) ──
+rdh_bench: tools/rdh_bench.c core/geo_rdh_addr.h core/gguf_box.h | $(BUILD)
+	@echo "▶ BUILD  rdh_bench"
+	$(CC) $(CFLAGS) -o $(BUILD)/rdh_bench tools/rdh_bench.c $(LDFLAGS)
+	@echo "✅ rdh_bench ready → ./$(BUILD)/rdh_bench [model.gguf ...]"
+
+# ── Fibo clock checkpoint-replay sweep (custom table/field/dist/volume/pattern) ──
+# --sweep เขียน image+manifest ลง build/ckpt + verify จากดิสก์ใน fresh process ทุก config
+# --verify-all [DIR] ตรวจใหม่ทีหลัง · --economy X.X ปรับ threshold verdict
+fibo_sweep: tools/fibo_checkpoint_sweep.c core/geo_ghost_lift.h core/infra/fibo_spine.h | $(BUILD)
+	@echo "▶ BUILD  fibo_checkpoint_sweep"
+	$(CC) $(CFLAGS) -o $(BUILD)/fibo_checkpoint_sweep tools/fibo_checkpoint_sweep.c $(LDFLAGS)
+	@echo "✅ fibo_sweep ready → ./$(BUILD)/fibo_checkpoint_sweep [--sweep|key=value ...|--verify-all|--verify-img=IMG,CFG]"
+
+# ── 3-way speed comparison: MAP(geometric) vs Classic file I/O vs RAM floor ──
+# MAP  = dram_addr -> mmap offset (coordinate = address, no hash)
+# Classic = contiguous file + index (traditional FS floor)
+# RAM  = heap memcpy (physical ceiling)
+geo_bench: tools/geo_speed_bench.c core/infra/geo_dram_tile.h | $(BUILD)
+	@echo "▶ BUILD  geo_speed_bench"
+	$(CC) $(CFLAGS) -o $(BUILD)/geo_speed_bench tools/geo_speed_bench.c $(LDFLAGS)
+	@echo "✅ geo_speed_bench ready → ./$(BUILD)/geo_speed_bench"
+
+geo_kv_bench: tools/geo_kv_real_bench.c core/gguf_reader.h core/infra/geo_dram_tile.h | $(BUILD)
+	@echo "▶ BUILD  geo_kv_real_bench"
+	$(CC) $(CFLAGS) -o $(BUILD)/geo_kv_real_bench tools/geo_kv_real_bench.c $(LDFLAGS)
+	@echo "✅ geo_kv_real_bench ready → ./$(BUILD)/geo_kv_real_bench <model.gguf>"
+
+gguf_hybrid_bench: tools/gguf_hybrid_bench.c core/gguf_reader.h | $(BUILD)
+	@echo "▶ BUILD  gguf_hybrid_bench"
+	$(CC) $(CFLAGS) -o $(BUILD)/gguf_hybrid_bench tools/gguf_hybrid_bench.c $(LDFLAGS)
+	@echo "✅ gguf_hybrid_bench ready → ./$(BUILD)/gguf_hybrid_bench <model.gguf>"
 
 # ── Housekeeping ──────────────────────────────────────
 $(BUILD):
@@ -320,3 +410,15 @@ vis: $(BUILD)/gguf_tool.exe
 
 $(BUILD)/gguf_tool.exe: tools/gguf_tool.c tools/gguf_dump.c core/gguf_reader.h | $(BUILD)
 	$(CC) $(CFLAGS) -o $(BUILD)/gguf_tool.exe tools/gguf_tool.c $(LDFLAGS)
+
+# ── geo_net Barrett shift-mod6 probe (correctness domain + cycles + labels — manual) ──
+geo_net_probe: tools/geo_net_probe.c | $(BUILD)
+	@echo "▶ BUILD  geo_net_probe"
+	$(CC) -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -o $(BUILD)/geo_net_probe tools/geo_net_probe.c
+	@echo "✅ geo_net_probe ready → ./$(BUILD)/geo_net_probe"
+
+# ── GeoSeed 2-register topology extraction probe (12-face labels, shift+mask — manual) ──
+seed_label_probe: tools/seed_label_probe.c | $(BUILD)
+	@echo "▶ BUILD  seed_label_probe"
+	$(CC) -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -o $(BUILD)/seed_label_probe tools/seed_label_probe.c
+	@echo "✅ seed_label_probe ready → ./$(BUILD)/seed_label_probe"

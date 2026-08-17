@@ -23,6 +23,7 @@ chain ไฟล์จริง → adaptive scheme chooser ทุกชั้น
 | `test_cap_tune_fs` | F:/notebookLM 1,035 ไฟล์ + zip GeoGebra | folder → 1 window, zip 1,474 entries → 0 |
 | `test_cap_chain_roundtrip` | PDF จริง 19.8 MB | 1,209 chunks → **lossless byte-for-byte** |
 | `test_cap_chain_big` | mp4 จริง 57 MB | eviction 2,655 LRU ถูกต้อง + streaming lossless + whole-resident |
+| `test_rs_persist` (§15.34) | mp4 จริง 57 MB | serialize 3,525 entries (56.5 MB) → restart → reload → **lossless byte-for-byte** |
 
 ### Tools (manual, `make cap_scan` / `make cap_scheme`)
 
@@ -32,7 +33,7 @@ chain ไฟล์จริง → adaptive scheme chooser ทุกชั้น
 ## 📊 ตัวเลขสำคัญ
 
 ```
-make test: TIER1 73/73 + TIER2 4/4 ✅
+make test: TIER1 74/74 + TIER2 4/4 ✅
 GHOST_LOG_MAX 256 → 4096 (สมมาตรกับ RS_DEFAULT_CAPACITY)
 envelope_depth: gate 1.0 (default) = 5  ← "k 4-5 เหมาะสมที่สุด"
 lifting ตัด field footprint: GGUF 8.5×, targeted ranks 6,070×
@@ -49,8 +50,9 @@ lifting ตัด field footprint: GGUF 8.5×, targeted ranks 6,070×
 
 1. **Wire scheme chooser เข้า scan** — เมื่อ chooser บอก GLOBAL ให้รัน chain แบบ global-targeted + พิสูจน์ lossless
 2. **วัด locality cost ของ GLOBAL** — read-back ms / cache-line coverage เทียบ PER_FILE (§15.30 วิธี)
-3. **Persist residual_space** — serialize entries by bond_key ลงดิสก์ (documented path ยังไม่มี API) + thaw-after-reload lossless
+3. ~~**Persist residual_space**~~ — **ทำแล้ว §15.34** (test_rs_persist 36/36: mp4 57 MB serialize → restart → reload → lossless; `rs_serialize`/`rs_load` + `ghost_log_serialize`/`ghost_log_load`)
 4. **Global-rank mode ใน cap_chain_scan** — chain 498K chunks ลำดับเดียว + targeted → ดู field windows จริง
+   - เพิ่ม option ให้ cap_chain_scan serialize residual image ลงดิสก์ตอนจบ (ตอนนี้ persistence พิสูจน์ใน test แล้ว ยังไม่ wire ใน tool)
 5. **18tes (GEO_COMPOUND_144)** — ตัวเอก ยังเป็น FUTURE (test_6ico_tesseract ผ่านเป็น base)
 6. **กลุ่ม rail (test_rail_hub, test_geo_fs_bench, test_real_gguf_microscope)** — พักไว้ รอ residual space + jet puller
 

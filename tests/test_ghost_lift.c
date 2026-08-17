@@ -237,9 +237,9 @@ static void test_determinism(void) {
 
     CHECK(10, "same (block, from, to) → same bond_key across spaces",
           bk1 == bk2);
-    CHECK(10, "piece re-derived → same geo_key",
-          ghost_piece(21, 7, 33).geo_key == pogls_make_piece(
-              ghost_origin_seed(21, 7), ghost_fold_axis(33)).geo_key);
+    CHECK(10, "piece re-derived → same geo_key (RDH address = block×256+from)",
+          ghost_piece(21, 7, 33).geo_key == rdh_addr(21, 7) &&
+          ghost_piece(21, 7, 33).geo_key == ghost_origin_seed(21, 7));
 
     rs_free(&r1); rs_free(&r2);
 }

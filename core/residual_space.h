@@ -565,4 +565,128 @@ static inline ResidualSpaceStats rs_stats(const ResidualSpace *rs) {
     return s;
 }
 
+/* ════════════════════════════════════════════════════════════
+   PERSISTENCE — serialize entries by bond_key (§15.34)
+   ════════════════════════════════════════════════════════════
+   Format (little-endian, packed — host x86):
+     [0..7]   magic  "RSDWGLSP" (8B)
+     [8..9]   version u16 = 1
+     [10..11] reserved u16 = 0
+     [12..15] count u32
+     [16..]   records: ResidualEntry header (36B) + payload, in slot order
+
+   Only VALID entries are persisted (live data).  Tombstones are an
+   in-memory recycle bin — the durable audit trail lives in the ghost
+   log (GHOST_FLAG_EXPIRED), not here.  Reload = re-insert by bond_key
+   into a fresh space: same bond → same address, no lookup table.
+
+   rs_load() requires a freshly rs_init()'d space (count == 0) and fails
+   on any corruption: bad magic, truncation, oversized/zero payload,
+   reserved bond_key, non-VALID record, duplicate bond_key, or table
+   overflow (capacity < count).  Timestamps are preserved → LRU order
+   survives the restart; next_timestamp continues after the max.
+   */
+
+/* exact byte count needed to serialize (0 on invalid space) */
+static inline uint64_t rs_serialize_size(const ResidualSpace *rs) {
+    if (!rs || !rs->entries) return 0;
+    uint64_t n = 16u;   /* file header */
+    for (uint32_t i = 0; i < rs->capacity; i++) {
+        const ResidualEntry *e = rs->entries[i];
+        if (e && (e->flags & RS_ENTRY_VALID))
+            n += RS_ENTRY_HEADER_SZ + e->data_size;
+    }
+    return n;
+}
+
+/* serialize all VALID entries (header verbatim + payload). Returns
+   bytes written, or 0 if buf is NULL / cap too small. */
+static inline uint64_t rs_serialize(const ResidualSpace *rs, void *buf,
+                                    uint64_t cap) {
+    if (!rs || !rs->entries || !buf) return 0;
+    uint64_t need = rs_serialize_size(rs);
+    if (cap < need) return 0;
+
+    uint8_t *p = (uint8_t *)buf;
+    memcpy(p, "RSDWGLSP", 8); p += 8;
+    p[0] = 1; p[1] = 0;   /* version */
+    p[2] = 0; p[3] = 0;   /* reserved */
+    p += 4;
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < rs->capacity; i++) {
+        const ResidualEntry *e = rs->entries[i];
+        if (e && (e->flags & RS_ENTRY_VALID)) count++;
+    }
+    memcpy(p, &count, 4); p += 4;
+
+    for (uint32_t i = 0; i < rs->capacity; i++) {
+        const ResidualEntry *e = rs->entries[i];
+        if (!e || !(e->flags & RS_ENTRY_VALID)) continue;
+        memcpy(p, e, RS_ENTRY_HEADER_SZ);
+        p += RS_ENTRY_HEADER_SZ;
+        memcpy(p, (const uint8_t *)e + RS_ENTRY_HEADER_SZ, e->data_size);
+        p += e->data_size;
+    }
+    return need;
+}
+
+/* reload a serialized space into a FRESH rs_init()'d ResidualSpace.
+   Returns 0 on success, -1 on any corruption/overflow. */
+static inline int rs_load(ResidualSpace *rs, const void *buf, uint64_t size) {
+    if (!rs || !rs->entries || !buf) return -1;
+    if (rs->count != 0) return -1;         /* fresh space only */
+
+    const uint8_t *p = (const uint8_t *)buf;
+    if (size < 16) return -1;
+    if (memcmp(p, "RSDWGLSP", 8) != 0) return -1;
+    uint16_t ver;
+    memcpy(&ver, p + 8, 2);
+    if (ver != 1) return -1;
+    uint32_t count;
+    memcpy(&count, p + 12, 4);
+    if (count > rs->capacity) return -1;   /* cannot fit — strict */
+
+    uint64_t off = 16;
+    uint32_t max_ts = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        if (off + RS_ENTRY_HEADER_SZ > size) return -1;
+        const ResidualEntry *rec =
+            (const ResidualEntry *)(const void *)(p + off);
+        uint64_t total = RS_ENTRY_HEADER_SZ + (uint64_t)rec->data_size;
+        if (rec->bond_key == RS_BOND_KEY_RESERVED) return -1;
+        if (rec->data_size == 0 || rec->data_size > RS_MAX_DATA_SIZE) return -1;
+        if (!(rec->flags & RS_ENTRY_VALID)) return -1;
+        if (off + total > size) return -1;
+
+        uint32_t mask  = rs->capacity - 1;
+        uint32_t slot  = _rs_hash(rec->bond_key, mask);
+        uint32_t start = slot;
+        int inserted = 0;
+        while (!inserted) {
+            if (!rs->entries[slot]) {
+                ResidualEntry *e = (ResidualEntry *)malloc(
+                    RS_ENTRY_HEADER_SZ + rec->data_size);
+                if (!e) return -1;
+                memcpy(e, rec, RS_ENTRY_HEADER_SZ);
+                memcpy((uint8_t *)e + RS_ENTRY_HEADER_SZ,
+                       (const uint8_t *)rec + RS_ENTRY_HEADER_SZ,
+                       rec->data_size);
+                rs->entries[slot] = e;
+                rs->count++;
+                rs->total_bytes += rec->data_size;
+                if (rec->timestamp > max_ts) max_ts = rec->timestamp;
+                inserted = 1;
+                break;
+            }
+            if (rs->entries[slot]->bond_key == rec->bond_key)
+                return -1;                 /* duplicate — corrupt file */
+            slot = (slot + 1) & mask;
+            if (slot == start) return -1;  /* table full */
+        }
+        off += total;
+    }
+    rs->next_timestamp = max_ts + 1;
+    return 0;
+}
+
 #endif /* RESIDUAL_SPACE_H */
