@@ -2356,3 +2356,782 @@ User: "geometry มักมีเหตุการณ์แบบนี้ ม
 - **wall Δ พิสูจน์แล้วเป็น cache noise**: รัน parity กลับกัน (ไฟล์คี่ A-ก่อน) → Δ พลิกเครื่องหมายเป๊ะ (+21.8s → −21.1s) — ต้นตอคือ cold read ของไฟล์ใหญ่ ไม่ใช่ตาราง — ส่วนที่เหลือจริงๆ: read A 3.50s vs B 3.07s (Δ 0.43s จาก skip-path read) + rebuild 170ms
 
 **บทเรียน:** signal มาก่อน compute ได้เมื่อ state ที่จำเป็น (dirty/size/count) ถูกสะสม O(1) ระหว่างทาง — เหมือน geometry ที่ mask รู้ก่อนเดิน; พลิกจาก "จ่าย rebuild ทุกครั้ง" เป็น "จ่ายเมื่อคุ้ม" โดยไม่เสีย correctness (fallback ถูกเสมอ)
+
+**§15.60 — "ไม่ชนะ แต่หาจุดพอดี" + WALKTHROUGH-BACKLOG (2026-08-17)**
+
+User กลับจากจุด "จะพับโปรเจ็ก" → ไม่ยอมแพ้ แต่เฟรมใหม่: ไม่คิดชนะ colibri/Golem ที่เวทีมัน — หาจุดที่ geometry ชนะคนเดียว ("จุดพอดี กำลังดี พอใช้ทำอะไรได้") · หลักการใหม่: **ไม่เขียนสูตรเอง — ให้ธรรมชาติ/ข้อมูลเทรนหาความสัมพันธ์** (constraint: int + deterministic + lossless + replay)
+
+งานวิจัยที่ตรงกับระบบ (พบวันนี้): Nagy 2003 (พิกัด 3 แกน + parity + neighbourhood sequences — B-distance ขึ้นกับกฎการเดิน) · Ceulemans 2002 PRB 65 115412 (zone-folding, (m,n) = recipe, leapfrog mod 3, inflation = scale ladder, orbits O4/O12/O24, quarter torus = magnify glass 20736/4, mirror = dual, สนามสามเหลี่ยม = reciprocal space) · แนวคิดใหม่: normal map = gradient (เก็บทิศทางแทนค่า + integrate กลับ lossless) · 3D printer = slice ตามเวลา (18 tes) + G-code (route) + scan กลับ (fibo checkpoint พิสูจน์แล้ว) · field trainer = evolutionary search เหนือ integer knobs
+
+ออกแบบ docs/WALKTHROUGH-BACKLOG.md — 3 tiers: T1 (normal-map gradient, field trainer, triangular addressing) · T2 (zone-folding analog, commensurability, graft seams, hyperbolic define เต็ม) · T3 (5-byte route, compute marketplace, กฎของมิติ) — ไล่ note ไว้แล้ว เดินทีละ session ต่อๆ ไป
+
+## §15.61 — T1.1 normal-map gradient: วัดแล้ว ชนะเฉพาะสนามเรียบ (2026-08-17)
+
+สร้าง tools/normal_map_probe.c (2D height field → dx/dy gradient → integrate กลับ → memcmp พิสูจน์ lossless) — **lossless=OK ทุกกรณี** แต่ verdict แยกชัด:
+
+| data | H(raw) | H(dx) | verdict |
+|---|---|---|---|
+| smooth synthetic | 7.72 | **0.81** | ✅ 9.5× (100% |dx|≤1) |
+| sine2d | 7.82 | 4.54 | ✅ 1.7× |
+| noise | 8.00 | 8.00 | ➖ เท่าเดิม |
+| MD text จริง | 4.64 | 6.08 | ❌ แพ้ (ASCII กระโดด) |
+| WAV จริง | 6.84 | 7.99 | ❌ แพ้ |
+| MP4 จริง | 7.90 | 7.88 | ➖ เท่าเดิม (entropy-coded ในตัว) |
+| PDF จริง | 8.00 | 7.99 | ➖ เท่าเดิม |
+| GGUF Q8 | 7.66 | 7.96 | ❌ แพ้ (whitening) |
+
+**บทเรียน:** byte-level normal map = ชนะเฉพาะสนามเรียบ — ไฟล์โลกจริงถูกบีบในตัวแล้ว (mp4/pdf) หรือ text (jumpy) หรือ whitened (Q8) → ไม่ชนะบน raw byte — **แต่ gradient ยังเป็นเครื่องมือของชั้นสูงกว่า** (local normal บน flat region ของ tensor, residual หลัง predict จาก scale view) — เก็บ probe ไว้เป็นขั้นตอนย่อย (`make normal_map`) — verdict เต็มใน WALKTHROUGH-BACKLOG T1.1
+
+## §15.62 — T1.1b scale-predict → residual → gradient: วัดแล้ว (2026-08-17)
+
+สร้าง tools/scale_residual_probe.c — chain: scale view (block mean/center) → predict → residual → gradient ของ residual → lossless=OK ทุกกรณี (boundary+dx integrate กลับ)
+
+**ผลลบสำคัญ (negative result):** H(dx ของ residual) ≥ H(residual) ทุกกรณีจริง — second difference = high-pass filter = ตัด low-freq ที่เหลือ → whitening ซ้ำ → "เก็บ gradient ของส่วนต่าง" ไม่ช่วยเลย — ชนะอยู่ที่ difference แรกเท่านั้น
+
+**ผลบวก:** residual หลัง scale-predict ชนะ 9.5× บน synthetic smooth (7.72→0.81) · ไฟล์จริงได้ ~10-15% เฉพาะ framing delta-only (base = scale view ที่มีอยู่แล้ว — ตรงกับโมเดลระบบ): WAV 6.84→6.23 · MP4 7.90→6.71 · Q8 tensor 7.66→6.75 · text แพ้ · ถ้าต้องจ่าย base เอง (8/B² ต่อ cell) แพ้ทุกไฟล์จริง — verdict เต็มใน WALKTHROUGH-BACKLOG T1.1b
+
+## §15.63 — T1.2 field trainer: evolution เจอ champion, default มี bug (2026-08-17)
+
+tools/field_trainer.c — evolutionary search (pop 32, tournament-3, elite all-time champ, restart-on-stagnation 15, local polish 400) เหนือ 5 integer knobs: stride/offset/gate/orbit/chunk — fitness = field_slots + 8·lifts + 1e9·rejects (cost model ของระบบเอง: lift = replay event = 8 slots)
+
+**Champion (ค้นเจอเอง):** stride 29-41 · offset 7/122 · gate 3.0 (kmax=4) · orbit 1 · chunk 262144 → 4 โมเดลจริง: rejects 1742-7408 → **0 ทั้งหมด** · field footprint ↓13-55% · lifts ↓88-93% (LFM 167K→11K) · Kokoro ทั้งโมเดลเข้า ghost (field=0 — เหมาะกับ stream)
+
+**ค้นพบหลัก 3 ข้อ:** (1) default (37,0,1.0,1,16K) fit ไม่ได้โมเดลไหนใน 1 window — rejects แฝง 1267-7408 ที่ไม่เคยถูกจับ (วัดแต่ lift/footprint) (2) กลยุทธ์ champion = chunk ใหญ่ + entry rank อยู่นอก field → ยกทุกอย่างที่ทำได้เข้าสู่ ghost — ตรงกับ instinct user (3) orbit O=1 ชนะเสมอใน single-model workload — partition = fragmentation; orbit มีค่าสำหรับ tenant isolation
+
+caveat: λ=8 ปรับได้ · ยังไม่ได้ wire เข้า cap_chain_scan (end-to-end lossless verify ด้วย champion knobs — next step) · verdict เต็มใน WALKTHROUGH-BACKLOG T1.2
+
+## §15.64 — T1.1c residual ใน delta log: แยกชั้น route vs delta (2026-08-17)
+
+tools/delta_log_residual.c — serialize [route 5B][len][scale-predict residual] → replay parse → decode → pred+residual → memcmp — **lossless OK ทุกกรณี** (512/512 blocks ไฟล์จริง)
+
+**ผลหลัก — residual กับ route log เป็นคนละชั้น:** ใส่ residual ใน route log = โต ~2500× (route 5B/event vs residual ~0.8B/cell ต่อ 16KB block) — ชนะตรงที่แทนที่ hyper_delta (full 1B/cell): pred+ent delta เล็กลง 16-62% — text 0.38× (↓62%) · WAV 0.77× · MP4 0.83× · GGUF Q8 0.84× · PDF 0.85× — อ่านตรง O(1) = base + residual ไม่ต้อง replay
+
+**สถาปัตยกรรม 2 ชั้นชัด:** route log (5B/event) = replay path สำหรับอ่าน scale ไม่ตรง · hyper_delta → pred+ent = materialization path (ถูกกว่าเดิม 16-62%) — verdict เต็มใน WALKTHROUGH-BACKLOG T1.1c
+
+## §15.65 — T1.1d pred+ent delta ใน core + Huffman จริง (2026-08-17)
+
+สร้าง core/huff_codec.h (canonical Huffman 256 sym, header-only, deterministic — lens 256B เก็บใน delta, rebuild ฝั่ง decode) + HyperDeltaEnt ใน hyper_delta.h (pred = (kis>>20)&0xFF — coarse view x3 byte — ค่า `&0xFF` เดิมคือ bug แฝง: packed key เก็บ x3 ที่ bits 20-31 → &0xFF ได้ z3=0 → coarse degenerate) → residual → Huffman — base ฟรี (pred มาจาก kis_coarse)
+
+**test_hyper_delta_format 18/18 PASS** (เพิ่ม 6 checks) — sawtooth: pred+ent 2868 B = 0.14× full (↓86%) · structured 0.89× · make test ทั้งชุด 82/82 + 4/4
+
+**Huffman จริงบนไฟล์จริง ≈ entropy bound เป๊ะ:** WAV 0.790 B/cell (bound 0.770) · MP4 0.845 (0.826) · Q8 0.860 (0.842) — vs full-delta 0.79-0.86× (↓14-21%) — ตัวเลข 0.77-0.85 จาก T1.1c = ของจริง — with-base 1.04-1.12× → ชนะเมื่อ base ฟรี (ระบบทำแบบนี้ — reader มี coarse view อยู่แล้ว) — lossless 512/512 blocks — verdict เต็มใน WALKTHROUGH-BACKLOG T1.1d
+
+## §15.66 — Champion rule set wired เข้า chain จริง: lossless byte-for-byte (T1.2 close)
+
+**ทำ:** `tools/cap_chain_scan.c` — streaming chain (window 16MB, bounded memory) วางทุก chunk ผ่าน
+admission จริง (`ght_scale_depth/gate` + per-orbit capacity) → LIFT = freeze เข้า residual_space
+จริง / ADMIT = pointer-home / REJECT = นับ deterministic — verify ทุก window ทันที (thaw + memcmp)
+
+**ผล champion knobs (29,7,3.0,1,262144):**
+- Kokoro Q8 (196MB): field 20708→11560 · rej 472→0 · lift 763 (ของจริง) · **lossless 13/13**
+- Qwen3-0.6B (609MB): rej 1742→41 · lift 2355 (ของจริง) · **lossless 39/39**
+- notebookLM 7.7GB / 1035 files: lift 31127 · rej 0 · forced 0 · **lossless 1035/1035**
+
+**2 bugs ที่เจอจากการ wire (ทั้งคู่เคยซ่อนในของเดิม):**
+1. **capacity ≠ power-of-two**: window สุดท้าย (win_n=312) → `mask=cap-1` ใช้ mask 311 (ไม่ใช่ 2^k−1)
+   → probing ไม่ใช่ permutation + ตารางเต็มพอดี → LRU evict entry เก่าสุด (chunk 12288 = chunk แรก
+   ของ window) ก่อน thaw → THAW FAIL — residual_space.h ประกาศ "power of 2 recommended" ไว้ แต่ไม่มี guard
+2. **chunk > RS_MAX_DATA_SIZE (64KB)**: freeze เงียบ fail (return 0) ทุกชิ้น → "lifted" เป็นตัวเลขหลอก
+   (peak rs.count=0, forced=763) — แก้โดย split เป็น sub-piece 64KB, bond = rdh_addr(block, sub)
+   = coordinate-as-address ไม่ต้อง hash, collision-free, reversible
+
+**caveat ที่ซื่อสัตย์ (สำคัญ):** trainer (field 9248/Qwen3) วัดบน tensor-rank model —
+chain จริงวางตาม byte-chunk → field 20704 rej 41 — **กลยุทธ์ champion ถ่ายทอดข้าม granularity
+ได้ แต่เลข footprint ไม่ใช่เลขเดียวกัน** — ก่อนใช้จริงต้องตัดสินใจ granularity กลาง (block = tensor
+สำหรับ GGUF, byte-chunk สำหรับ blob) แล้วเทรนใหม่บน granularity นั้น
+
+**เครื่องมือ:** `make cap_chain_scan` · `build/cap_chain_scan <folder> | --gguf <model> [--stride S] [--offset O] [--gate G] [--orbit Q] [--chunk C]`
+
+## §15.67 — T1.3 Triangular addressing (Nagy 2003/2004): B-distance vs stride-37
+
+**ทำ:** `tools/triangular_addressing_probe.c` — สนามสามเหลี่ยม 578 cells (a,b∈[−8,8], c = p−a−b,
+p = parity 0/1 = orientation) + m-neighbourhood ตาม Nagy 2004 §3 (|Δᵢ|≤1, Σ|Δ|≤m) + B-distance
+BFS (ก้าวที่ i เคลื่อนใน N_{bᵢ} วนคาบ) + วัด symmetry/triangle inequality บน 200/120 ตัวอย่าง
+สุ่ม + เทียบ stride-37 cycle (144/720)
+
+**ผลวัด (ตรงทฤษฎี paper เป๊ะ):**
+- N₁=3 (edge-adjacency ของ triangle) · N₂=9 · N₃=12 · parity invariant: 1-neigh ต่าง · strict-2 เหมือน · strict-3 ต่าง ✓
+- **Rule-dependent cost (scale ladder):** คู่ (0,0,0)→(4,−4,0) บน lane เดียวกัน — B=(1): 8 ก้าว ·
+  B=(2): 4 · B=(1,2): 6 · B=(1,3,2): 5 — ราคาขึ้นกับกฎ ไม่ใช่แค่ endpoints
+- **Non-metric ของ sequence ผสม (Nagy 3.4.1/3.4.2 จริง):** constant (1),(2),(3) → 0 asymmetric
+  pairs + 0 triangle violations (metric) — mixed (1,3,2): 26/200 asymmetric · (2,1): 4/120 violations
+- **Stride-37:** mod 144 = 1 cycle 144/144, residue mod 6 = 24×6 imbalance 0 · mod 720 TRING =
+  120×6 imbalance 0 — constant rule บน cycle = permutation symmetric เสมอ ไม่มี non-metric
+- **สรุป:** ระบบเราไม่มี distance function (มีแต่ permutation/bijection ปิดวง) — TETRA §⑩ ยืนยัน —
+  ถ้าอนาคตต้องการ metric จริง: constant sequence เท่านั้น (หรือ hex distance Luczak–Rosenfeld)
+
+**2 bugs ของตัวเองที่เจอระหว่างสร้าง (เขียวยาวๆ):**
+1. BFS frontier เป็น int8_t → index สูงสุด 577 truncate (144 → −112) → ต้อง int
+2. c ของ parity-1 cell = 1−a−b แต่เขียน −a−b (สูตร parity-0) → target parity-1 off-by-one →
+   กราฟ N₁ แตกเป็น 82/578 cells (B=(1) mean 1.12 แทน 14.15) — แก้ nc = p − a − b + Δc
+   — บทเรียน: 2-plane coordinate ต้องพก parity ไปทุกการคำนวณ (เช่นเดียวกับ bond_L/bond_R)
+
+**เครื่องมือ:** `make triangular_addressing_probe` · `./build/triangular_addressing_probe`
+
+## §15.68 — T1.3b Lane addressing 20736 + rotation theorem + rule-cost บน GGUF จริง
+
+**ต่อจาก §15.67 (B-sequence):** เอา lane structure ของสนามสามเหลี่ยมมาวางบน field จริง
+
+**Part A — field = สนามสามเหลี่ยม 2-plane:** 20736 = 144 lanes × 144 pos = ตาราง (a,b) กับ
+c = p−a−b (p = (a+b)&1) — 3 ตระกูล lane: แถว 144 (a คงที่) · คอลัมน์ 144 (b คงที่) ·
+แนวทแยง 287 (a+b คงที่) — ทุก cell ใน 1 แถว+1 คอลัมน์+1 แนวทแยงพอดี · parity สลับทุกก้าว
+
+**Part B — Rotation theorem (พิสูจน์ empirical ครบ):** gcd(s,144)=1 ⇒ เดิน w_r = (s·r+o)
+mod 144 เป็น 1 cycle 144/144 — สำหรับทุก L|144 (lane = residue mod L): ทุก L ก้าวติดกันครอบ
+ทุก lane 1 ครั้งพอดี + แต่ละ lane 144/L ครั้ง/144 ก้าว — verified stride {5,13,29,37,41,61}
+× L {2,3,4,6,8,9,12,16,18,24,36,48,72,144} — **constant rule ⇒ rotation + uniform**
+(นี่คือรูปพีชคณิตของ "constant B-sequence symmetric" ใน T1.3 บนแกน scale จริง)
+— ความหมาย: การกระจายที่ uniform ระดับสูงสุดบนแกน 144 เกิดจาก coprime เพียงอย่างเดียว
+ไม่ต้อง hash/ตาราง — และ stride ใดๆ ก็เลือกได้อิสระ (ยัง rotation ครบ) → ตัวเลือกสำหรับ
+field trainer ใหญ่ขึ้นโดยไม่เสียสมมาตร
+
+**Part C — Same pair, different cost บน GGUF จริง (ยืนยัน T1.2 ซ้ำบน per-tensor):**
+- Kokoro 775 tensors: default 20688/1267✗ · champ (29,7,3.0,256K) 0/0 (ทั้งโมเดลใน ghost)
+- Qwen3 310 tensors: default 20708/1742✗ · champ 9248/0
+- **token_embd 165MB: cost 168,416 → 9,248 = 18× ต่างบน tensor เดียวกัน** (scale@r0: 0 vs 7)
+— "คู่เดียวกัน ราคาต่างกันตามกฎ" = scale ladder วัดบนข้อมูลจริงแล้ว
+
+**เครื่องมือ:** `make lane_field_probe` · `./build/lane_field_probe [--gguf <model>]`
+
+## §15.69 — Rotation theorem wired เข้า field trainer (T1.3b → T1.2 ต่อ)
+
+**ทำ:** `tools/field_trainer.c` — rotation theorem (T1.3b §15.68) กลายเป็น invariant ของ
+search space:
+1. **verify ตาราง COP ตอน boot:** 47 strides (φ(144)−1 = coprime ทั้งหมด) — ทุกตัวผ่าน
+   `rotation_verify` (1 cycle ครบ 144 + ∀L|144: ทุก L ก้าวติดกันครอบทุก lane 1 ครั้ง + uniform 144/L)
+   — ขึ้นว่า "✓ verified" ทุกครั้งที่รัน
+2. **--eval กรอง:** stride ที่ไม่ใช่ coprime (เช่น 38) → เตือน "⚠ นอก search space
+   (rotation ไม่รับประกัน)" — evaluate ยังรันได้เพื่อเทียบ แต่ flag ชัด
+3. **champion หลังค้น + polish:** ตรวจ `rotation_verify(champ.stride, champ.offset)` —
+   พิมพ์ข้าง CHAMPION
+
+**ผลรัน Qwen3-0.6B (gens 60, pop 24, seed 7):**
+- COP table 47/47 ✓ · champion (29,121,2.0,1,262144) → field 9248 (↓55.3%), lift 2600,
+  **rej 0** · **rotation ✓ (29,121)** — ค้นเจอ offset 121 (แทน 7) — ค่า fitness เท่ากัน
+  (9248+8·2600 = 30048) เพราะ rank-0 scale > kmax เหมือนกัน → ทั้งโมเดลใน ghost
+- Kokoro: (29,7,3.0,1,262144) → field 0, rej 0 ✓
+- สรุป: constraint ไม่ลดพลังค้นหา (47 coprime ครบ) แต่รับประกันว่า champion ทุกตัว
+  **rotates ทุก lane uniform เสมอ** — สมมาตรของ constant rule เป็นสมบัติเชิงโครงสร้าง
+  ไม่ใช่ของตกแต่ง
+
+**เครื่องมือ:** `make field_trainer` — เดิม (ไม่ต้อง rebuild target ใหม่)
+
+## §15.70 — Long training sweep: gens 300/pop 32 × 4 GGUF — champion spread
+
+**รัน:** 4 โมเดลจริง, seeds 1-4, gens 300, pop 32 (≈9600 evals/model) — ทุก champion
+ตรวจ rotation theorem + rejects
+
+| model | tensors | champion (s,o,gate,O,chunk) | field | lifts | rej | rotation |
+|---|---|---|---|---|---|---|
+| Qwen3-0.6B | 310 | (29, 7, 3.0, 1, 256K) | 9248 ↓55.3% | 2600 | **0** | ✓ |
+| Qwen2.5-0.5B | 291 | (143, 142, 2.0, 1, 256K) | 13872 ↓33.0% | 2731 | **0** | ✓ |
+| LFM2.5-2.6B | 266 | (41, 122, 3.0, 1, 256K) | 16184 ↓21.8% | 11075 | **0** | ✓ |
+| Kokoro | 775 | (143, 111, 2.5, **4**, 256K) | **0** (ทั้งโมเดล ghost) | 1241 | **0** | ✓ |
+
+**Champion spread (4/4 rej=0, rotation ✓):**
+- stride ที่ค้นเจอ: {29, 143, 41, 143} — coprime ทั้งหมด (search space บังคับ §15.69) —
+  **ต่างโมเดลต่างกฎ** = "rule-dependent cost" จริง (T1.3/1.3b) — ไม่มีกฎเดียวชนะทุกโมเดล
+- offset: {7, 142, 122, 111} — ย้าย rank-0 scale ออกจาก field (เข้า ghost) ทุกราย
+- gate: 2.0-3.0 (kmax=4) — จุด ROI cliff เดียวกับที่จูนมือเจอ (k 4-5 เหมาะสม)
+- chunk: 262144 ทุกราย — tensor เล็กลงเหลือ 1-2 chunk → ยกเข้า ghost หมด
+- **Kokoro ใช้ orbit=4** (ต่างจาก T1.2 ที่หา orbit=1) — field 0 เท่ากัน —
+  partition เป็นหลาย orbit ไม่เสียอะไรเมื่อทั้งโมเดลใน ghost (multi-tenant พร้อมใช้)
+- default ยัง rej 1,267-7,408 ทุกโมเดล ✗ — champion 0 ทั้ง 4
+
+**สรุป:** rotation constraint ไม่รบกวนการค้นหา (ยังเจอ 0 rejects ทุกตัว) และรับประกัน
+สมมาตรของทุก champion — "สม่ำเสมอเชิงโครงสร้าง" ครบวงจรจากทฤษฎี (T1.3) → แกนจริง (T1.3b)
+→ search space (T1.2)
+
+## §15.71 — Joint training (1 rule × 4 models) + per-tenant lossless end-to-end
+
+**Part 1 — Unified rule set (field_trainer รับหลาย --gguf, fitness = Σ per-model cost):**
+- โหลด 4 โมเดลพร้อมกัน → evolve 300 gens/pop 24 → **champion ตัวเดียว (115,115,3.0,1,262144)
+  rej 0 ครบทั้ง 4 โมเดล** — rotation ✓ (115 coprime)
+- per-model ของ unified champion: Qwen3 9248 · Qwen2.5 13872 · LFM 16184 · Kokoro 0 —
+  **เท่ากับ champion ตัวต่อตัวของแต่ละโมเดลใน §15.70 ทุกค่า** → มี equivalence class ของ
+  กฎที่ถึง per-model optimum พร้อมกัน — "หนึ่งกฎครอบทุกโมเดล" เป็นไปได้จริง
+  (กลยุทธ์: offset > kmax ยกทุก tensor เข้า ghost + chunk 256K)
+- default ยัง 82812 slots (~4 windows) rej 12327 ✗ — unified champion 39304 (~2 win) rej 0
+
+**Part 2 — Per-tenant lossless end-to-end (cap_chain_scan + champion ต่อโมเดล):**
+
+| model | champion (s,o,g,O,chunk) | lossless | win | lift (จริง) | rej | forced |
+|---|---|---|---|---|---|---|
+| Qwen3-0.6B | 29,7,3.0,1,256K | **OK** | 39/39 | 2355 | 41 | 0 |
+| Qwen2.5-0.5B | 143,142,2.0,1,256K | **OK** | 41/41 | 2493 | 34 | 0 |
+| LFM2.5-2.6B | 41,122,3.0,1,256K | **OK** | 172/172 | 10587 | 329 | 0 |
+| Kokoro | 143,111,2.5,4,256K | **OK** | 13/13 | 763 | 1 | 0 |
+
+- **lossless byte-for-byte 4/4** — rej 41/34/329/1 เป็น granularity caveat เดิม
+  (trainer = tensor-rank, chain = byte-chunk — T1.2) — pointer-home รักษา lossless เสมอ
+- forced=0 ทุกตัว — lift ทุกชิ้น freeze จริง (sub-piece 64KB §15.66)
+
+**Bug ใหม่ที่เจอ (ไฟล์ >2GB ครั้งแรกใน data path):** `ftell` เป็น 32-bit บน Windows →
+LFM 2.87GB อ่าน size กลายเป็น 2⁴⁴ garbage + READ FAIL เงียบ — cap_chain_scan แก้เป็น
+`_fseeki64/_ftelli64` (Windows CRT 64-bit; fallback fseeko/ftello เฉพาะ non-Windows) —
+gguf_reader.h ถูกอยู่แล้ว (guard เฉพาะ non-Windows) — ข้อควรจำ: **บน Windows ห้ามใช้
+ftell/fseek กับไฟล์ ≥2GB** — ftello ก็ truncate เหมือนกัน (off_t 32-bit ถ้าไม่มี
+_FILE_OFFSET_BITS=64)
+
+## §15.72 — Unified champion wired เป็น default ของ core + tools
+
+**ทำ (single source of truth):**
+- `core/geo_ghost_envelope.h`: `GHT_GATE_DEFAULT` 1.0 → **3.0** (kmax=4 — trained
+  champion §15.70/71; ไม่มี reference อื่น — เปลี่ยนปลอดภัย)
+- `core/geo_cap_account.h`: เพิ่ม **CAP_RULE_* = (115, 115, 3.0, 1, 262144)** — trained
+  placement rule (0 rejects × 4 GGUF, rotation ✓, per-model optimum)
+- `tools/field_trainer.c` + `tools/cap_chain_scan.c`: `genes_default/knobs_default`
+  อ่านจาก CAP_RULE_* (ไม่ hardcode — เดิม 37,0,1.0,16K ซึ่ง reject ทุกโมเดล T1.2)
+
+**verify:**
+- make test 82/82 + 4/4 เขียว (GHT_GATE_DEFAULT ไม่มี test อ้างอิง)
+- cap_chain_scan ไม่ส่ง knobs → ใช้ (115,115,3.0,1,256K) → **Kokoro lossless OK rej 0**
+  (ค่า default เก่า rej 472!) — bonus: stride 115 วาง byte-chunk ได้ดีกว่า per-model
+  champion ด้วยซ้ำบน Kokoro (rej 0 vs 1)
+- หมายเหตุ: stride-37 walk constants อื่นใน core (frame-seek/tring/belt/mdim/tess)
+  เป็นคนละโดเมน (cycle walk ของ geometry ที่พิสูจน์แล้ว) — ไม่แตะ
+
+**ผล:** ระบบทั้งตัว (core default + tools) ใช้กฎที่ "train หามา" แทนกฎที่ตั้งมือ —
+หลักการ "เทรน ไม่เขียนสูตร" (T1.2) ลงสู่ค่า default จริง
+
+## §15.73 — CAP_RULE_* wired เข้า geofs/hyperbolic read path (กฎเดียว end-to-end)
+
+**ทำ 3 จุดใน core + 1 probe:**
+
+1. **`core/geo_cap_account.h`** — เพิ่ม **`cap_rule_scale(rank)`**: ตัว resolver เดียว
+   `w = (stride·rank + offset) % 144` — ใช้ที่เดียว: วาง (chain) · admit (gate) · อ่าน
+   (ghost_read_rule) — ถ้าอ่านกับวางใช้กฎคนละตัว → bond ต่าง → thaw fail โดย construction
+2. **`core/geo_ghost_lift.h`** — เพิ่ม **`ghost_read_rule(log, rs, block, from_scale, &sz)`**:
+   resolve `to_scale = cap_rule_scale(block)` ภายใน — caller ไม่ต้อง (และไม่ควร) ส่ง
+   to_scale เอง (ส่งกฎผิด = อ่านไม่ได้ — เสาเข็มห้ามขยับ)
+3. **`core/geofs_core.h`** — เพิ่ม **`geos_read_ghost(v, log, rs, name, buf, size)`**:
+   ทุก block → `ghost_read_rule` (lifted → residual_space) / fallback data store (admit)
+   — geofs เข้า ghost/hyperbolic path ด้วยกฎ trained เดียว
+4. **`tools/rule_e2e.c`** (`make rule_e2e`) — พิสูจน์ end-to-end:
+   placement (cap_rule_scale) → admission (cap_admit + ghost_lift_auto) → read
+   (geos_read_ghost) — 6 ไฟล์ synthetic + ไฟล์จริง lossless byte-for-byte
+
+**ผล (rule 115,115,3.0,1,256K):**
+
+| ตัวชี้วัด | ค่า |
+|---|---|
+| placement | 902 blocks · ADMIT 35 · LIFT 867 (ghost) · REJECT 0 |
+| capacity | used 16184/20736 slots (envelope) · lifts 867 · rejects 0 |
+| synthetic 6 ไฟล์ | lossless 6/6 (512B → 40KB) |
+| ไฟล์จริง (F:/notebookLM md 5KB) | lossless ✓ |
+| rule mismatch (stride 37 อ่านข้าม) | 137/137 blocked — ปิดเส้นทางถูกต้อง |
+| make test | 82/82 + 4/4 เขียว |
+
+**บทเรียน/หมายเหตุ:**
+- **geos_create = metadata เท่านั้น** (alloc + entropy) — ต้องตามด้วย geos_write
+  (มีเฉพาะ geos_summon ที่ copy data ในตัว) — probe รอบแรก mismatch เฉพาะ block
+  ที่ ADMIT (scale 4 = ขอบ envelope พอดี) เพราะอ่านจาก store ที่ว่าง
+- envelope gate 3.0 (kmax 4): 35/902 blocks อยู่ใน envelope (scale ≤ 4) — ที่เหลือ
+  ทั้งหมด lift → field เหลือ ~78% แต่ ghost เก็บข้อมูลจริง → อ่าน lossless ครบ
+
+## §15.74 — HyperDeltaEnt (pred+ent) wired เข้า ghost_read_rule — delta-mode ghost
+
+**ทำ (core + tool):**
+1. **`core/ghost_delta.h`** (ใหม่) — delta blob self-contained:
+   pred = subsample-2 base (even sample — เดียวกับ hdent_pred "(kis>>20)&0xFF")
+   residual = (orig − pred) mod 256 → canonical Huffman (huff_codec.h)
+   format = [hdr 10B packed: mode/base_kind/base_n/orig_n/data_len][base][lens 256][coded]
+   adaptive: encode → เทียบ size → เก็บเล็กกว่า (delta หรือ raw)
+2. **`core/geo_ghost_lift.h`** — `GHOST_FLAG_DELTA` + `ghost_lift_delta`
+   (freeze blob, flag DELTA) + `ghost_read_materialize` / `ghost_read_rule_materialize`
+   (route + wang gate → thaw → decode delta หรือ memcpy raw — อ่านด้วยกฎเดียว §15.73)
+   refactor: `_ghost_log_insert` helper (ghost_lift ใช้ร่วม — ไม่เปลี่ยนพฤติกรรมเดิม)
+3. **`core/geofs_core.h`** — `geos_read_ghost` สลับเป็น materialize variant
+   (รองรับทั้ง raw + delta entry)
+4. **`tools/ghost_delta_measure.c`** (`make ghost_delta_measure`) — วัด footprint
+   เทียบ thaw ตรง ที่ 64B / 1KB / 16KB บนของจริง
+
+**ผล (B/cell · lossless ครบทุกกรณี):**
+
+| data | 64 B | 1 KB | 16 KB |
+|---|---|---|---|
+| smooth syn | 1.000 (fallback) | **0.885** | **0.641** |
+| sine2d | 1.000 | 0.994 | **0.897** |
+| noise | 1.000 | 1.000 | 1.000 |
+| WAV จริง (4MB) | 1.000 | 1.000 | 0.994 (13/256 win) |
+| MD text | 1.000 | 1.000 | 1.000 |
+| GGUF Q8 (embd/weights) | 1.000 | 1.000 | 1.000 |
+
+**บทเรียน (สำคัญ — ตอบคำถาม "footprint เทียบ thaw ตรง" ตรงๆ):**
+- **Delta-mode ghost ทำงาน lossless end-to-end จริง** (lift → route → materialize decode)
+  และ adaptive fallback ทำให้ **ไม่เคยแย่กว่า raw** (noise/Q8/text = 1.000×)
+- **แต่ base ที่ต้องเก็บเอง (0.5 B/cell) + codebook 256B/entry กลืนกำไรบนไฟล์จริง** —
+  WAV ชนะแค่ 0.6% ที่ 16KB, Q8/text แพ้ → fallback — ตัวเลข T1.1d (0.79-0.86 B/cell
+  vs 1.0) เป็นจริง **เฉพาะเมื่อ base ฟรี** (reader มี coarse view อยู่แล้ว — สถาปัตยกรรม
+  geometry ที่อ้าง) — ตรงกับบทเรียน T1.1b "จ่าย base เอง → แพ้" ซ้ำที่ granularity entry
+- **64B (geos block) ไม่มีทางชนะ** — codebook 256B = 4× ข้อมูล — ยืนยันว่า delta ต้อง
+  ทำงานที่ chunk ≥ 1KB (หรือ base ฟรี)
+- 2 bugs ระหว่างทาง: (1) pred encode ใช้ orig[i>>1] แต่ decode ใช้ base[i>>1]
+  (คนละ predictor → mismatch เฉพาะตำแหน่งคู่) (2) **GhostDeltaHdr padding** —
+  struct 12B แต่ HDR_SZ=10 → base ทับ high bytes ของ data_len (base[0..1]=0)
+  → แก้ด้วย packed
+
+## §15.76 — Walk-based access: เดิน spine tick-by-tick หา route ที่ live — state=(seed,round,tick) พอทุกตำแหน่งทุกตาราง
+
+**ทำ (จาก handoff #2 เปิดไว้):** `core/fibo_walk.h` (ใหม่) — นาฬิกาเดิน (round, tick) +
+การหา route ที่ live โดยคำนวณสนามใหม่จาก (method + seed) — แทนการอ่านด้วย log pile
+lookup (index):
+- `fibo_walk_next/dist/to` — เดิน tick-by-tick, wrap ที่ ticks → round+1 (jet bridge
+  บนตาราง 12 ticks = bridge ที่ tick 11 เป๊ะ), วนข้าม 0 ได้, ระยะ = forward ticks
+- `fibo_walk_live` — ที่ตำแหน่ง (r, t): live = {i : rq_i == r และ rq_i % ticks == t}
+  — คำนวณจาก seed+method ("ถ้าสูตรคำนวณสนามได้ใหม่ทั้งสนาม จะใช้สนามยาวแค่ไหนก็ได้
+  แค่วนรอบ" — user principle) → ไม่ต้อง index
+- `fibo_walk_coverage` — ทุก chunk live ตรง 1 ตำแหน่ง (rq, rq%ticks) → Σ == n
+- `tools/fibo_checkpoint_sweep.c` — walk proof เข้า `run_config` (live) + `verify_img_mode`
+  (fresh process จากดิสก์) — ทุก config พิมพ์: coverage / enter-anywhere 3 start states /
+  lossless / field-other NULL / max steps
+- `tests/test_fibo_walk.c` (TIER1) — **64/64**: 5 ตาราง (1728×12 · 512×12 · 1728×4 ·
+  256×3/255 wrap · random) × coverage · enter-anywhere (0,0)/(กลาง,2)/(ท้าย) ·
+  steps==dist · ตำแหน่งว่าง→0 · cell (pipe,tick) เดียว · seed/method ต่างจับได้ ·
+  นาฬิกา: wrap/ข้ามรอบ/วนครบรอบกลับตำแหน่งเดิม
+
+**ผล:**
+- `make test` TIER1 **84/84** + TIER2 4/4 · sweep 27/27 (+fresh-process disk restore)
+  ทุก config walk ✓ — max steps ตามตาราง: 1728×12/144 → 1727 · 1728×4/72 → 287 ·
+  256×3/255 → 588 (≤ cycles×ticks เสมอ)
+- field-other: route ของ (seed/method อื่น) ไม่มีใน log → NULL — จับได้ 100%
+  (scatter dist 5→8: 54/64 ต่าง · wrap: 64/64 ต่าง · random seed+1: 64/64 ต่าง)
+
+**บทเรียน:**
+- **state = (seed, round, tick) พอจริง** — เดินจาก state ใดก็ถึงทุกตำแหน่ง (enter-anywhere),
+  route หาได้จาก seed+method ล้วน — log เหลือบทบาท audit/verify (5B/route) ไม่ใช่ index
+- **การหา route ≠ การอ่าน data** — walk หา route (คำนวณสนาม) · bond แก้ data
+  (coordinate = address) — สองชั้นแยกกัน, walk ไม่แตะ address
+- bug ระหว่างทาง: `chunks` ถูก qsort ตาม r0 ก่อนวาง → เปรียบเทียบ field-other แบบ
+  index-wise ผิด (เทียบคนละ chunk — 63 หลอก) → แก้: regenerate field ใหม่เป็น array
+  ตรงๆ เปรียบเทียบ per-block (54/54 จริง) — บทเรียน: เปรียบเทียบข้อมูลต้องเทียบ identity
+  (block) ไม่ใช่ตำแหน่งใน array
+- ข้อจำกัด: seed มีผลเฉพาะ pattern random (scatter/cluster/wrap = สูตรล้วน) —
+  "seed ต่าง = field ต่าง" พิสูจน์บน random; บนสูตรล้วนใช้ "method ต่าง" (dist) แทน
+
+## §15.77 — Tied-dedup × walk-based access รวมกันบน GGUF จริง: เดินนาฬิกาหา route ที่ live เหนือ dedup field
+
+**ทำ (user request — เอา §15.75 + §15.76 มาวิ่งด้วยกัน):** `tools/tied_dedup_chain.c`
+ขยายด้วย walk-based access proof เหนือ field ที่ dedup แล้ว:
+- chunk index = สนามที่คำนวณใหม่จาก (method + seed) — tensor metadata (ขนาด/ลำดับ) ×
+  chunk rank r → w = (stride·r+offset)%144 (scale axis 144 = รอบสนาม) · gid = **home's gid**
+  (registry: dup chunk ชี้ home — block เดียวกับที่ freeze)
+- walk: `fibo_walk` เดิน tick-by-tick จาก 3 start states (0,0)/(72,2)/(143,11) → ที่ตำแหน่ง
+  (w, w%12) หา chunk ที่ live (coverage: ทุก chunk ตรง 1 ตำแหน่ง) → อ่านผ่าน bond
+  `ghost_piece(gid, sub, w)` → memcmp กับต้นฉบับ — dup อ่านผ่าน home bond เดียว
+- ตัวชี้วัด: coverage / enter-anywhere / lossless lifted / pointer-home / registry dup reads /
+  rule-other (กฎ (37,0) → ทุก chunk อยู่ตำแหน่งต่าง = field ต่างจริง) / empty position
+
+**ผลบน GGUF จริง (ทุกโมเดล lossless + walk ✓):**
+
+| model | chunks | walk coverage | lossless lifted | registry dup ผ่าน home bond | rule-other |
+|---|---|---|---|---|---|
+| Qwen2.5-0.5B Q8 | 2761 | 2761/2761 | 2731/2761 (30 pointer-home) | **537/552** | 2761/2761 ต่าง |
+| Kokoro Q8 | 1241 | 1241/1241 | 1241/1241 | — (ไม่มี dup) | 1241/1241 |
+| Qwen3-0.6B Q8 | 2620 | 2620/2620 | 2600/2620 (20 pointer-home) | — (ไม่มี dup) | 2620/2620 |
+
+- enter-anywhere 3/3 ทุกโมเดล · max 1727 steps (= cycles×ticks − 1 — วนครบสนามก็ถึง) ·
+  empty position ✓ · `make test` TIER1 84/84 + TIER2 4/4 ยังเขียว
+
+**บทเรียน:**
+- **walk หา route ≠ อ่าน data** — walk บอกว่า chunk ไหน live ที่ตำแหน่งไหน (จาก state
+  ล้วน ไม่ต้อง index) · bond แก้ data (coordinate = address) — **dup tensor อ่านผ่าน
+  home bond เดียวโดย walk ไม่ต้องรู้ด้วยซ้ำว่าเป็น dup** (gid ชี้ home — registry อยู่ใน
+  สนามเอง ราคา 0 bytes) — สองชั้นแยกกันแล้วประกอบเข้าด้วยกันได้พอดี
+- **bond ไม่ผูก route (telescope)** — กฎอื่นอ่านเจอ data เดียวกัน (วางครั้งเดียว ไม่เคย
+  เขียนซ้ำ) — "field ต่าง" ตรวจที่ **ตำแหน่ง live-map** (rule-other 2761/2761 ตำแหน่งต่าง)
+  ไม่ใช่ที่ความล้มเหลวของ read — ต่างจาก fibo log (route ผิด → NULL) เพราะ dedup field
+  ไม่มี log — นี่คือความต่างของสองชั้นที่ควรเข้าใจให้ตรง
+- 🐛 counting bug: dup_read_ok นับรวม 3 start states (1611 = 3×537) → นับเฉพาะ start แรก
+  (537/552 — 15 chunk ที่เหลือเป็น pointer-home โดยออกแบบ ไม่ใช่ความผิดพลาด)
+
+## §15.78 — Walk-based read = read path จริงของ geofs: geos_read_ghost เดินนาฬิกา ไม่มี pile lookup
+
+**ทำ (user request — เอา walk ไปแทน direct read):**
+1. **`core/geo_ghost_lift.h`** — `ghost_read_rule_walk(log, rs, block, from, state_round,
+   state_tick, buf, cap, out_len, walk_steps)`: (1) เดินนาฬิกา (fibo_walk_dist) จาก state
+   ไปตำแหน่ง live ของ block = (to, to%12), to = cap_rule_scale(block) — live-route
+   resolution แทน `ghost_log_find`/`ghost_pair_find` (pile lookup) · (2) thaw ผ่าน bond
+   โดยตรง · (3) delta blob self-describing (GhostDeltaHdr) → decode — ไม่ต้อง log flag
+2. **`core/geofs_core.h`** — `GeosVolume` + `walk_round/walk_tick/walk_steps` (นาฬิกา
+   state = (round, tick) — ไม่ serialize เป็น runtime state) · `geos_read_ghost` ใช้
+   walk variant: ต่อ block เดินนาฬิกาจาก state → อ่าน → state เดินหน้า (อ่าน file =
+   เดินผ่านตำแหน่ง live ของทุก block) · steps สะสมใน v->walk_steps
+3. **`tools/rule_e2e.c`** — พิสูจน์ enter-anywhere: 3 start states (0,0)/(72,2)/(143,11)
+   → อ่านครบ 6 ไฟล์ → byte-for-byte
+
+**ผล:**
+- rule_e2e: lossless 6/6 ไฟล์ (512B→40KB) ทุก start state + ไฟล์จริง
+  (F:/notebookLM md 5084 B, 80 lift) lossless ✓ · rule-mismatch ยัง 137/137 blocked
+- walk steps ต่อ pass: (0,0)=1,243,806 · (72,2)=1,244,668 · (143,11)=1,243,807 —
+  **state ต่าง → เส้นทางเดินต่าง แต่ข้อมูลเดียวกัน** (902 blocks × avg ~1380/1728 ticks)
+- `make test` TIER1 **84/84** + TIER2 4/4 ยังเขียว (test_hyper_delta_format/ghost_delta_measure
+  ยังใช้ materialize path เดิม — ไม่แตะ)
+
+**บทเรียน/ข้อควรระวัง:**
+- **delta detection จาก payload** (แทน log flag): blob ≥ 266B (10 hdr + base_n + 256 lens)
+  > geos block 64B → raw 64B ไม่มีทางผ่าน validation — ปลอดภัยใน geofs path; decode ไม่ผ่าน
+  → fallback raw (ต่างจาก materialize ที่ error) — ใช้ได้เพราะ geofs วาง raw เสมอ
+- **wang gate (integrity) ไม่ใช่ lookup** — ยังอยู่ครบใน walk read (timeline เสีย → ปิดเส้นทาง)
+- walk state ไม่ serialize (runtime clock) — deserialize แล้วเริ่มที่ (0,0) = enter anywhere
+- ghost_read_materialize/rule_materialize เดิมยังอยู่ (ghost_delta_measure ใช้) — walk variant
+  เพิ่มใหม่ ไม่แทนที่ API
+
+## §15.75 — Tied-embedding dedup wired เข้า chain: registry {id→home} — freeze ครั้งเดียว
+
+**ทำ (จาก handoff #1 เปิดไว้):** `core/tied_dedup.h` (ใหม่) — registry {tensor_id → home}:
+- `tied_dedup_scan` — FNV-64 **candidate filter** + memcmp **verify** (identity = memcmp —
+  ไม่ใช่ hash; ต่าง 1 byte → ไม่ merge — ทดสอบแล้ว) → home_of[]: ตัวแรก = home, ตัวซ้ำ = route
+- `tied_place` — placement model เดียวกับ field_trainer (rank = chunk ใน tensor, เริ่ม 0
+  ทุก tensor, กฎ CAP_RULE_* 115,115,3.0,1,256K §15.71) + freeze เดียวกับ cap_chain_scan
+  (sub-piece 64KB, bond = ghost_piece(gid, sub, w), gid = global chunk id สะสม — deterministic
+  ไม่มี lookup table) — **dup tensor ข้าม placement ทั้งหมด** (ไม่กิน field ไม่ freeze)
+- `tied_verify` — ทุก tensor: home → thaw จาก bond · dup → resolve route → **bond เดียวกับ home**
+  → byte-for-byte (อ่าน dup = อ่านที่ address ของ home — T8b "วางครั้งเดียว ไม่เคยเขียนซ้ำ")
+- `tools/tied_dedup_chain.c` (`make tied_dedup`) — dual pass บน GGUF จริง (ON/OFF เทียบกันตรง)
+- `tests/test_tied_dedup.c` (TIER1) — **18/18**: scan mapping · แก้ 1 byte ไม่ merge ·
+  place+verify lossless ทั้ง ON/OFF · frozen(OFF)−frozen(ON) == dup bytes เป๊ะ ·
+  lifts ON 9/OFF 13 · route = address (bond ของ home ใช้กับ dup ได้)
+
+**ผลบน GGUF จริง (lossless byte-for-byte ทุก pass ทุกโมเดล):**
+
+| model | tied pair | dedup | frozen OFF→ON | field OFF→ON | lifts OFF→ON |
+|---|---|---|---|---|---|
+| Qwen2.5-0.5B Q8 | **token_embd.weight == output.weight (137 MB = 21.6% data)** | 1 route, 0 bytes | 631 → **497 MB (↓134 MB)** | 13872 → **6936 (ครึ่งหนึ่ง)** | 2731 → 2194 |
+| Kokoro Q8 | ไม่มี | 0 | 166 → 166 | 0 → 0 (ทั้งโมเดล ghost — ตรง champion §15.70: lifts 1241 เป๊ะ) | 1241 → 1241 |
+| Qwen3-0.6B Q8 | ไม่มี | 0 | 599 → 599 | 9248 → 9248 (ตรง champion §15.70 เป๊ะ) | 2600 → 2600 |
+
+**บทเรียน:**
+- **dedup ที่ระดับโครงสร้างไฟล์ = ของจริงที่ประหยัด bytes ได้** (ยืนยัน handoff: Qwen2.5 137MB)
+  — registry ราคา 0 bytes (id→home = route) — ต่างจาก value/block-level ที่ถึง entropy bound แล้ว
+  (§15.65-15.69) — ระดับเดียวกันกับ tied embeddings ที่ silk_screen_scan เจอ (block/map = 1.0)
+- field **ลดครึ่งเดียวเป๊ะ** เมื่อ tensor ซ้ำ — เพราะ dup มี chunk sequence เดียวกับ home (size เท่ากัน)
+  → admit set เดียวกัน → ข้ามไป = หักครึ่ง (ไม่ใช่ coincidence — deterministic)
+- placement model (tensor-rank) ให้ตัวเลขเท่ากับ champion ที่ train ไว้ทุกค่า (Qwen3 9248/2600,
+  Kokoro 0/1241) — tool ใหม่ใช้กฎเดียวกับ core (CAP_RULE_* — ไม่ hardcode)
+- block_id = uint16 → probe จำกัด model ≤ ~16GB (total chunks < 65000) — LFM 2.87GB ยังได้ (11500)
+  แต่ frozen ใน RAM 2.6GB — ไม่รันในรอบนี้ (ระบุไว้ใน tool)
+
+## §15.79 — ANCHOR: กฎ 3-in-1-out ของ tetrahedron (บันทึกอ้างอิงสำหรับ reconstruct)
+
+> จากสนทนา: "input 3 direction, out 1 ไม่ว่าจะเป็น face หรือ vertex" — user ให้เก็บ
+> เป็นจุดยึด/จุดอ้างอิงสำหรับ reconstruct โครงสร้างในอนาคต
+> บันทึกเต็มใน `docs/TETRA_FIELD_STRUCTURE.md` §⑬ — พิสูจน์แล้ว 3-in-1-out = True
+
+**กฎ (โครงสร้างล้วน ไม่มี geometry):**
+
+```
+tetrahedron V=4 E=6 F=4 → 2E/F = 3 (face view) = 2E/V = 3 (vertex view)
+=> 3-regular ทั้งสองระดับ — 3 ทางเลือกเสมอ, แต่ละ choice → 1 ผล deterministic
+   (ไม่สุ่ม ไม่ collapse — 3 choice → 3 ผลต่างกันเสมอ)
+```
+
+**ทำไมเป็น anchor:**
+- ที่ state ใดก็ได้ ทางเลือก 3 เสมอ — ไม่ว่ามอง face หรือ vertex (3 ขอบ/หน้า = 3 ขอบ/จุด)
+- กลิ้ง 1 ก้าว = เดินตาม 1 แกนของสนาม (0°/60°/120°) + parity flip — 3 ทิศ ↔ 3 แกน
+- 12 = 4×3 = 12 directed edges — เลขศักดิ์สิทธิ์เกิดจากโครงสร้าง tetrahedron ไม่ใช่เลขเลือก
+- reconstruct ได้จากกฎเดียว: 3 ทิศ, 1 ผล, parity flip ต่อก้าว → tetrahedron + สนามครบ
+- rolling-seeker state = (cell, orientation∈A4) — deterministic, replay ได้, enter-anywhere
+
+**ทำไม square ถึงไม่สนิท:** 2E/F = 2 — 4 ขอบ ≠ 3 ทิศของ tetrahedron (เกิน/ขาด) —
+สามเหลี่ยมคือ cell เดียวที่ 3-regular ตรงกับ 3 ทิศพอดี
+
+## §15.80 — Decagram 10-sector Goldberg layout: 10(n²−1) หาร 10 ลงตัว — map ครบทุก face
+
+> จากสนทนา: "ต้องการ decagram เพื่อ map เข้า goldberg ได้ทุก face เพราะ bipolar inverted"
+> (2026-08-17) — สร้าง `core/geo_goldberg_decagram.h` + `test_goldberg_decagram.c` 11/11
+> `make test`: TIER1 85/85 + TIER2 4/4
+
+**ข้อเท็จจริงหลัก (decagram fact):** Goldberg GP(n,0) hexagon = 10(n²−1)
+→ **หาร 10 ลงตัวเป๊ะทุก level 1..8** (n²−1 ต่อ sector) — ต่างจาก sector layout เดิม
+(round-robin 12 sectors, gp_hex_in_sector) ที่มี remainder เกือบทุก level
+
+**Layout:**
+```
+0..11            = pentagon anchors (Euler, fixed)
+12..12+10(n²−1)−1 = hexagons แบ่ง 10 decagram sectors (36° ต่อ sector)
+hex tile_id = 12 + sector·(n²−1) + offset
+```
+
+**Bipolar inversion:**
+- sector d ↔ sector (d+5)%10 = ทิศตรงข้าม (involution) = inverted half
+- pentagon face f ↔ face f+6 (pairs จาก geo_goldberg_lut.h: GB_PEN_TO_PAIR/PEN_POLE)
+- pole 0 = ring1 (faces 0..5), pole 1 = ring2 (faces 6..11) — inverted copies
+
+**🐛 จับ bug dormant ของ gp_lens_write (geo_goldberg_sphere.h):** เขียนที่ next_tick
+(ต่อเนื่อง) แต่ return tick = (tile_id<<8)|dim (sparse) → อ่าน tick กลับไม่เจอ —
+ไม่มี test ใช้ goldberg storage เลยก่อนหน้า → แก้เป็น sparse insert ที่ tick โดยตรง
+(coordinate = address ตาม §15.38) — test ตัวนี้คือตัวแรกที่ใช้ gp_lens_write จริง
+
+**พิสูจน์ (11/11):** exact division ทุก level · bijection ครบ (zero gap) ·
+inversion involution + pair/pole ตรง LUT · lossless 64B/tile (GP(3,0)=92) ·
+decagram 10×36°=360° · reverse roundtrip identity
+
+## §15.81 — Container dual view: payload ไม่แตะ geometry — เลือก GeoType ได้โดยข้อมูลไม่ย้าย
+
+> จากสนทนา: "เราสามารถใช้ container เป็น icosa, dodeca ได้" (2026-08-17)
+> สร้าง `tests/test_geo_dual_view.c` 10/10 — `make test`: TIER1 86/86 + TIER2 4/4
+
+**หลักการ (พิสูจน์แล้ว):** payload ของ geo codec = (codebook + idx stream) —
+**ไม่แตะ geometry** — GeoType แค่ให้ props (verts/edges/faces) + mask + capacity
+
+```
+container (payload: codebook + idx) ← 1 ชุด
+   ├─ view dodeca  (12 faces, mask 2B,   cap 5120)
+   ├─ view icosa   (20 faces, mask 2B,   cap 5120)
+   ├─ view compound_144 (576 faces, mask 18B, cap 36864)
+   └─ view goldberg_192 (92 faces,  mask 24B, cap 49152)
+→ decode ทุก view = ค่าเดิมเป๊ะ (lossless)
+```
+
+**พิสูจน์ (10/10):**
+- payload (codebook+idx) เท่ากันทุก byte ระหว่าง dodeca/icosa/compound_144/goldberg_192
+- decode จากทุก view lossless + ผล decode เท่ากันเป๊ะ
+- props/mask/capacity ต่างกัน (geometry = template เท่านั้น) แต่ข้อมูลไม่ถูกแตะ
+- capacity clamp ต่างกัน ไม่กระทบ decode (rescope: "geometry = template" ยืนยันด้วยรันจริง)
+
+**ความหมาย:** container เดียว ใช้เป็น dodeca / icosa / Goldberg ได้ — สลับ view
+โดยข้อมูลไม่ต้องย้าย — dual (dodeca ↔ icosa) เป็นหน้าคนละด้านของ 20736 จริง
+(สอดคล้อง §⑰)
+
+## §15.82 — GGUF จริง → decagram-Goldberg + dual view (tools/goldberg_dual_probe.c)
+
+> ต่อจาก §15.80/§15.81 — รวม chain ลงไฟล์จริง: tensor bytes (zero-copy mmap)
+> → 64B chunks → gp_lens (decagram tile) → อ่านกลับ lossless → dual view decode
+> `make goldberg_probe` → `./build/goldberg_dual_probe <model.gguf> [--all]`
+
+**ผลบน GGUF จริง (3 โมเดล, fail 0 ทุกตัว):**
+
+| model | tensors | stored lossless | bytes | write+read |
+|---|---|---|---|---|
+| Qwen2.5-0.5B Q8 (--all) | 289/291 | 289 (2 ข้าม = >5.2MB/sphere) | 362.9 MB | 302 MB/s |
+| Qwen3-0.6B Q8 | 59 | 59 | 80.8 MB | 209 MB/s |
+| Kokoro Q8 | 60 | 60 | 8.9 MB | 182 MB/s |
+
+**dual view (output.weight จริง, Q8 bytes → 0..255 lossless):**
+- payload (codebook+idx) เท่ากัน 4 views: YES
+- decode lossless ทุก view: YES · decode(dodeca) == decode(icosa): YES
+- dodeca(12) distinct=253 idx_bits=8 mask=3B total=6031B ratio=3.32x (Q8 bytes มี 256 ค่า → codebook ชนะ)
+
+**🐛 แก้ระหว่างทาง:** (1) decagram_tile ให้ tile เกิน face_max (offset โต) →
+modulo ด้วย hex_total (630) — dim = k/hex_total (0..7, GP_MAX_DIM) (2) Q8 bytes ≠
+float — dual view ต้องแปลง byte→0..255 ก่อน codec (interpret-as-f32 ผิด)
+
+**ข้อจำกัด:** 1 sphere = hex×8 chunks (5040×64B ≈ 322KB) — tensor ใหญ่ต้องหลาย
+sphere (probe รองรับ, แต่ output.weight 144MB = 449 spheres → ข้ามใน default;
+--all ข้าม >5.2MB/sphere ตาม cap_chunks) — ไว้อนาคต: multi-sphere streaming
+
+## §15.83 — Streaming multi-sphere: ครบ 100% ทุก tensor (goldberg_dual_probe --all)
+
+> ต่อจาก §15.82 — แก้ข้อจำกัด 5.2MB/sphere: **เขียน→verify→destroy ทีละ sphere**
+> (RAM = 1 sphere ~1.3MB แม้ tensor 144MB = 449 spheres) — ยกเลิก cap_chunks
+
+**ผล (--all, fail 0 ครบ 100% ทุกโมเดล):**
+
+| model | tensors | stored | bytes | write+read |
+|---|---|---|---|---|
+| Qwen2.5-0.5B Q8 | **291/291** | 100% | **638.7 MB** | **396.5 MB/s** |
+| Qwen3-0.6B Q8 | **310/310** | 100% | 604.1 MB | 277.2 MB/s |
+| Kokoro Q8 | **775/775** | 100% | 166.5 MB | 211.0 MB/s |
+
+**รวมทั้ง 3 โมเดล = 1,409.3 MB ผ่าน decagram-Goldberg storage lossless** — รวม
+output.weight 144MB (449 spheres) และ token_embd 137MB — ไม่มี tensor ใดถูกข้าม
+
+**บทเรียน:** streaming (write→verify→destroy ต่อ sphere) = RAM คงที่ 1 sphere
+ไม่ขึ้นกับขนาด tensor — หลักเดียวกับ lazy/window ในระบบ (capacity ≠ ต้องถือทั้งหมด)
+
+## 15.84 — T1.2h: Goldberg storage เป็น API ระบบ (2026-08-17)
+
+**core/geo_goldberg_store.h** — ประกอบ goldberg storage เข้าระบบ (ไม่ใช่แค่ probe):
+```
+ggs_init/ggs_tile/ggs_dim/ggs_spheres/ggs_store (verify ภายใน, streaming)
+data (zero-copy) → 64B chunks → gp_lens(decagram tile) → sphere(s) → memcmp
+RAM = 1 sphere (~1.3MB) ไม่ขึ้นกับขนาด tensor — เขียน→verify→destroy ทีละ sphere
+```
+
+- **test_goldberg_store 30/30** (TIER1: clamp/addressing/ขนาด/boundary/tail/
+  multi-sphere 745KB 3 spheres/deterministic/empty) — suite = **TIER1 87/87**
+- **probe ใช้ API ระบบ** (refactor tools/goldberg_dual_probe.c → ggs_store)
+- **ไฟล์จริงยืนยัน:** Qwen2.5 291/291 · Qwen3 310/310 · Kokoro 775/775 — fail 0,
+  1,409.3 MB lossless, 380.7 MB/s (Qwen2.5) — ตัวเลขเท่าเดิมผ่าน API ระบบ
+- **docs/GOLDBERG_STORAGE.md** — document ครบ (หลักการ + API + ผลจริง + ต่อยอด)
+
+**สรุป chain จบวงจร:** tensor จริง (zero-copy mmap) → decagram-Goldberg storage
+(lossless 100%) → dual view decode (เลือกรูปทรงได้) — ทรงกลม "รันได้จริง" ตัวแรก
+ของระบบ + ประกอบเข้า core เป็น API แล้ว
+
+## §15.85 — ggs_save/ggs_load: sphere ลงไฟล์ .ggf + อ่านกลับ lossless (T1.2i, 2026-08-18)
+
+- **core/geo_goldberg_file.h** — serialize sphere ลงไฟล์จริง + reconstruct + CRC:
+  - FILE LAYOUT: [GGFHeader 64B] = magic "GGF0" · version · level · n_spheres · n_chunks · n_bytes · crc32 · note
+    + ต่อ sphere: [count u32] + count × [tick u32][data 64B] — tick = gp_addr_to_tick → self-describing
+  - ggs_save: เขียน→verify (memcmp ภายใน)→persist ทีละ sphere (streaming, RAM ~1 sphere)
+    → verify ก่อน persist = ไม่มีทางเขียน data เสียลงไฟล์
+  - ggs_load: reconstruct chunk ตามลำดับเดิม + validate tick ตรงตำแหน่ง (exp_tick) + CRC32 (zlib poly)
+    → tick พัง / node เรียงผิด / data พัง / count พัง = จับได้ (rc=-9/-10)
+  - บทเรียน: (1) struct padding ทำให้ header 68B ไม่ใช่ 64B — เรียง u64 ก่อน; (2) loader ต้อง validate
+    tick กับตำแหน่งที่คาดหวัง ไม่ใช่แค่ขอบเขต — ไม่งั้น tick พังแล้ว CRC ยังผ่านได้ (ข้อมูลสลับตำแหน่ง)
+- **ไฟล์จริง (--all --save):** Qwen2.5 291/291 · Qwen3 310/310 · Kokoro 775/775 — saved+reloaded lossless fail 0
+- **Corruption proof:** flip 1 byte กลาง .ggf จริง → ggs_load rc=-10 (CRC mismatch) ✅
+- **suite:** TIER1 88/88 (test_goldberg_file 26/26) + TIER2 4/4
+- **ต่อยอด:** อ่าน .ggf แบบ lazy (seek ต่อ sphere ไม่ต้องโหลดทั้งไฟล์) · ต่อกับ dedup/walk clock
+  เป็น read path เดียว · เก็บ note/provenance (ใคร เขียนเมื่อไหร่ level ไหน) ใน header ได้อยู่แล้ว
+
+## §15.86 — Lazy read .ggf: seek ต่อ node ไม่โหลดทั้งไฟล์ (T1.2j, 2026-08-18)
+
+- **geo_goldberg_file.h + GGFReader** — เปิด .ggf แล้วอ่านเฉพาะ node ที่ต้องการ:
+  - ggf_open: อ่าน header + scan sphere counts (n_spheres × 4B) → index sphere_off[]
+    → **RAM คงที่ (index ≈ 12B × n_spheres) ไม่ขึ้นกับขนาด data** — ต่างจาก ggs_load
+    ที่ต้องจอง buffer ทั้งไฟล์
+  - ggf_chunk(k, out): seek O(1) → อ่าน node k + ตรวจ tick ตรงตำแหน่ง (rc=-9 ถ้าพัง)
+  - ggf_read(off, out, n): อ่าน byte range ตามออฟเซ็ตต้นฉบับ (ข้าม chunk เอง, เศษได้)
+  - ggf_verify: CRC แบบ lazy (RAM 64B — ใช้แทน ggs_load เมื่อไม่ต้องการ buffer)
+  - ggf_close: ปิดไฟล์ + ฟรี index
+- **test_goldberg_lazy.c — TIER1 52/52:** random access 1 sphere / ข้าม 3 spheres
+  (edge + 100 random), lazy full == ggs_load byte-for-byte, unaligned ranges,
+  lazy CRC detect, tick flip → per-node detect (node 0 พัง node 1 อ่านได้),
+  empty, tail partial (padded), bad magic, L5, 4MB ไม่ alloc data buffer
+- **ไฟล์จริง:** lazy == full path + verify PASS บน .ggf ของ Kokoro
+  (output_norm 4KB / blk_0_attn_k 1.1MB / token_type_embd 512B)
+- **suite:** TIER1 89/89 + TIER2 4/4
+- **ต่อยอด:** ใช้ GGFReader เป็น read path ของ dedup/walk clock (อ่านเฉพาะ weight
+  ที่ต้องการ ไม่ต้องโหลดโมเดลทั้งไฟล์) · memory-map (.ggf → mmap) ต่อยอดได้ตรงๆ
+
+## §15.87 — Single read path: walk clock + dedup registry + GGFReader (T1.2k, 2026-08-18)
+
+- **core/geo_ggf_walk.h** — รวม 3 ชิ้นที่พิสูจน์แล้วเป็น read path เดียว:
+  - walk clock (fibo_walk §15.76): state = (seed, round, tick) — tensor t live ที่
+    (rq_t, rq_t % ticks); rq_t = (seed + t·2654435761) % cycles — deterministic
+    จาก (seed, t) ("เก็บแค่วิธีการสร้างกับ seed" — ไม่ต้อง index)
+  - dedup registry (tied_dedup §15.75): {tensor_id → home} — dup → resolve → home
+    .ggf (dedup ระดับไฟล์: เก็บ 1 ไฟล์ต่อ home — dup ไม่มีไฟล์ของตัวเอง)
+  - GGFReader (§15.86): lazy open-on-demand + seek ต่อ node — RAM คงที่
+  - API: ggf_walk_init / pos / live / to (enter-anywhere) / home / read /
+    dedup_bytes / coverage
+- **tests/test_ggf_walk.c — TIER1 29/29:** registry จาก tied_dedup_scan จริง
+  (3 dups + 1 ว่าง), coverage Σ == n, enter-anywhere 3 start states, live set
+  ตรง coverage, read by state 11/11, dup → home bytes ตรงทั้งคู่ + เปิดไฟล์ home
+  เท่านั้น (lazy), read_at ทุกตำแหน่ง, tail partial, corrupt → verify จับ,
+  ว่าง → ปฏิเสธ, multi-sphere 745KB, deterministic replay
+- **probe --walk (ไฟล์จริง, seed=42 ticks=12 cycles=144):**
+  | model | resolved by state | fail | dedup bytes saved | ไฟล์ที่เก็บ |
+  |---|---|---|---|---|
+  | Qwen2.5 | 291/291 | 0 | 137.9 MB (output.weight == token_embd.weight — tied pair!) | 290 |
+  | Qwen3 | 310/310 | 0 | 0 | 310 |
+  | Kokoro | 775/775 | 0 | 0 | 775 |
+- **🐛 บทเรียน 2:** (1) probe parse args off-by-one (`a+1 < argc` กิน arg สุดท้าย
+  → --walk ไม่ทำงาน); (2) **Windows 512 open-file limit** — lazy cache เปิด .ggf
+  พร้อมกัน 1 ต่อ home → Kokoro 775 เกิน → fopen ล้มที่ ~509 — แก้ _setmaxstdio(2048)
+  (4096 เกินเพดาน CRT คืน -1)
+- **suite:** TIER1 90/90 + TIER2 4/4
+- **ต่อยอด:** walk read speed 27.5 MB/s (lazy seek ต่อ chunk — ช้าสุดเพราะ
+  fseek+fread ต่อ 64B) — ทางเลือก: mmap .ggf (อ่านตรงจากเพจ) หรืออ่านแบบ
+  sequential batch ต่อ sphere แล้ว cache · LRU close แทนถือทุกไฟล์เปิด
+
+## §15.88 — ggf_mmap: อ่าน .ggf ตรงจากเพจ (zero-copy) (T1.2l, 2026-08-18)
+
+- **geo_goldberg_file.h + GGFMap** — memory-map .ggf (Windows CreateFileMapping /
+  POSIX mmap) — อ่านตรงจากหน้าเพจ ไม่มี fseek/fread เลย:
+  - ggf_map: mmap ทั้งไฟล์ + สร้าง index จาก mapping (scan counts — memory reads)
+  - ggf_map_node(k): คืน POINTER ตรงเข้า data node (zero-copy — ไม่ copy 64B ด้วยซ้ำ)
+    + ตรวจ tick ตรงตำแหน่ง (NULL ถ้าพัง)
+  - ggf_map_chunk/read: drop-in แทน ggf_chunk/ggf_read (memcpy จากเพจ)
+  - ggf_map_verify: CRC เหนือ mapping (ไม่จอง buffer) · ggf_unmap
+- **tests/test_goldberg_mmap.c — TIER1 48/48:** index ตรง, random 1 sphere/3 spheres,
+  zero-copy pointer ตรงต้นฉบับ + pointer คงที่, unaligned ranges, verify + data
+  corrupt จับ, tick flip → node NULL, drop-in mmap == lazy ทุก chunk, tail partial
+  padded, empty/bad magic/L5, unmap → node NULL (ปลอดภัย)
+- **bench (tools/ggf_mmap_bench.c, ไฟล์จริง Qwen2.5):**
+  | path | ggs_load | lazy seq | lazy rand | mmap seq (ptr) | mmap copy | mmap rand |
+  |---|---|---|---|---|---|---|
+  | output.weight 137.9 MB | 64.7 | 28.5 | 11.4 | **1312** | 2324 | 122.6 MB/s |
+  | blk_0_ffn_gate 4.6 MB | 62.3 | 27.6 | 14.5 | **1840** | — | 1006.1 MB/s |
+- **บทเรียน:** lazy seek ~27.5 MB/s (fseek+fread ต่อ 64B — syscall-bound) vs mmap
+  ~1.3-1.8 GB/s sequential (page-cache + pointer) — **~45× sequential, ~10× random**
+  — lazy ยังมีค่าตรง RAM คงที่ + อ่านเฉพาะ node ที่ต้องการบนไฟล์หลาย GB;
+  mmap ชนะเมื่อจะอ่านทั้ง tensor หรือ random access บ่อย
+- **suite:** TIER1 91/91 + TIER2 4/4 · รันซ้ำ: `make ggf_bench` →
+  `./build/ggf_mmap_bench <file.ggf>`
+- **ต่อยอด:** ใช้ ggf_map_node ใน ggf_walk_read (แทน GGFReader cache — ได้ทั้ง
+  walk clock + zero-copy) — เปิด 1 mapping ต่อ home file
+
+## §15.89 — Walk clock + mmap zero-copy: save ผ่าน mmap view + read path ใหม่ (T1.2m, 2026-08-18)
+
+- **geo_goldberg_file.h — ggf_save_map**: เขียน .ggf ผ่าน mmap VIEW (Windows
+  PAGE_READWRITE / POSIX MAP_SHARED) แทน fwrite — สร้างไฟล์ → map → เขียน
+  header+nodes ลง view ตรงๆ (ไม่มี syscall ระหว่างเขียน) → **verify จาก view เอง
+  ก่อน flush** (เขียน data เสียลงไฟล์ไม่ได้) → flush+unmap — อ่านด้วย GGFMap
+  ได้ทันที (ไม่ต้อง reopen) · deterministic: ไฟล์ byte-for-byte เท่ากับ ggs_save
+- **geo_ggf_walk.h — read path ผ่าน GGFMap**: `ggf_walk_map_open` (เปิด mapping
+  ต่อ home file — open-on-demand) · `ggf_walk_read_map` (drop-in แทน
+  ggf_walk_read — memcpy จากเพจ) · **`ggf_walk_node_map` — zero-copy:
+  chunk k ของ tensor → pointer ตรงเข้า mapping ของ home**
+- **tests/test_ggf_walk_mmap.c — TIER1 38/38:**
+  - Section A (save_map): 100B/multi-sphere 745KB roundtrip ผ่าน GGFMap ทันที +
+    CRC, deterministic == ggs_save byte-for-byte, empty, level 1 ปฏิเสธ,
+    corrupt → verify จับ, tail partial
+  - Section B (walk+mmap): resolve by state 11/11 ตรงต้นฉบับ, zero-copy pointer
+    ตรง chunk, dup → home map (เปิด 8 maps จาก 11 tensors — lazy), enter-anywhere,
+    read_map == read (lazy) ทุก byte, ว่าง → ปฏิเสธ
+- **probe --walk เปลี่ยนเป็น GGFMap (benchmark ใหม่บนไฟล์จริง):**
+  | model | resolved | fail | read speed (mmap) | เทียบ lazy 27.5 MB/s |
+  |---|---|---|---|---|
+  | Qwen2.5 | 291/291 | 0 | **938.1 MB/s** (10.4M nodes) | ~34× |
+  | Qwen3 | 310/310 | 0 | 378.7 MB/s | ~14× |
+  | Kokoro | 775/775 | 0 | **875.7 MB/s** | ~32× |
+- **suite:** TIER1 92/92 + TIER2 4/4
+- **บทเรียน:** 2 ตัวล้มแรกใน test เป็น bug ของ test เอง (memcmp เกินขอบ 64B node
+  เข้า node ถัดไป + เทียบไฟล์ทั้งไฟล์กับ data ดิบ) — แก้เป็นเทียบ node แยก + CRC
+- **ต่อยอด:** write path (ggf_save_map) + read path (walk+mmap) ครบ — รวมกับ
+  dedup registry = เก็บ/อ่านโมเดลครบวงจร ~1 GB/s
+
+## §15.90 — Checkpoint/replay ของ .ggf: save + manifest → restore ใน fresh process ผ่าน walk clock (T1.2n, 2026-08-18)
+
+- **core/geo_ggf_ckpt.h** — manifest format + replay helper (เหมือน fibo_checkpoint_sweep:
+  เก็บแค่ "วิธีสร้างกับ seed"):
+  - MANIFEST (.mfp): [GgfCkptHeader 40B] (GGRP · version · seed · ticks · cycles · n ·
+    dup_bytes · data_bytes) + [entry × n] (name[128] · size · home_of — 72+ B)
+  - rq ของทุก tensor คำนวณจาก seed ใหม่ (ggf_walk_rq_of) — ไม่ต้องเก็บ
+  - paths derive จาก name (sanitize จุด/สแลช → _) — replay รู้ไฟล์จากชื่อ
+  - ggf_ckpt_write/read + ggf_ckpt_replay (rebuild walk clock → resolve ทุก tensor
+    → อ่านผ่าน GGFMap → cmp callback)
+- **tools/ggf_checkpoint_replay.c** — checkpoint: GGUF จริง → tied_dedup_scan →
+  save เฉพาะ home ผ่าน ggf_save_map (mmap view) + manifest → **spawn ตัวเองเป็น
+  fresh process** → replay: อ่าน manifest + reopen GGUF + map .ggf → lossless
+- **tests/test_ggf_ckpt_replay.c — TIER1 17/17:** manifest roundtrip ทุก field,
+  save home 8 ไฟล์ + manifest, replay ใน structures ใหม่ lossless 11/11,
+  dup อ่านผ่าน home, corrupt manifest ปฏิเสธ, .ggf tick พัง → replay จับ fail,
+  home หาย → จับ fail, n=0 ปฏิเสธ, deterministic 2 รอบ, ว่างข้าม
+- **ไฟล์จริง (fresh process จากดิสก์):**
+  | model | checkpoint | replay | speed | dedup |
+  |---|---|---|---|---|
+  | Qwen2.5 | 291 tensors · 290 home .ggf | **291/291 lossless** | 758.5 MB/s | 137.9 MB (tied pair) |
+  | Qwen3 | 310 · 310 | **310/310** | 694.1 MB/s | 0 |
+  | Kokoro | 775 · 775 | **775/775** | 600.8 MB/s | 0 |
+- **🐛 บทเรียน:** Kokoro replay ล้ม 24/775 — ชื่อ tensor ยาว ~63 ตัวถูกตัดที่
+  GGF_CKPT_NAME_LEN=64 (strncpy) → replay derive path จากชื่อที่ตัด ≠ ไฟล์จริง
+  (`...convs1_weigh.ggf` vs `...convs1_weight.ggf`) → map ไม่เจอ — แก้เป็น 128
+  (Qwen2.5 ชื่อสั้น เลยไม่เจอ — Kokoro เป็นตัวจับได้)
+- **suite:** TIER1 93/93 + TIER2 4/4 · รันซ้ำ: `make ggf_ckpt` →
+  `./build/ggf_checkpoint_replay <model.gguf> --ckpt-dir <dir>`
+- **ต่อยอด:** checkpoint ที่ round กลาง (เก็บเฉพาะส่วนที่ยังไม่ flush) · ต่อกับ
+  GeoFS (โมเดลทั้งตัวเป็น filesystem) · manifest เพิ่ม provenance/checksum
+
+## §15.91 — Manifest v3: provenance + CRC64 checksum (T1.2o, 2026-08-18)
+
+- **geo_ggf_ckpt.h — GgfCkptHeader v3 (312B):** เพิ่ม provenance + checksum:
+  - `created_utc` (เมื่อไหร่ — unix sec) · `note[64]` (ใคร/อะไร) · `model[192]`
+    (โมเดลไหน) — หลัง crc64 field (ครอบด้วย)
+  - **crc64 = ECMA-182 (poly เดียวกับ kis_crc64, seedable/chain ได้)** — ครอบ
+    header ยกเว้น crc64 field เอง + ทุก entry → แก้ตรงไหนก็จับได้
+  - entry 136B (name[128] · size · home_of) — เขียน crc กลับทีหลัง (seek กลับ)
+- **test_ggf_ckpt_replay.c — 24/24 (+7):** provenance ตรง (note/model/created>0),
+  tamper 6 จุดจับหมด: ชื่อ tensor · size · home_of · seed · note · model →
+  read ปฏิเสธ rc=-7 (crc64) — + T5 เดิม (bad magic) แก้ขนาดไฟล์ junk (64→512B
+  เพราะ header โตขึ้น)
+- **ไฟล์จริง:** Qwen2.5 checkpoint → fresh-process replay 291/291 @ 737.8 MB/s
+  ผ่าน manifest v3 · **แก้ manifest จริง 1 byte (ชื่อ tensor) → replay ปฏิเสธ
+  ทันที (manifest unreadable — crc64 จับ)**
+- **suite:** TIER1 93/93 + TIER2 4/4
+- **บทเรียน:** T5 เดิมล้มหลัง header โต (312B) — junk 64B สั้นกว่า fread → rc=-3
+  ต่างจากที่คาด (-4) — ต้องปรับขนาดไฟล์ทดสอบตามขนาด header

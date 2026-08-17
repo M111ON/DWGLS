@@ -49,8 +49,11 @@
 #define GHT_REPLAY_EVENT GHT_FCHUNKS                /* 8                  */
 #define GHT_DCOST        (GHT_REPLAY_EVENT + GHT_EVENT_SLOT * GHT_FCHUNKS) /* 16 */
 
-/* default gate — cliff หลัง depth 5 (k 4-5 เหมาะสมที่สุด) */
-#define GHT_GATE_DEFAULT 1.0
+/* default gate — trained champion (§15.70/15.71): joint training ข้าม 4 GGUF
+   จริง (Qwen3/Qwen2.5/LFM/Kokoro) หา kmax=4 (= gate 3.0) — จุด ROI cliff
+   (k 4-5 เหมาะสมที่สุด — ตรงกับที่จูนมือเจอ) — ค่าเก่า 1.0 (kmax=5) reject
+   ทุกโมเดล (T1.2) */
+#define GHT_GATE_DEFAULT 3.0
 
 /* ════════════════════════════════════════════════════════════
    FOOTPRINT MODEL (identical to test_tess_leverage)

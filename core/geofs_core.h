@@ -38,6 +38,7 @@
 #include "geo_tring_walk.h"
 #include "geo_kis_container.h"
 #include "geo_fs_voronoi.h"
+#include "geo_ghost_lift.h"   /* ghost_read_rule — §15.73: อ่านผ่านกฎที่ train มา */
 #include "infra/gear_lock.h"
 #include "infra/fibo_spine.h"
 
@@ -162,6 +163,11 @@ typedef struct {
     uint32_t    total_entropy;
     GeosFreeList free_list;
     uint8_t     *data;          /* heap-allocated block data (1.3 MB) */
+
+    /* ── §15.78 walk clock: state = (round, tick) — อ่าน = เดินนาฬิกา ── */
+    uint32_t    walk_round;     /* รอบปัจจุบันบน scale axis (0..143)   */
+    uint32_t    walk_tick;      /* tick ปัจจุบัน (0..11)                */
+    uint64_t    walk_steps;     /* สะสม steps ที่เดิน (หลักฐาน walk)   */
 } GeosVolume;
 
 /* ═══════════════════════════════════════════════════════════
@@ -592,6 +598,45 @@ static inline const uint8_t* geos_project_block(GeosVolume *v, const char *name,
     if (!inode || block_idx >= inode->block_count) return NULL;
 
     return &v->data[(inode->block_start + block_idx) * GEOS_BLOCK_SZ];
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GEOS_READ_GHOST — §15.73/15.74: read ผ่าน ghost/hyperbolic path
+   placement/admission/read ใช้ CAP_RULE_* เดียวกัน end-to-end:
+   block → scale = cap_rule_scale(block) (กฎ trained เดียว) →
+   ghost_read_rule_walk (§15.78 — เดินนาฬิกาจาก state ไปตำแหน่ง live ของ
+   block แล้ว thaw ผ่าน bond — แทน direct pile lookup ใน log;
+   delta self-describing → decode; raw → memcpy)
+   — block ที่ถูก lift (freeze ใน residual_space) materialize จาก ghost
+   — block ที่ admit (อยู่ใน field store) fallback อ่านจาก data store
+   — lossless ทั้งสองกรณี; ใช้กฎเดียวกันกับตอนวางเสมอ
+   — state ใน volume เดินหน้าเรื่อยๆ (อ่าน file = เดินผ่านตำแหน่ง live
+     ของทุก block) · steps สะสมใน v->walk_steps (หลักฐาน walk) */
+static inline int geos_read_ghost(GeosVolume *v, GhostLog *log,
+                                  ResidualSpace *rs, const char *name,
+                                  uint8_t *buf, uint32_t buf_size) {
+    if (!v || !log || !rs || !buf) return -1;
+    GeosInode *inode = geos_find(v, name);
+    if (!inode) return -2;
+
+    uint32_t bytes = (buf_size < inode->size_bytes) ? buf_size : inode->size_bytes;
+    for (uint32_t b = 0; b < inode->block_count && b * GEOS_BLOCK_SZ < bytes; b++) {
+        uint32_t block = inode->block_start + b;   /* geos flat block id */
+        uint32_t off = b * GEOS_BLOCK_SZ;
+        uint32_t n = bytes - off; if (n > GEOS_BLOCK_SZ) n = GEOS_BLOCK_SZ;
+        uint32_t got = 0, steps = 0;
+        int r = ghost_read_rule_walk(log, rs, (uint16_t)block, 0,
+                                     (uint8_t)v->walk_round, (uint8_t)v->walk_tick,
+                                     buf + off, n, &got, &steps);
+        /* นาฬิกาเดินหน้าไปตำแหน่ง live ของ block ที่อ่าน (stateful walk) */
+        v->walk_steps += steps;
+        uint8_t to = cap_rule_scale(block);
+        v->walk_round = to;
+        v->walk_tick  = to % 12u;
+        if (r != 0 || got < n)                     /* admit → store */
+            memcpy(buf + off, &v->data[block * GEOS_BLOCK_SZ], n);
+    }
+    return (int)bytes;
 }
 
 /* ═══════════════════════════════════════════════════════════

@@ -36,7 +36,7 @@
 #pragma once
 #include <stdint.h>
 #include <string.h>
-#include "tring.h"
+#include "infra/tring.h"
 
 /* ── Constants ──────────────────────────────────────────────── */
 
@@ -153,14 +153,26 @@ static inline uint32_t gp_lens_write(GpSphere *s,
     if (tile_id >= s->face_max || dim >= GP_MAX_DIM) return UINT32_MAX;
     GpAddr a = { tile_id, dim };
     uint32_t tick = gp_addr_to_tick(a);
+    if (tick >= s->tring->capacity) return UINT32_MAX;
     /* reuse slot if already written (idempotent for fixed-level sphere) */
-    if (tick < s->tring->capacity && s->tring->nodes[tick] != NULL) {
+    if (s->tring->nodes[tick] != NULL) {
         TringNode *node = s->tring->nodes[tick];
         if (node->size == GP_CHUNK_SZ)
             memcpy(node->data, chunk, GP_CHUNK_SZ);
         return tick;
     }
-    return tring_push(s->tring, chunk, GP_CHUNK_SZ);
+    /* sparse insert at the address tick — coordinate IS the address (§15.38),
+     * tring_push appends sequentially and would break tick-addressed reads */
+    TringNode *node = (TringNode *)malloc(tring_node_alloc_size(GP_CHUNK_SZ));
+    if (!node) return UINT32_MAX;
+    node->tick = tick;
+    node->size = GP_CHUNK_SZ;
+    node->_pad = 0;
+    memcpy(node->data, chunk, GP_CHUNK_SZ);
+    s->tring->nodes[tick] = node;
+    s->tring->live_count++;
+    if (tick >= s->tring->next_tick) s->tring->next_tick = tick + 1;
+    return tick;
 }
 
 /* Read 64B chunk from sphere — returns NULL if absent */

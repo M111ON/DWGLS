@@ -124,3 +124,80 @@ static inline int hyper_delta_is_valid(const HyperDelta *d) {
            d->header.version    == HYPER_DELTA_VERSION &&
            d->header.kis_slots  == HYPER_DELTA_SLOTS;
 }
+
+/* ════════════════════════════════════════════════════════════
+   Pred+Ent Delta — scale-predict residual + Huffman (T1.1c)
+   ════════════════════════════════════════════════════════════
+   แทนที่ full delta (1 B/slot):
+     pred[i] = kis_coarse[center ของ 2×2 block] (B=2 — depth k=2 envelope)
+     residual = (original − pred) & 0xFF
+     huffman-coded → d->data  (256 B lens + coded bytes)
+   recover:  pred + decode(residual) = original (lossless)
+
+   base ไม่ต้องเก็บ — pred มาจาก kis_coarse (reader มีอยู่แล้ว — scale view)
+   ขนาดจริง = 256 + coded ≤ 256 + n (+fallback 8-bit → ≤ n)
+   ต้องการ n == 20736 (144×144) — B=2 → 72×72 blocks                 */
+#define HDENT_COLS 144u
+#define HDENT_BC   72u      /* 144/2 */
+
+typedef struct {
+    HyperDeltaHeader header;
+    uint32_t data_len;                        /* 256 lens + coded residual */
+    uint8_t  data[HYPER_DELTA_SLOTS + 512];   /* ≤ 256 + 20736 + slack      */
+} HyperDeltaEnt;
+
+#include "huff_codec.h"
+
+/* pred = coarse view ของ slot i — packed key เก็บ x3 ที่ bits 20-31
+   (x3 = พิกัด projected = scale view — ตัวที่ข้อมูลถูกบีบไปเหลืออยู่) */
+static inline uint8_t hdent_pred(const uint32_t *kis, uint32_t i) {
+    return (uint8_t)((kis[i] >> 20) & 0xFFu);
+}
+
+static inline void hyper_delta_ent_calculate(HyperDeltaEnt *d, uint32_t scale_step,
+                                             const uint8_t *original,
+                                             const uint32_t *kis_coarse,
+                                             uint32_t n) {
+    memset(d, 0, sizeof(*d));
+    d->header.magic      = HYPER_DELTA_MAGIC;
+    d->header.version    = HYPER_DELTA_VERSION;
+    d->header.kis_slots  = HYPER_DELTA_SLOTS;
+    d->header.scale_step = scale_step;
+    if (n == 0 || n > HYPER_DELTA_SLOTS) return;
+
+    uint8_t residual[HYPER_DELTA_SLOTS];
+    uint64_t freq[256] = {0};
+    for (uint32_t i = 0; i < n; i++) {
+        uint8_t p = hdent_pred(kis_coarse, i);
+        residual[i] = (uint8_t)((original[i] - p) & 0xFFu);
+        freq[residual[i]]++;
+    }
+
+    HuffModel m;
+    huff_build(&m, freq);
+    memcpy(d->data, m.lens, 256);
+    uint32_t coded = huff_encode(&m, residual, n, d->data + 256,
+                                 HYPER_DELTA_SLOTS + 256);
+    d->data_len = 256u + coded;
+}
+
+static inline int hyper_delta_ent_recover(const HyperDeltaEnt *d,
+                                          const uint32_t *kis_coarse,
+                                          uint8_t *recovered, uint32_t n) {
+    if (!d || n == 0 || n > HYPER_DELTA_SLOTS) return 0;
+    if (d->data_len < 256u || d->data_len > 256u + HYPER_DELTA_SLOTS + 512u)
+        return 0;
+    HuffModel m;
+    huff_rebuild(&m, d->data);
+    uint8_t residual[HYPER_DELTA_SLOTS];
+    if (huff_decode(&m, d->data + 256, d->data_len - 256u, residual, n) != 0)
+        return 0;
+    for (uint32_t i = 0; i < n; i++)
+        recovered[i] = (uint8_t)(hdent_pred(kis_coarse, i) + residual[i]);
+    return 1;
+}
+
+/* ขนาด delta จริง (bytes) */
+static inline uint32_t hyper_delta_ent_size(const HyperDeltaEnt *d) {
+    return (uint32_t)(sizeof(d->header) + sizeof(d->data_len) + d->data_len);
+}

@@ -37,6 +37,36 @@
 
 #define CAP_WIN GHT_WIN   /* 20736 */
 
+/* ════════════════════════════════════════════════════════════
+   TRAINED DEFAULT PLACEMENT RULE (§15.70/15.71 — unified champion)
+   ──
+   Evolution (joint training, fitness = Σ per-model cost) หา rule set
+   เดียวที่ 0 rejects บน 4 GGUF จริงพร้อมกัน (Qwen3 9248 · Qwen2.5 13872 ·
+   LFM 16184 · Kokoro 0 field) — เท่ากับ per-model optimum ของแต่ละตัว และ
+   ผ่าน rotation theorem (gcd(115,144)=1: ทุก L|144 rotates + uniform):
+
+     stride 115 · offset 115 (ย้าย rank-0 scale > kmax → ทั้งก้อนเข้า ghost)
+     gate 3.0 (kmax=4, GHT_GATE_DEFAULT) · orbit 1 · chunk 262144
+
+   stride/offset = กฎการวาง w = (stride·rank + offset) % 144 —
+   chunk = ขนาด block ต่อการวาง — ใช้เป็นค่าเริ่มต้นของ placement chain
+   (field_trainer / cap_chain_scan — เดิม 37,0,1.0,16K reject ทุกโมเดล T1.2)
+   ════════════════════════════════════════════════════════════ */
+#define CAP_RULE_STRIDE 115u
+#define CAP_RULE_OFFSET 115u
+#define CAP_RULE_GATE   GHT_GATE_DEFAULT   /* 3.0 → kmax 4 */
+#define CAP_RULE_ORBIT  1u
+#define CAP_RULE_CHUNK  262144u
+
+/* ── trained scale resolver — THE single rule (placement AND read) ──
+   block/rank → เป้าหมาย scale บนแกน 144: w = (stride·rank + offset) % 144
+   — ใช้ที่เดียว: วาง (chain) · admit (gate) · อ่าน (ghost_read_rule) —
+   ถ้าอ่านกับวางใช้กฎคนละตัว → bond ต่าง → thaw fail โดย construction
+   (จาก_scale เป็นส่วนหนึ่งของ address — เสาเข็มห้ามขยับ) */
+static inline uint8_t cap_rule_scale(uint32_t rank) {
+    return (uint8_t)(((uint64_t)CAP_RULE_STRIDE * rank + CAP_RULE_OFFSET) % 144u);
+}
+
 /* ── verdicts ─────────────────────────────────────────────── */
 #define CAP_ADMIT   1     /* placed — capacity consumed          */
 #define CAP_REJECT  0     /* over capacity — deterministic reject */

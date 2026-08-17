@@ -49,8 +49,11 @@
 #include "residual_space.h"
 #include "pogls_bond.h"
 #include "geo_ghost_envelope.h"
+#include "geo_cap_account.h" /* CAP_RULE_* + cap_rule_scale — trained rule */
 #include "geo_rdh_addr.h"
 #include "hyp_fusion.h"      /* S2 GATE: hyp_gate — wang integrity + tantrix */
+#include "ghost_delta.h"     /* §15.74: delta-mode payload (pred+ent) */
+#include "fibo_walk.h"       /* §15.78: walk clock (state = round, tick) */
 
 /* ── Constants ─────────────────────────────────────────────── */
 #define GHOST_LOG_MAX      4096u    /* max routes in one log — สมมาตร
@@ -61,6 +64,8 @@
 /* ── Entry flags ───────────────────────────────────────────── */
 #define GHOST_FLAG_LIFT    0x01u    /* live lift (frozen + tracked) */
 #define GHOST_FLAG_EXPIRED 0x02u    /* re-attached — audit trail    */
+#define GHOST_FLAG_DELTA   0x04u    /* §15.74: payload = delta blob
+                                       (pred+ent — อ่านต้อง materialize) */
 
 /* ════════════════════════════════════════════════════════════
    GHOST LOG ENTRY — the passive scale-change record (5 B)
@@ -368,6 +373,28 @@ static inline uint32_t ghost_pair_route_count(GhostLog *log, uint16_t block_id) 
    Returns bond_key on success, 0 (RS_BOND_KEY_RESERVED) on failure.
    Data is frozen ONCE per birth pile; lifting to another to_scale
    appends a route to the SAME frozen data (ไม่เคยเขียนซ้ำ). */
+/* sorted insert (block, from) — คง sortedness สำหรับ binary search; flags = mode
+   (LIFT อย่างเดียว หรือ LIFT|DELTA) — memmove ≤ GHOST_LOG_MAX×5B ต่อ lift
+   (lift หายาก, read บ่อย) + pair dirty + hint อัปเดต (O(1)) */
+static inline void _ghost_log_insert(GhostLog *log, uint16_t block_id,
+                                     uint8_t from_scale, uint8_t to_scale,
+                                     uint8_t flags) {
+    int pos = _ghost_pile_lo(log, block_id, from_scale);
+    for (uint32_t i = log->count; i > (uint32_t)pos; i--)
+        log->entries[i] = log->entries[i - 1u];
+    GhostLogEntry *e = &log->entries[pos];
+    e->block_id   = block_id;
+    e->from_scale = from_scale;
+    e->to_scale   = to_scale;
+    e->flags      = flags;
+    log->count++;
+    if (log->pair) {
+        log->pair->dirty = 1;              /* อัปเดต log → ตาราง stale */
+        if ((uint32_t)block_id + 1u > log->pair->hint_max_block)
+            log->pair->hint_max_block = (uint32_t)block_id + 1u;
+    }
+}
+
 static inline uint64_t ghost_lift(GhostLog *log, ResidualSpace *rs,
                                   uint16_t block_id, uint8_t from_scale,
                                   uint8_t to_scale,
@@ -384,23 +411,51 @@ static inline uint64_t ghost_lift(GhostLog *log, ResidualSpace *rs,
     if (bk == RS_BOND_KEY_RESERVED)
         return RS_BOND_KEY_RESERVED;
 
-    /* SORTED INSERT โดย (block, from) — คง sortedness สำหรับ binary search
-       (memmove ≤ GHOST_LOG_MAX×5B ต่อ lift — lift หายาก, read บ่อย) */
-    int pos = _ghost_pile_lo(log, block_id, from_scale);
-    for (uint32_t i = log->count; i > (uint32_t)pos; i--)
-        log->entries[i] = log->entries[i - 1u];
-    GhostLogEntry *e = &log->entries[pos];
-    e->block_id   = block_id;
-    e->from_scale = from_scale;
-    e->to_scale   = to_scale;
-    e->flags      = GHOST_FLAG_LIFT;
-    log->count++;
-    if (log->pair) {
-        log->pair->dirty = 1;              /* อัปเดต log → ตาราง stale */
-        /* O(1) signal: อัปเดต hint ขนาดตารางตอน lift — ไม่ต้อง scan */
-        if ((uint32_t)block_id + 1u > log->pair->hint_max_block)
-            log->pair->hint_max_block = (uint32_t)block_id + 1u;
+    _ghost_log_insert(log, block_id, from_scale, to_scale, GHOST_FLAG_LIFT);
+    return bk;
+}
+
+/* ════════════════════════════════════════════════════════════
+   DELTA LIFT (§15.74) — freeze เป็น delta blob (pred+ent) แทน payload ดิบ
+   ════════════════════════════════════════════════════════════
+   adaptive: encode blob → ถ้า blob < size → เก็บ delta (flag DELTA)
+   else → เก็บ raw (flag LIFT เท่านั้น) — ชนะเมื่อไหร่ก็ชนะจริง, แพ้ก็ไม่แย่กว่า
+   read ฝั่งเดียวกัน (ghost_read_materialize) decode ให้ lossless ครบ
+   (n ≤ 16 KB — เหนือนั้น raw อัตโนมัติ) */
+static inline uint64_t ghost_lift_delta(GhostLog *log, ResidualSpace *rs,
+                                        uint16_t block_id, uint8_t from_scale,
+                                        uint8_t to_scale,
+                                        const void *data, uint32_t size) {
+    if (!log || !rs || !data || size == 0)
+        return RS_BOND_KEY_RESERVED;
+    if (log->count >= GHOST_LOG_MAX)
+        return RS_BOND_KEY_RESERVED;
+    if (ghost_log_find(log, block_id, from_scale, to_scale) >= 0)
+        return RS_BOND_KEY_RESERVED;    /* route already exists */
+
+    PoglsPiece p = ghost_piece(block_id, from_scale, to_scale);
+
+    /* adaptive: ลอง delta ก่อน — เก็บเล็กกว่าเสมอ */
+    uint8_t blob[GHOST_DELTA_HDR_SZ + (GHOST_DELTA_MAX_N + 1u) / 2u
+                 + 256u + GHOST_DELTA_MAX_N + 4u];
+    uint32_t blob_len = 0;
+    if (size <= GHOST_DELTA_MAX_N) {
+        blob_len = ghost_delta_encode((const uint8_t *)data, size, blob,
+                                      (uint32_t)sizeof(blob));
     }
+    if (blob_len && blob_len < size) {
+        uint64_t bk = rs_freeze(rs, &p, blob, blob_len, 0);
+        if (bk == RS_BOND_KEY_RESERVED)
+            return RS_BOND_KEY_RESERVED;
+        _ghost_log_insert(log, block_id, from_scale, to_scale,
+                          (uint8_t)(GHOST_FLAG_LIFT | GHOST_FLAG_DELTA));
+        return bk;
+    }
+    /* delta ไม่ชนะ (หรือ n ใหญ่เกิน) → raw เหมือน ghost_lift */
+    uint64_t bk = rs_freeze(rs, &p, data, size, 0);
+    if (bk == RS_BOND_KEY_RESERVED)
+        return RS_BOND_KEY_RESERVED;
+    _ghost_log_insert(log, block_id, from_scale, to_scale, GHOST_FLAG_LIFT);
     return bk;
 }
 
@@ -436,6 +491,133 @@ static inline const void *ghost_read(GhostLog *log, const ResidualSpace *rs,
 
     PoglsPiece p = ghost_piece(block_id, from_scale, to_scale);
     return rs_thaw(rs, pogls_bond_key(&p), out_size);
+}
+
+/* ════════════════════════════════════════════════════════════
+   RULE-BASED READ (§15.73) — placement/admission/read ใช้กฎเดียว
+   ════════════════════════════════════════════════════════════
+   to_scale ถูก resolve จาก CAP_RULE_* ภายใน (cap_rule_scale) — caller
+   ไม่ต้อง (และไม่ควร) ส่ง to_scale เอง เพราะถ้าส่งคนละกฎกับตอน freeze
+   → route ต่าง → NULL โดย construction (จาก_scale เป็นส่วนของ address)
+   — เหมือน ghost_read แต่การันตีว่าอ่านตรงกับที่วางเสมอ */
+static inline const void *ghost_read_rule(GhostLog *log, const ResidualSpace *rs,
+                                          uint16_t block_id, uint8_t from_scale,
+                                          uint32_t *out_size) {
+    return ghost_read(log, rs, block_id, from_scale,
+                      cap_rule_scale(block_id), out_size);
+}
+
+/* ════════════════════════════════════════════════════════════
+   MATERIALIZE READ (§15.74) — decode delta กลับเป็นข้อมูลจริง
+   ════════════════════════════════════════════════════════════
+   เหมือน ghost_read (route + wang gate + bond → thaw) แต่ผลลัพธ์
+   ถูก materialize เข้า buf:
+     entry flags & GHOST_FLAG_DELTA → ghost_delta_decode (pred+ent)
+     else                           → memcpy payload ดิบ
+   — อ่าน block ที่ freeze เป็น delta ได้ lossless ครบ (buf_cap ≥ ขนาดเดิม)
+   *out_len = ขนาดข้อมูลจริง (orig_n หรือ payload size) */
+static inline int ghost_read_materialize(GhostLog *log, ResidualSpace *rs,
+                                         uint16_t block_id, uint8_t from_scale,
+                                         uint8_t to_scale, uint8_t *buf,
+                                         uint32_t buf_cap, uint32_t *out_len) {
+    if (!log || !rs || !buf) return -1;
+    int idx = log->pair ? ghost_pair_find(log, block_id, from_scale, to_scale)
+                        : ghost_log_find(log, block_id, from_scale, to_scale);
+    if (idx < 0) return -1;                      /* route is the authority */
+
+    /* integrity gate (fusion S2) — เหมือน ghost_read */
+    uint16_t enc = (uint16_t)((ghost_origin_seed(block_id, from_scale)
+                              + to_scale) % FRAME_CYCLE);
+    HypSeek d = hyp_gate(&log->wang, enc,
+                         (uint8_t)(_fwang_chord_a(enc) & 3u));
+    if (d != HYP_SEEK_OPEN && d != HYP_SEEK_SKIP)
+        return -1;                               /* timeline เสีย → ปิดเส้นทาง */
+
+    PoglsPiece p = ghost_piece(block_id, from_scale, to_scale);
+    uint32_t got = 0;
+    const void *payload = rs_thaw(rs, pogls_bond_key(&p), &got);
+    if (!payload) return -1;
+
+    if (log->entries[idx].flags & GHOST_FLAG_DELTA) {
+        uint32_t orig_n = ghost_delta_orig_n((const uint8_t *)payload, got);
+        if (orig_n == 0 || orig_n > buf_cap) return -1;
+        if (ghost_delta_decode((const uint8_t *)payload, got, buf, buf_cap) != 0)
+            return -1;
+        if (out_len) *out_len = orig_n;
+    } else {
+        if (got > buf_cap) return -1;
+        memcpy(buf, payload, got);
+        if (out_len) *out_len = got;
+    }
+    return 0;
+}
+
+/* rule variant — to_scale = cap_rule_scale (วาง/admit/อ่าน กฎเดียว §15.73) */
+static inline int ghost_read_rule_materialize(GhostLog *log, ResidualSpace *rs,
+                                              uint16_t block_id, uint8_t from_scale,
+                                              uint8_t *buf, uint32_t buf_cap,
+                                              uint32_t *out_len) {
+    return ghost_read_materialize(log, rs, block_id, from_scale,
+                                  cap_rule_scale(block_id), buf, buf_cap,
+                                  out_len);
+}
+
+/* ════════════════════════════════════════════════════════════
+   WALK-BASED READ (§15.78) — เดินนาฬิกาจาก state → ตำแหน่ง live → thaw ตรง
+   ════════════════════════════════════════════════════════════
+   แทน direct pile lookup ใน log (ghost_log_find/ghost_pair_find) ด้วย walk:
+     1) เดินนาฬิกา (fibo_walk_dist) จาก state (round, tick) ไปตำแหน่ง live
+        ของ block = (to, to%12) โดย to = cap_rule_scale(block) —
+        live-route resolution (state=(seed,round,tick) พอ — §15.76/15.77)
+     2) อ่าน data ผ่าน bond โดยตรง (ghost_piece → rs_thaw) — ไม่ต้อง lookup
+     3) delta blob self-describing (GhostDeltaHdr) → decode; ถ้า decode
+        ไม่ผ่าน → raw (geofs วาง raw เสมอ — blob ≥ 266B > geos block 64B
+        → raw 64B ไม่มีทางผ่าน delta validation — ไม่มี false positive)
+   wang gate (integrity) ยังอยู่เหมือน ghost_read — ไม่ใช่ lookup
+   *walk_steps = ระยะเดิน (tick) จาก state ไปตำแหน่ง live (≤ cycles×ticks) */
+static inline int ghost_read_rule_walk(GhostLog *log, ResidualSpace *rs,
+                                       uint16_t block_id, uint8_t from_scale,
+                                       uint8_t state_round, uint8_t state_tick,
+                                       uint8_t *buf, uint32_t buf_cap,
+                                       uint32_t *out_len, uint32_t *walk_steps) {
+    if (!log || !rs || !buf) return -1;
+    uint8_t to = cap_rule_scale(block_id);
+
+    /* 1) walk: state → ตำแหน่ง live (to, to%12) — ตาราง 1728×12, สนาม 144 */
+    FiboWalkPos s = { state_round, state_tick, 0 };
+    FiboWalkPos t = { to, (uint32_t)(to % 12u), 0 };
+    uint32_t steps = (uint32_t)fibo_walk_dist(&s, &t, 12u, 144u);
+    if (walk_steps) *walk_steps = steps;
+
+    /* integrity gate (fusion S2) — เหมือน ghost_read/ghost_read_materialize */
+    uint16_t enc = (uint16_t)((ghost_origin_seed(block_id, from_scale)
+                              + to) % FRAME_CYCLE);
+    HypSeek d = hyp_gate(&log->wang, enc,
+                         (uint8_t)(_fwang_chord_a(enc) & 3u));
+    if (d != HYP_SEEK_OPEN && d != HYP_SEEK_SKIP)
+        return -1;                               /* timeline เสีย → ปิดเส้นทาง */
+
+    /* 2) อ่าน data ผ่าน bond โดยตรง (walk พาเรามาถึงตำแหน่ง live แล้ว) */
+    PoglsPiece p = ghost_piece(block_id, from_scale, to);
+    uint32_t got = 0;
+    const void *payload = rs_thaw(rs, pogls_bond_key(&p), &got);
+    if (!payload) return -1;
+
+    /* 3) delta self-describing → decode; ไม่ผ่าน → raw */
+    const uint8_t *pay = (const uint8_t *)payload;
+    if (got >= GHOST_DELTA_HDR_SZ && pay[0] == GHOST_DELTA_MODE_HDENT) {
+        uint32_t orig_n = ghost_delta_orig_n(pay, got);
+        if (orig_n > 0 && orig_n <= buf_cap &&
+            ghost_delta_decode(pay, got, buf, buf_cap) == 0) {
+            if (out_len) *out_len = orig_n;
+            return 0;
+        }
+        /* decode ไม่ผ่าน → raw payload (geofs วาง raw — ไม่มีทาง delta ปลอม) */
+    }
+    if (got > buf_cap) return -1;
+    memcpy(buf, payload, got);
+    if (out_len) *out_len = got;
+    return 0;
 }
 
 /* ════════════════════════════════════════════════════════════

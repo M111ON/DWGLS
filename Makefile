@@ -91,7 +91,18 @@ TIER1 := \
   test_geofs \
   test_tess_codec \
   test_fibo_checkpoint \
+  test_fibo_walk \
   test_rdh_addr \
+  test_tied_dedup \
+  test_goldberg_decagram \
+  test_goldberg_store \
+  test_goldberg_file \
+  test_goldberg_lazy \
+  test_ggf_walk \
+  test_goldberg_mmap \
+  test_ggf_walk_mmap \
+  test_ggf_ckpt_replay \
+  test_geo_dual_view \
   test_geo_lblock \
   test_wang_tantrix \
   test_hyp_fusion \
@@ -213,6 +224,12 @@ two_gap_fill: tools/two_gap_fill.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $(BUILD)/two_gap_fill tools/two_gap_fill.c $(LDFLAGS)
 	@echo "✅ two_gap_fill ready → ./$(BUILD)/two_gap_fill [wav]"
 
+# ── T1.1 normal/bump/displacement map probe (manual) ──
+normal_map: tools/normal_map_probe.c core/gguf_reader.h | $(BUILD)
+	@echo "▶ BUILD  normal_map_probe"
+	$(CC) $(CFLAGS) -o $(BUILD)/normal_map_probe tools/normal_map_probe.c $(LDFLAGS)
+	@echo "✅ normal_map ready → ./$(BUILD)/normal_map_probe --syn smooth|sine2d|noise <n> | --file <path> <cols> | --gguf <model> <tensor_idx>"
+
 # ── Hosoya fibo grid × geo_seed 12-coset (SVG decode + coupling — manual) ──
 hosoya_seed: tools/hosoya_seed_probe.c core/geo_seed.h | $(BUILD)
 	@echo "▶ BUILD  hosoya_seed_probe"
@@ -252,7 +269,7 @@ rdh_bench: tools/rdh_bench.c core/geo_rdh_addr.h core/gguf_box.h | $(BUILD)
 # ── Fibo clock checkpoint-replay sweep (custom table/field/dist/volume/pattern) ──
 # --sweep เขียน image+manifest ลง build/ckpt + verify จากดิสก์ใน fresh process ทุก config
 # --verify-all [DIR] ตรวจใหม่ทีหลัง · --economy X.X ปรับ threshold verdict
-fibo_sweep: tools/fibo_checkpoint_sweep.c core/geo_ghost_lift.h core/infra/fibo_spine.h | $(BUILD)
+fibo_sweep: tools/fibo_checkpoint_sweep.c core/geo_ghost_lift.h core/infra/fibo_spine.h core/fibo_walk.h | $(BUILD)
 	@echo "▶ BUILD  fibo_checkpoint_sweep"
 	$(CC) $(CFLAGS) -o $(BUILD)/fibo_checkpoint_sweep tools/fibo_checkpoint_sweep.c $(LDFLAGS)
 	@echo "✅ fibo_sweep ready → ./$(BUILD)/fibo_checkpoint_sweep [--sweep|key=value ...|--verify-all|--verify-img=IMG,CFG]"
@@ -422,3 +439,81 @@ seed_label_probe: tools/seed_label_probe.c | $(BUILD)
 	@echo "▶ BUILD  seed_label_probe"
 	$(CC) -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -o $(BUILD)/seed_label_probe tools/seed_label_probe.c
 	@echo "✅ seed_label_probe ready → ./$(BUILD)/seed_label_probe"
+
+# ── T1.1b scale-predict → residual → gradient (manual) ──
+scale_residual: tools/scale_residual_probe.c core/gguf_reader.h | $(BUILD)
+	@echo "▶ BUILD  scale_residual_probe"
+	$(CC) $(CFLAGS) -o $(BUILD)/scale_residual_probe tools/scale_residual_probe.c $(LDFLAGS)
+	@echo "✅ scale_residual ready → ./$(BUILD)/scale_residual_probe --syn smooth|sine2d|noise <n> | --file <path> [cols] | --gguf <model> <tensor_idx>"
+
+# ── T1.2 field trainer: evolutionary search เหนือ integer knobs (manual) ──
+field_trainer: tools/field_trainer.c core/geo_ghost_envelope.h core/gguf_reader.h | $(BUILD)
+	@echo "▶ BUILD  field_trainer"
+	$(CC) $(CFLAGS) -o $(BUILD)/field_trainer tools/field_trainer.c $(LDFLAGS)
+	@echo "✅ field_trainer ready → ./$(BUILD)/field_trainer --gguf <model> [--gens N] [--pop N] [--seed S] [--eval s,o,g,O,chunk]"
+
+# ── T1.1c scale-predict residual ใน delta log (manual) ──
+delta_log_residual: tools/delta_log_residual.c core/gguf_reader.h | $(BUILD)
+	@echo "▶ BUILD  delta_log_residual"
+	$(CC) $(CFLAGS) -o $(BUILD)/delta_log_residual tools/delta_log_residual.c $(LDFLAGS)
+	@echo "✅ delta_log_residual ready → ./$(BUILD)/delta_log_residual --file <path> | --syn <kind> <n> | --gguf <model> <idx>"
+
+# ── T1.1d Huffman จริงบน residual — เทียบ entropy bound (manual) ──
+huff_delta_measure: tools/huff_delta_measure.c core/huff_codec.h core/gguf_reader.h | $(BUILD)
+	@echo "▶ BUILD  huff_delta_measure"
+	$(CC) $(CFLAGS) -o $(BUILD)/huff_delta_measure tools/huff_delta_measure.c $(LDFLAGS)
+	@echo "✅ huff_delta_measure ready → ./$(BUILD)/huff_delta_measure --file <path> | --gguf <model> <idx> | --syn <kind> <n>"
+
+# ── T1.2 wire champion knobs เข้า chain จริง — lossless byte-for-byte (manual) ──
+cap_chain_scan: tools/cap_chain_scan.c core/geo_cap_account.h core/geo_ghost_lift.h core/geo_ghost_envelope.h | $(BUILD)
+	@echo "▶ BUILD  cap_chain_scan"
+	$(CC) $(CFLAGS) -o $(BUILD)/cap_chain_scan tools/cap_chain_scan.c $(LDFLAGS)
+	@echo "✅ cap_chain_scan ready → ./$(BUILD)/cap_chain_scan <folder> | --gguf <model> [--stride S] [--offset O] [--gate G] [--orbit Q] [--chunk C]"
+
+# ── T1.3 Triangular addressing probe — Nagy 2003/2004 B-distance vs stride-37 (manual) ──
+triangular_addressing_probe: tools/triangular_addressing_probe.c | $(BUILD)
+	@echo "▶ BUILD  triangular_addressing_probe"
+	$(CC) $(CFLAGS) -o $(BUILD)/triangular_addressing_probe tools/triangular_addressing_probe.c $(LDFLAGS)
+	@echo "✅ triangular_addressing_probe ready → ./$(BUILD)/triangular_addressing_probe"
+
+# ── T1.3b lane addressing + rotation theorem + GGUF rule-cost (manual) ──
+lane_field_probe: tools/lane_field_probe.c core/gguf_reader.h core/geo_ghost_envelope.h | $(BUILD)
+	@echo "▶ BUILD  lane_field_probe"
+	$(CC) $(CFLAGS) -o $(BUILD)/lane_field_probe tools/lane_field_probe.c $(LDFLAGS)
+	@echo "✅ lane_field_probe ready → ./$(BUILD)/lane_field_probe [--gguf <model>]"
+
+# ── §15.73/§15.78 wire CAP_RULE_* + walk-based read เข้า geofs read path —
+# placement/admit/read กฎเดียว + อ่าน = เดินนาฬิกา (enter-anywhere) (manual) ──
+rule_e2e: tools/rule_e2e.c core/geofs_core.h core/geo_ghost_lift.h core/geo_cap_account.h core/fibo_walk.h | $(BUILD)
+	@echo "▶ BUILD  rule_e2e"
+	$(CC) $(CFLAGS) -o $(BUILD)/rule_e2e tools/rule_e2e.c $(LDFLAGS)
+	@echo "✅ rule_e2e ready → ./$(BUILD)/rule_e2e [file ≤4MB]"
+
+# ── §15.74 delta-mode ghost: pred+ent เข้า ghost_read_rule + วัด footprint (manual) ──
+ghost_delta_measure: tools/ghost_delta_measure.c core/ghost_delta.h core/geo_ghost_lift.h core/geo_cap_account.h | $(BUILD)
+	@echo "▶ BUILD  ghost_delta_measure"
+	$(CC) $(CFLAGS) -o $(BUILD)/ghost_delta_measure tools/ghost_delta_measure.c $(LDFLAGS)
+	@echo "✅ ghost_delta_measure ready → ./$(BUILD)/ghost_delta_measure --file <path> | --syn <kind> <n> | --gguf <model> <idx>"
+
+# ── §15.75/§15.77 tied-embedding dedup + walk-based access: registry {id→home} —
+# byte-identical tensors freeze ครั้งเดียว · walk นาฬิกาหา route ที่ live เหนือ dedup field ──
+tied_dedup: tools/tied_dedup_chain.c core/tied_dedup.h core/fibo_walk.h core/gguf_box.h | $(BUILD)
+	@echo "▶ BUILD  tied_dedup_chain"
+	$(CC) $(CFLAGS) -o $(BUILD)/tied_dedup_chain tools/tied_dedup_chain.c $(LDFLAGS)
+	@echo "✅ tied_dedup ready → ./$(BUILD)/tied_dedup_chain <model.gguf> [--dedup|--no-dedup|--both] [--no-walk]"
+
+goldberg_probe: tools/goldberg_dual_probe.c core/geo_goldberg_store.h core/geo_goldberg_file.h core/geo_goldberg_decagram.h core/geo_goldberg_sphere.h core/infra/tring.h core/gguf_box.h core/geo_param_grid.h | $(BUILD)
+	@echo "▶ BUILD  goldberg_dual_probe"
+	$(CC) $(CFLAGS) -o $(BUILD)/goldberg_dual_probe tools/goldberg_dual_probe.c $(LDFLAGS)
+	@echo "✅ goldberg_probe ready → ./$(BUILD)/goldberg_dual_probe <model.gguf> [--all]"
+
+ggf_bench: tools/ggf_mmap_bench.c core/geo_goldberg_file.h core/geo_goldberg_store.h core/geo_goldberg_decagram.h core/geo_goldberg_sphere.h core/infra/tring.h | $(BUILD)
+	@echo "▶ BUILD  ggf_mmap_bench"
+	$(CC) $(CFLAGS) -o $(BUILD)/ggf_mmap_bench tools/ggf_mmap_bench.c $(LDFLAGS)
+	@echo "✅ ggf_bench ready → ./$(BUILD)/ggf_mmap_bench <file.ggf>"
+
+ggf_ckpt: tools/ggf_checkpoint_replay.c core/geo_ggf_ckpt.h core/geo_ggf_walk.h core/geo_goldberg_file.h core/tied_dedup.h core/gguf_box.h | $(BUILD)
+	@echo "▶ BUILD  ggf_checkpoint_replay"
+	$(CC) $(CFLAGS) -o $(BUILD)/ggf_checkpoint_replay tools/ggf_checkpoint_replay.c $(LDFLAGS)
+	@echo "✅ ggf_ckpt ready → ./$(BUILD)/ggf_checkpoint_replay <model.gguf> --ckpt-dir <dir>"
+

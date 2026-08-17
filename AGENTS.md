@@ -71,35 +71,47 @@ DWGLS/
 │   ├── 4D Geometry (9)
 │   │   ├── geo_param_grid.h      ← PARAMETERIZED GEOMETRY (start here)
 │   │   ├── geo_dual_place.h      ← Hilbert+Peano 162→64 mapping
-│   │   ├── geo_goldberg_sphere.h ← Goldberg polyhedra
-│   │   ├── geo_goldberg_lut.h    ← Goldberg lookup tables
+│   │   ├── geo_goldberg_sphere.h ← Goldberg polyhedra (gp_lens — GpSphere)
+│   │   ├── geo_goldberg_lut.h    ← Goldberg lookup tables (bipolar pairs)
 │   │   ├── geo_diamond_field_v4.h ← Diamond geometry
 │   │   ├── frustum_gcfs.h        ← Frustum geometry
 │   │   ├── frustum_layout_v2.h   ← Frustum layout
 │   │   ├── geo_hex_layer.h       ← Hexagonal geometry
 │   │   └── geo_tring_walk.h      ← Tring walk patterns
 │   │
-│   └── KIS Timeline (8)
-│       ├── kis_codec_v4.h        ← LOSSLESS proven on real GGUF
-│       ├── kis_codec_v5.h        ← v5 codecs
-│       ├── kis_codec_v6.h        ← v6 codecs
-│       ├── geo_adaptive_store.h  ← Adaptive storage engine
-│       ├── geo_kis_container.h   ← Container format (CRC-64)
-│       ├── beam_entropy_container.h ← Beam code v2
-│       ├── entropy_container.h   ← Entropy container
-│       └── geofs_core.h          ← ★ GeoFS: geometric filesystem
+│   ├── KIS Timeline (8)
+│   │   ├── kis_codec_v4.h        ← LOSSLESS proven on real GGUF
+│   │   ├── kis_codec_v5.h        ← v5 codecs
+│   │   ├── kis_codec_v6.h        ← v6 codecs
+│   │   ├── geo_adaptive_store.h  ← Adaptive storage engine
+│   │   ├── geo_kis_container.h   ← Container format (CRC-64)
+│   │   ├── beam_entropy_container.h ← Beam code v2
+│   │   ├── entropy_container.h   ← Entropy container
+│   │   └── geofs_core.h          ← ★ GeoFS: geometric filesystem
+│   │
+│   └── Goldberg Storage (7) — T1.2f..o (layered DAG, bottom-up)
+│       ├── geo_goldberg_decagram.h ← 10-sector layout: hex = 10(n²−1) ÷10
+│       ├── geo_goldberg_store.h   ← ggs_store: streaming multi-sphere (RAM ~1 sphere)
+│       ├── geo_goldberg_file.h    ← .ggf persist (ggs_save/load) + GGFReader lazy
+│       │                            + GGFMap mmap (zero-copy) + ggf_save_map
+│       ├── geo_ggf_walk.h         ← single read path: walk clock (seed,round,tick)
+│       │                            + dedup registry + GGFMap zero-copy
+│       ├── geo_ggf_ckpt.h         ← checkpoint/replay manifest (.mfp, provenance
+│       │                            + CRC64) — fresh-process restore
+│       ├── fibo_walk.h            ← walk clock: state = (seed, round, tick), live route
+│       └── tied_dedup.h           ← registry {tensor_id → home} (dedup ระดับไฟล์)
 │
 ├── core/infra/     (2 headers)
 │   ├── gear_lock.h               ← GEAR_GEO_FULL = 20736
 │   └── fibo_spine.h              ← FS_PIPES = 1728, FS_TICKS = 12
 │
-└── tests/          (8 files)
-    ├── kis_codec_v4/v5/v6_test.c
-    ├── kis_adaptive_deploy.c
-    ├── kis_real_gguf_test.c
-    ├── kis_map_roundtrip.c
-    ├── section4_seal_residual.c
-    └── test_geo_fs.c             ← ★ GeoFS tests (10/10)
+└── tests/          (TIER1 ~93 ไฟล์ — make test)
+    ├── kis_codec_v4/v5/v6_test.c · kis_adaptive_deploy.c · kis_real_gguf_test.c
+    ├── kis_map_roundtrip.c · section4_seal_residual.c · test_geo_fs.c
+    ├── test_fibo_walk.c · test_tied_dedup.c · test_geo_dual_view.c
+    ├── test_goldberg_decagram.c · test_goldberg_store.c · test_goldberg_file.c
+    ├── test_goldberg_lazy.c · test_goldberg_mmap.c · test_ggf_walk.c
+    └── test_ggf_walk_mmap.c · test_ggf_ckpt_replay.c
 ```
 
 ## 🧭 Working Rules

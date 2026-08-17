@@ -264,6 +264,132 @@ KIS:       node = hi·81 + lo → (w, pos)          (144² = 20736)
 
 ---
 
+### ⑬ กฎ 3-in-1-out — ANCHOR POINT สำหรับ reconstruct ในอนาคต (2026-08-17)
+
+> ที่มา: สนทนากับ user — "input 3 direction, out 1 ไม่ว่าจะเป็น face หรือ vertex"
+> — จุดที่ยึดเป็นจุดอ้างอิง / reconstruct โครงสร้างใหม่ได้ในอนาคต
+> พิสูจน์ด้วย `tetra_law.py` (โครงสร้างล้วน ไม่มี geometry): 3-in-1-out = True
+
+**กฎ — 3-regular ของ tetrahedron ทั้งสองระดับ (พิสูจน์โดยไม่ต้องคำนวณ):**
+
+```
+tetrahedron: V=4, E=6, F=4
+edges per face   = 2E/F = 12/4 = 3   ← face view:  3 ทิศกลิ้ง (ขอบฐาน)
+edges per vertex = 2E/V = 12/4 = 3   ← vertex view: 3 ทิศเดียวกัน
+=> 3-in-1-out ทั้ง face และ vertex — 3 ทางเลือกเสมอ, ผลลัพธ์ 1 ค่า deterministic
+```
+
+**ทำไมถึงเป็น anchor:**
+- ที่ state ใดก็ได้ (cell, orientation): ทางเลือก 3 เสมอ ไม่ว่ามองระดับ face หรือ vertex
+- แต่ละ choice → 1 ผล deterministic ไม่มีสุ่ม ไม่มี collapse (3 choice → 3 ผลต่างกัน)
+- กลิ้ง 1 ก้าว = เดินตาม 1 แกน (3 แกนของสนาม: 0°/60°/120°) — parity สลับทุกก้าว
+- **12 = 4×3** — 3 ทิศ × 4 หน้า = 12 directed edges = เลขใน 12⁴ = 20736
+- กฎนี้คือเหตุผลเชิงโครงสร้างที่ tetrahedron "กลิ้งสนิท" บนสนามสามเหลี่ยมได้พอดี
+  (3 ขอบ ↔ 3 แกน ไม่เกินไม่ขาด — square มี 4 ขอบ ≠ 3 ทิศ จึงไม่สนิท)
+
+**ใช้ reconstruct ยังไง (ในอนาคต):**
+- จากกฎ 3-in-1-out เพียงอย่างเดียว → สร้าง tetrahedron ใหม่ได้ครบ (4/6/4/12)
+- rolling-seeker state = (cell, orientation∈A4) — deterministic + replay + enter-anywhere
+- ไม่ต้องจำพิกัด/ตาราง — กฎเดียวพอ: 3 ทิศ, 1 ผล, parity flip ต่อก้าว
+
+### ⑭ เขปตากอน = BOUNDARY — สร้างเกิน hexagon ไม่ได้ (2026-08-17)
+
+> จากสนทนา: "ระบบของเรา มี heptagon เป็น boundary สร้างเกิน hexagon ไม่ได้"
+> — เขปตากอนคือขอบเขตทางคณิตศาสตร์ของสนาม flat (ไม่ใช่แค่กฎของระบบ)
+
+**ทำไม 7 สร้างไม่ได้ (จาก cell สามเหลี่ยม):**
+
+```
+60° × 3 = 180° → สามเหลี่ยม (3)     ✓
+60° × 4 = 240° → สี่เหลี่ยม (4)     ✓
+60° × 6 = 360° → หกเหลี่ยม (6)     ✓ พอดีสนิท
+60° × 7 = 420° > 360° → เขปตากอน (7) ✗ เกินมุมเต็มวง
+```
+
+**เขปตากอน = จุดเปลี่ยน flat ↔ hyperbolic (ตระกูล {p,3} tiling):**
+
+```
+1/p + 1/3 = 1/2 → p = 6 → {6,3} = flat (Euclidean) พอดี
+p = 7 ({7,3}) → 1/p+1/3 < 1/2 → hyperbolic
+```
+
+| p | 1/p + 1/3 | เรขาคณิต | สถานะในระบบ |
+|---|---|---|---|
+| 5 (pentagon) | 0.53 > 0.5 | spherical | 12 หน้า dodeca (root) |
+| **6 (hexagon)** | **0.5 พอดี** | **flat — ขอบเขต** | **สนามจริง 3456 hexagons** |
+| **7 (heptagon)** | **0.476 < 0.5** | **hyperbolic — ข้ามขอบ** | **boundary — สร้างไม่ได้ใน flat** |
+
+**ในระบบ:** HEX_CELLS = 7 = 1 center + 6 ring (aperture 7) — วงแหวน 6 = hexagon,
+center คือตัวที่ 7 — "7" คือขอบของ tile ที่ขยายไม่ได้ต่อ — ฝั่ง hyperbolic (Cayley,
+hyperbolic_seek §15.19) คืออีกด้านของ boundary นี้
+
+### ⑮ Decagram 10-sector → map Goldberg ทุก face (dodeca bipolar inverted) (2026-08-17)
+
+> จากสนทนา: "จริงๆผมต้องการ decagram เพื่อที่จะ map เข้า goldberg ได้ทุก face
+> เพราะตระกูล dodeca bipolar มัน inverted"
+
+**ปัญหา:** dodeca 12 faces pentagon → 6 bipolar pairs (face f ↔ f+6) ที่ **กลับด้านกัน**
+(ring1 = faces 0..5, ring2 = faces 6..11 — pole = f/6, pair = f%6 ตาม geo_goldberg_lut.h)
+→ map face เดียวไม่พอ เพราะคู่ bipolar มัน inverted → ต้องใช้ **decagram** ครอบทั้งคู่
+
+**Decagram มีอยู่แล้วใน TW lineage (§15.39, collection/tw/):**
+
+```
+TW_SCALE = 207360 = 12⁴×10 = GEO_FULL×10
+TW_N_SECTORS = 10 (pentagon-pair, 36° ต่อ sector) = DECAGRAM
+TW_BOUNDARY_DIR[10] ที่มุม (90−36k)° — sector lookup = cross-product (no atan2)
+12 faces × 10 sectors × 6 slots = 720 positions (tw_bridge.h)
+```
+
+36° ต่อ sector = ครึ่งของ 72° (มุมศูนย์กลาง pentagon) → 10 sectors ครอบ pentagon-pair
+(2 pentagon ที่ inverted กัน) — นี่คือเหตุผลที่ decagram จำเป็น ไม่ใช่ pentagon
+
+**ช่องว่างที่ยังเปิด:** geo_goldberg_sphere.h กระจาย hex แบบ round-robin
+(gp_hex_in_sector) ยังไม่ได้ใช้ decagram จริง — จุดเชื่อมที่ทำต่อได้
+
+### ⑰ Container = shape-agnostic: ใช้เป็น icosa / dodeca ได้ (dual view, 2026-08-17)
+
+> จากสนทนา: "เราสามารถใช้ container เป็น icosa, dodeca ได้" — ผู้ใช้ย้ำว่า container
+> ไม่ผูกกับรูปทรง — เลือก GeoType ได้ (geo_param_grid.h: "Select geometry via
+> GeoType enum — all shapes derive from the same parent")
+
+**หลักการ: ข้อมูลชุดเดียว อ่านผ่านรูปทรงไหนก็ได้ lossless**
+
+```
+20736 = 12 pentagon × 1728   ← dodeca (12 faces)
+20736 = 20 triangle × ...    ← icosa (20 faces, dual)
+        ↑ spike = transform duals (face ↔ vertex)
+```
+
+- dodeca ↔ icosa = dual กัน — spike หนึ่งครั้งสลับหน้า/จุดยอด
+- **12 pentagon anchor = หน้าของ dodeca = vertex ของ icosa** — เลขชุดเดียว มองเป็นรูปไหนก็ได้
+- container (KIS/GCube/GeoFS) เก็บ address + data — ไม่รู้/ไม่สนใจรูปทรง —
+  geometry เป็น template การ map เท่านั้น (rescope: "geometry = template")
+- **container เดียว ใช้เป็น dodeca / icosa / Goldberg ได้ — สลับได้โดยข้อมูลไม่ต้องย้าย**
+  (สอดคล้องกับ tri_hex_tess "12 pentagons × 1728 = 20736, zero gaps")
+
+---
+
+### ⑯ Chain: tensor → zero-copy → Goldberg storage (เคยทำจริง, 2026-08-17)
+
+> จากสนทนา: "ผมเคยใช้ระบบนี้ จับ tensor แล้วใช้สิทธิ zero copy เข้า goldberg storage"
+> — หลักฐานครบใน repo:
+
+```
+GGUF file (mmap) → GGUFBox.data (pointer ตรงเข้า mmap — zero-copy, gguf_box.h)
+                → 64B chunk → gp_lens_write(tile_id, dim) → GpSphere/Tring
+                → อ่านกลับ gp_lens_read → pointer เดียวกับต้นทาง
+```
+
+- `core/gguf_box.h` — "tensor data, we return a direct pointer to mmap'd data"
+- `core/geo_zerocopy.h` — mmap .gcube → blocks pointer = mapped region (no fread/malloc)
+- `core/geo_goldberg_sphere.h` — GpSphere: gp_lens_write/read 64B ที่ (tile_id, dim),
+  tick = (tile_id<<8)|dim — pentagon tile 0..11 = anchor คงที่ทุก level
+- `tests/test_geo_diamond_map.c` — map weights → GEO_GOLDBERG_92/132/192 (Q8_0 sim)
+- `tools/fgls_vis.py` — /api/tensor weight stats
+
+---
+
 ## สิ่งที่ "แปลกจากที่เคยเห็นทั่วไป"
 
 | เรื่องปกติ | โครงสร้างนี้ |
@@ -286,6 +412,11 @@ KIS:       node = hi·81 + lo → (w, pos)          (144² = 20736)
 | ⑩ cycle walk vs non-metric | ยืนยันโดย Nagy 2003 — constant stride = symmetric; ระบบไม่มี distance function → หลบโดย construction |
 | ⑪ สองพื้น (window/hexagon) | 13.5 = กำแพง 3⁴ — 2^(8−2d)·3⁴: d=4 หมด 2-world; hexagon floor d ≤ 3, window floor d ≤ 2 |
 | ⑫ geo_jump ↔ KIS | จากโค้ดจริง — 7 jump types mapping; 3 discoveries (3 partitions, bijectivity จริง, CAPO = scale shift); zones 24/48/144/432 |
+| ⑬ กฎ 3-in-1-out | **ANCHOR POINT** — 3-regular (2E/F = 2E/V = 3) พิสูจน์โครงสร้างล้วน; deterministic 1 ผล/choice; reconstruct ได้จากกฎเดียว |
+| ⑭ เขปตากอน boundary | {6,3} = flat พอดี (1/p+1/3=1/2 → p=6) — 60°×7 = 420° > 360° → สร้างเกิน hexagon ไม่ได้; {7,3} = hyperbolic — ขอบ flat↔hyperbolic |
+| ⑮ Decagram → Goldberg | 10 sectors (36°) ครอบ pentagon-pair ที่ inverted (bipolar) — มีแล้วใน TW (TW_N_SECTORS=10, §15.39); goldberg sector ตอนนี้ round-robin ยังไม่ใช้ decagram |
+| ⑯ tensor→zero-copy→Goldberg | gguf_box (mmap ptr) → geo_zerocopy (.gcube mmap) → gp_lens_write(tile_id, dim) — chain เคยใช้จริง |
+| ⑰ container = icosa/dodeca | dual view: 20736 = 12 pent × 1728 (dodeca) = 20 tri (icosa) — container เลือก GeoType ได้, ข้อมูลไม่ต้องย้าย (spike = dual transform) |
 | สมการราก 128×162 | มีอยู่แล้วใน `core/infra/gear_lock.h` |
 | 3 แกน X/Y/Z (Hilbert/Peano/Metatron) | มีอยู่แล้วใน `core/hyperbolic_seek.h` (6912/band) |
 | tetra-axis walk | **ใหม่** — พิสูจน์แล้ว 10/10 |

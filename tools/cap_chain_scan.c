@@ -1,23 +1,21 @@
-/* cap_chain_scan.c — streaming chain over a whole folder (7.7 GB notebookLM)
+/* cap_chain_scan.c — streaming chain over a folder or GGUF model (knobs ผ่าน CLI)
  * ═══════════════════════════════════════════════════════════════════════════
- * Runs the REAL chain over every file:
+ * T1.2 follow-up: wire champion rule set (stride 29/41 · offset 7/122 ·
+ * gate 3.0 → kmax 4 · orbit 1 · chunk 262144) เข้า chain จริง แล้วพิสูจน์
+ * lossless byte-for-byte end-to-end (folder + GGUF model file)
  *
- *   file → chunks (16 KB) → per chunk: w = (37·rank)%144
- *     cap_admit(gate, 0, w)               (§11.6 accounting — field slots)
- *       CAP_LIFT  → rs_freeze (bond = ghost_piece) → residual_space
- *       CAP_ADMIT → pointer-home (data stays in source)
- *   streaming windows: capacity 1024 chunks (16 MB) — place → verify →
- *   teardown → next window (workspace bounded — §15.2)
+ *   file → chunks (chunk B) → per chunk: w = (stride·rank + offset) % 144
+ *     admit (per-orbit capacity GHT_WIN/orbit, envelope ght_fp(k)):
+ *       LIFT   → rs_freeze (bond = ghost_piece) → residual_space
+ *       ADMIT  → pointer-home (data stays in source)
+ *       REJECT → นับ (deterministic — ไม่ silent) → pointer-home (lossless ยังอยู่)
+ *   streaming windows (WINDOW_BYTES bounded) — place → verify → teardown
  *
- * Reports per file: size, chunks, field slots, checksum (FNV-1a 64) OK/FAIL,
- * plus folder aggregates: total windows (base chain), stream windows
- * (teardowns), eviction pressure (peak rs count, forced evictions).
- *
- * The route/log layer is proven elsewhere (test_cap_chain_roundtrip) — this
- * scan goes straight to rs_freeze/thaw by bond for speed at ~480K chunks.
+ * CLI:
+ *   cap_chain_scan [root] [--stride S] [--offset O] [--gate G] [--orbit Q] [--chunk C]
+ *   cap_chain_scan --gguf <model.gguf> [--stride S] ...   (ทั้งไฟล์ = 1 stream)
  *
  * BUILD: gcc -O2 -I. -Icore -Icore/infra -o build/cap_chain_scan tools/cap_chain_scan.c -lm
- * RUN:   build/cap_chain_scan [root]      (default F:/notebookLM)
  */
 
 #include <stdio.h>
@@ -29,12 +27,177 @@
 #include "../core/geo_cap_account.h"
 #include "../core/geo_ghost_lift.h"
 
-#define CHUNK_SZ 16384u
-#define WINDOW   1024u      /* chunks per stream window (16 MB) */
+/* 64-bit file seek/tell — Windows: ใช้ _fseeki64/_ftelli64 จริง (CRT 64-bit),
+   non-Windows: fallback เป็น fseeko/ftello (off_t 64-bit ที่นั่น) —
+   ftello บน Windows truncate 32-bit → ไฟล์ >2GB พัง (§15.71) */
+#if !defined(_WIN32) && !defined(_fseeki64)
+#define _fseeki64(f, o, w) fseeko((f), (off_t)(o), (w))
+#endif
+#if !defined(_WIN32) && !defined(_ftelli64)
+#define _ftelli64(f) ftello(f)
+#endif
+
+#define WINDOW_BYTES (16u << 20)   /* 16 MB per stream window */
 #define MAX_FILES 50000u
 
-static uint8_t scale_w(uint32_t rank) {
-    return (uint8_t)(((uint64_t)rank * 37u) % 144u);
+typedef struct {
+    uint16_t stride;
+    uint8_t  offset;
+    double   gate;
+    uint8_t  orbit;
+    uint32_t chunk;
+} Knobs;
+
+static void knobs_default(Knobs *k) {
+    /* trained default (§15.71 unified champion) — single source: core/geo_cap_account.h */
+    k->stride = CAP_RULE_STRIDE;
+    k->offset = (uint8_t)CAP_RULE_OFFSET;
+    k->gate   = CAP_RULE_GATE;
+    k->orbit  = CAP_RULE_ORBIT;
+    k->chunk  = CAP_RULE_CHUNK;
+}
+
+static uint8_t scale_w(const Knobs *k, uint64_t rank) {
+    return (uint8_t)(((uint64_t)k->stride * rank + k->offset) % 144u);
+}
+
+/* admission ตาม cap_admit + per-orbit partition */
+static int admit(const Knobs *k, uint64_t *used, uint8_t w, uint64_t rank,
+                 uint64_t *lifts, uint64_t *rejects, uint64_t *field) {
+    uint32_t kd = ght_scale_depth(0, w);
+    if (kd > ght_envelope_depth(k->gate)) { (*lifts)++; return CAP_LIFT; }
+    uint64_t env = ght_fp(kd);
+    uint8_t b = (uint8_t)(rank % k->orbit);
+    uint64_t cap = GHT_WIN / k->orbit;
+    if (used[b] + env > cap) { (*rejects)++; return CAP_REJECT; }
+    used[b] += env;
+    *field += env;
+    return CAP_ADMIT;
+}
+
+typedef struct {
+    uint64_t field_slots, lifts, rejects, teardowns, forced, peak;
+    uint32_t n_windows_ok, n_windows_fail;
+} Metrics;
+
+/* stream หนึ่งไฟล์ผ่าน chain — windowed (memory bounded) · returns 1 if lossless */
+static int scan_stream(FILE *fp, uint64_t fsize, const Knobs *k, Metrics *m) {
+    uint32_t win_chunks = WINDOW_BYTES / k->chunk;
+    if (win_chunks < 1) win_chunks = 1;
+    uint32_t win_bytes = win_chunks * k->chunk;
+
+    uint8_t *orig = (uint8_t *)malloc(win_bytes);
+    uint8_t *recon = (uint8_t *)malloc(win_bytes);
+    uint8_t *lifted = (uint8_t *)malloc(win_chunks);
+    uint64_t used[24] = {0};
+    uint64_t total_chunks = (fsize + k->chunk - 1) / k->chunk;
+    uint64_t placed = 0;
+    int lossless = 1;
+
+    while (placed < total_chunks) {
+        uint64_t end = placed + win_chunks;
+        if (end > total_chunks) end = total_chunks;
+        uint64_t win_n = end - placed;
+        /* read window bytes (last window partial) */
+        uint64_t win_data = win_n * (uint64_t)k->chunk;
+        if (win_data > fsize - (placed * (uint64_t)k->chunk))
+            win_data = fsize - (placed * (uint64_t)k->chunk);
+        if (win_data == 0) break;
+        size_t rd = fread(orig, 1, (size_t)win_data, fp);
+        if (rd != win_data) {
+            fprintf(stderr, "  READ FAIL window placed=%I64u/%I64u win_data=%I64u rd=%I64u\n",
+                    (unsigned long long)placed, (unsigned long long)total_chunks,
+                    (unsigned long long)win_data, (unsigned long long)rd);
+            lossless = 0; break;
+        }
+
+        /* rs capacity must be power-of-two (mask = cap-1) and ≥ all
+           frozen sub-entries in this window: win_n chunks × sub-pieces
+           (chunk > RS_MAX_DATA_SIZE 64KB → split).  Else the table fills
+           → LRU evicts oldest before thaw (§15.66 bug: last partial
+           window, capacity=312 non-pow2 + overcommit → evict chunk 12288). */
+        uint32_t max_subs = (k->chunk + RS_MAX_DATA_SIZE - 1) / RS_MAX_DATA_SIZE;
+        uint32_t need = (uint32_t)win_n * (max_subs ? max_subs : 1);
+        uint32_t rs_cap = 1;
+        while (rs_cap < need) rs_cap <<= 1;
+        ResidualSpace rs;
+        if (rs_init(&rs, rs_cap) != 0) {
+            fprintf(stderr, "  RS INIT FAIL (cap=%u)\n", rs_cap);
+            free(lifted); free(recon); free(orig); return 0;
+        }
+        memset(lifted, 0, win_chunks);
+
+        for (uint64_t i = placed; i < end; i++) {
+            uint8_t w = scale_w(k, i);
+            uint64_t off = (i - placed) * (uint64_t)k->chunk;
+            uint32_t len = (uint32_t)((i == total_chunks - 1)
+                          ? (uint32_t)(fsize - i * (uint64_t)k->chunk) : k->chunk);
+            if (len > win_data - off) len = (uint32_t)(win_data - off);
+            int v = admit(k, used, w, i, &m->lifts, &m->rejects, &m->field_slots);
+            if (v == CAP_LIFT) {
+                /* freeze as 64KB sub-pieces (RS_MAX_DATA_SIZE) — bond
+                   derived per sub via from_scale=sub → rdh_addr(block,sub)
+                   collision-free, reversible (coordinate = address) */
+                uint32_t n_sub = (len + RS_MAX_DATA_SIZE - 1) / RS_MAX_DATA_SIZE;
+                uint32_t stored = 0;
+                for (uint32_t s = 0; s < n_sub; s++) {
+                    uint32_t sl = (len - s * RS_MAX_DATA_SIZE > RS_MAX_DATA_SIZE)
+                                ? RS_MAX_DATA_SIZE : (len - s * RS_MAX_DATA_SIZE);
+                    PoglsPiece p = ghost_piece((uint32_t)i, (uint8_t)s, w);
+                    uint64_t bk = rs_freeze(&rs, &p, orig + off + s * RS_MAX_DATA_SIZE, sl, 0);
+                    if (bk == RS_BOND_KEY_RESERVED) break;
+                    stored++;
+                }
+                if (stored == n_sub) lifted[i - placed] = (uint8_t)n_sub;
+                else m->forced++;
+            }
+            /* ADMIT/REJECT → pointer-home (data stays in source) */
+        }
+        if (rs.count > m->peak) m->peak = rs.count;
+
+        /* verify window NOW + reconstruct */
+        for (uint64_t i = placed; i < end; i++) {
+            uint8_t w = scale_w(k, i);
+            uint64_t off = (i - placed) * (uint64_t)k->chunk;
+            uint32_t len = (uint32_t)((i == total_chunks - 1)
+                          ? (uint32_t)(fsize - i * (uint64_t)k->chunk) : k->chunk);
+            if (len > win_data - off) len = (uint32_t)(win_data - off);
+            const uint8_t *src;
+            if (lifted[i - placed]) {
+                /* reassemble from sub-pieces (same derived bonds) */
+                uint8_t *tmp = recon + off;
+                uint32_t got = 0;
+                for (uint32_t s = 0; s < lifted[i - placed]; s++) {
+                    uint32_t out_sz = 0;
+                    PoglsPiece p = ghost_piece((uint32_t)i, (uint8_t)s, w);
+                    src = (const uint8_t *)rs_thaw(&rs, pogls_bond_key(&p), &out_sz);
+                    if (!src) {
+                        fprintf(stderr, "  THAW FAIL chunk=%I64u sub=%u\n",
+                                (unsigned long long)i, s);
+                        rs_free(&rs); free(lifted); free(recon); free(orig); return 0;
+                    }
+                    memcpy(tmp + got, src, out_sz);
+                    got += out_sz;
+                }
+                if (got != len) {
+                    fprintf(stderr, "  THAW SIZE chunk=%I64u got=%u len=%u\n",
+                            (unsigned long long)i, got, len);
+                    rs_free(&rs); free(lifted); free(recon); free(orig); return 0;
+                }
+            } else {
+                src = orig + off;
+                memcpy(recon + off, src, len);
+            }
+        }
+        int wok = memcmp(recon, orig, (size_t)win_data) == 0;
+        if (wok) m->n_windows_ok++; else { m->n_windows_fail++; lossless = 0; }
+
+        rs_free(&rs);
+        m->teardowns++;
+        placed = end;
+    }
+    free(lifted); free(recon); free(orig);
+    return lossless;
 }
 
 typedef struct { char path[1100]; uint64_t size; } FileEntry;
@@ -61,155 +224,89 @@ static int cmp_file(const void *a, const void *b) {
     return strcmp(((const FileEntry *)a)->path, ((const FileEntry *)b)->path);
 }
 
-static int read_file(const char *path, uint8_t **buf, uint64_t *size) {
-    FILE *fp = fopen(path, "rb");
-    if (!fp) return -1;
-    fseek(fp, 0, SEEK_END);
-    long sz = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    if (sz <= 0) { fclose(fp); return -1; }
-    uint8_t *b = (uint8_t *)malloc((size_t)sz);
-    if (!b || fread(b, 1, (size_t)sz, fp) != (size_t)sz) { free(b); fclose(fp); return -1; }
-    fclose(fp);
-    *buf = b; *size = (uint64_t)sz;
-    return 0;
-}
-
-static uint64_t fnv1a(const uint8_t *p, size_t n) {
-    uint64_t h = UINT64_C(0xCBF29CE484222325);
-    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= UINT64_C(0x100000001B3); }
-    return h;
-}
-
-/* process one file through the streaming chain.  Returns 1 if lossless. */
-static int scan_file(const char *path, uint64_t *lifted_out, uint64_t *field_out,
-                     uint64_t *teardowns_out, uint64_t *forced_out,
-                     uint64_t *peak_out) {
-    uint8_t *orig = NULL;
-    uint64_t fsize = 0;
-    if (read_file(path, &orig, &fsize) != 0) return -1;
-
-    uint32_t nchunks = (uint32_t)((fsize + CHUNK_SZ - 1) / CHUNK_SZ);
-    uint8_t *recon = (uint8_t *)malloc((size_t)fsize);
-    uint8_t *lifted = (uint8_t *)malloc(WINDOW);
-    CapAccount acc; cap_init(&acc);
-    uint64_t lifted_n = 0, teardowns = 0, forced = 0, peak = 0;
-
-    uint32_t placed = 0;
-    while (placed < nchunks) {
-        ResidualSpace rs; rs_init(&rs, WINDOW);
-        uint32_t end = (placed + WINDOW < nchunks) ? placed + WINDOW : nchunks;
-
-        /* place the window */
-        memset(lifted, 0, WINDOW);
-        for (uint32_t i = placed; i < end; i++) {
-            uint8_t w = scale_w(i);
-            uint32_t len = (uint32_t)((i == nchunks - 1)
-                          ? (uint32_t)(fsize - (uint64_t)i * CHUNK_SZ) : CHUNK_SZ);
-            if (cap_admit(&acc, 1.0, 0, w) == CAP_LIFT) {
-                PoglsPiece p = ghost_piece(i, 0, w);
-                uint64_t bk = rs_freeze(&rs, &p, orig + (uint64_t)i * CHUNK_SZ, len, 0);
-                if (bk == RS_BOND_KEY_RESERVED) forced++;   /* table thrash */
-                else { lifted[i - placed] = 1; lifted_n++; }
-            }
-            /* CAP_ADMIT → pointer-home (data stays in source) */
-        }
-        if (rs.count > peak) peak = rs.count;
-
-        /* verify the window NOW (before teardown) + reconstruct */
-        for (uint32_t i = placed; i < end; i++) {
-            uint8_t w = scale_w(i);
-            uint32_t len = (uint32_t)((i == nchunks - 1)
-                          ? (uint32_t)(fsize - (uint64_t)i * CHUNK_SZ) : CHUNK_SZ);
-            const uint8_t *src;
-            if (lifted[i - placed]) {
-                uint32_t out_sz = 0;
-                PoglsPiece p = ghost_piece(i, 0, w);
-                src = (const uint8_t *)rs_thaw(&rs, pogls_bond_key(&p), &out_sz);
-                if (!src || out_sz != len) { rs_free(&rs); free(lifted); free(recon); free(orig); return 0; }
-            } else {
-                src = orig + (uint64_t)i * CHUNK_SZ;
-            }
-            memcpy(recon + (uint64_t)i * CHUNK_SZ, src, len);
-        }
-        rs_free(&rs);
-        teardowns++;
-        placed = end;
-    }
-
-    int ok = memcmp(recon, orig, (size_t)fsize) == 0;
-    uint64_t csum_orig = fnv1a(orig, (size_t)fsize);
-    uint64_t csum_recon = fnv1a(recon, (size_t)fsize);
-    (void)csum_orig; (void)csum_recon;
-
-    *lifted_out = lifted_n;
-    *field_out = acc.used;
-    *teardowns_out = teardowns;
-    *forced_out = forced;
-    *peak_out = peak;
-
-    free(lifted); free(recon); free(orig);
-    return ok;
+static void print_knobs(const Knobs *k) {
+    printf("  knobs: stride=%u offset=%u gate=%.2f (kmax=%u) orbit=%u chunk=%u\n",
+           k->stride, k->offset, k->gate, (unsigned)ght_envelope_depth(k->gate),
+           k->orbit, k->chunk);
 }
 
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
-    const char *root = (argc > 1) ? argv[1] : "F:/notebookLM";
+    Knobs k; knobs_default(&k);
+    const char *root = NULL, *gguf = NULL;
 
-    printf("cap_chain_scan — streaming chain over %s\n", root);
-    printf("════════════════════════════════════════════════════════════\n");
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--stride") == 0 && i + 1 < argc) k.stride = (uint16_t)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--offset") == 0 && i + 1 < argc) k.offset = (uint8_t)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--gate") == 0 && i + 1 < argc) k.gate = atof(argv[++i]);
+        else if (strcmp(argv[i], "--orbit") == 0 && i + 1 < argc) k.orbit = (uint8_t)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--chunk") == 0 && i + 1 < argc) k.chunk = (uint32_t)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--gguf") == 0 && i + 1 < argc) gguf = argv[++i];
+        else if (argv[i][0] != '-') root = argv[i];
+    }
 
-    FileEntry *files = (FileEntry *)malloc(MAX_FILES * sizeof(FileEntry));
-    uint32_t nf = 0;
-    walk_dir(root, files, MAX_FILES, &nf);
-    qsort(files, nf, sizeof(FileEntry), cmp_file);
+    Metrics agg = {0};
+    uint64_t tot_bytes = 0;
+    uint32_t n_ok = 0, n_fail = 0, n_skip = 0, n_files = 0;
 
-    uint64_t tot_bytes = 0, tot_chunks = 0, tot_lift = 0, tot_field_slots = 0;
-    uint64_t tot_base_windows = 0, tot_teardowns = 0, tot_forced = 0, peak_rs = 0;
-    uint32_t n_ok = 0, n_fail = 0, n_skip = 0;
-
-    for (uint32_t f = 0; f < nf; f++) {
-        uint64_t lifted = 0, field = 0, teardowns = 0, forced = 0, peak = 0;
-        int r = scan_file(files[f].path, &lifted, &field, &teardowns, &forced, &peak);
-        if (r < 0) { n_skip++; continue; }
-        if (r) n_ok++; else n_fail++;
-
-        uint32_t nchunks = (uint32_t)((files[f].size + CHUNK_SZ - 1) / CHUNK_SZ);
-        printf("  %6.1f MB  %6u ch  field %7llu  %s  %s\n",
-               (double)files[f].size / 1048576.0, nchunks,
-               (unsigned long long)field,
-               r ? "OK " : "FAIL",
-               strrchr(files[f].path, '/') ? strrchr(files[f].path, '/') + 1
-                                            : files[f].path);
-
-        tot_bytes += files[f].size;
-        tot_chunks += nchunks;
-        tot_lift += lifted;
-        tot_field_slots += field;
-        tot_base_windows += (files[f].size + CAP_WIN - 1) / CAP_WIN;
-        tot_teardowns += teardowns;
-        tot_forced += forced;
-        if (peak > peak_rs) peak_rs = peak;
-        if ((f + 1) % 200 == 0) printf("  ... %u/%u files done\n", f + 1, nf);
+    if (gguf) {
+        FILE *fp = fopen(gguf, "rb");
+        if (!fp) { printf("cannot open %s\n", gguf); return 1; }
+        /* 64-bit size — ftell() เป็น 32-bit บน Windows → overflow ไฟล์ >2GB (§15.71) */
+        if (_fseeki64(fp, 0, SEEK_END) != 0) { printf("seek end fail\n"); return 1; }
+        uint64_t sz = (uint64_t)_ftelli64(fp);
+        _fseeki64(fp, 0, SEEK_SET);
+        printf("GGUF stream: %s (%I64u MB)\n", gguf, (unsigned long long)(sz >> 20));
+        print_knobs(&k);
+        Metrics m = {0};
+        int ok = scan_stream(fp, sz, &k, &m);
+        fclose(fp);
+        tot_bytes = sz;
+        n_files = 1;
+        if (ok) n_ok++; else n_fail++;
+        printf("  %6.1f MB  lossless=%s  field=%I64u slots  lift=%I64u  rej=%I64u  win=%I64u  (win ok %u / fail %u)\n",
+               (double)sz / 1048576.0, ok ? "OK" : "FAIL",
+               (unsigned long long)m.field_slots, (unsigned long long)m.lifts,
+               (unsigned long long)m.rejects, (unsigned long long)m.teardowns,
+               m.n_windows_ok, m.n_windows_fail);
+        agg = m;
+    } else {
+        if (!root) root = "F:/notebookLM";
+        printf("Folder: %s\n", root);
+        print_knobs(&k);
+        FileEntry *files = (FileEntry *)malloc(MAX_FILES * sizeof(FileEntry));
+        uint32_t nf = 0;
+        walk_dir(root, files, MAX_FILES, &nf);
+        qsort(files, nf, sizeof(FileEntry), cmp_file);
+        for (uint32_t f = 0; f < nf; f++) {
+            FILE *fp = fopen(files[f].path, "rb");
+            if (!fp) { n_skip++; continue; }
+            Metrics m = {0};
+            int ok = scan_stream(fp, files[f].size, &k, &m);
+            fclose(fp);
+            if (ok) n_ok++; else n_fail++;
+            tot_bytes += files[f].size;
+            n_files++;
+            agg.field_slots += m.field_slots; agg.lifts += m.lifts;
+            agg.rejects += m.rejects; agg.teardowns += m.teardowns;
+            agg.forced += m.forced;
+            if (m.peak > agg.peak) agg.peak = m.peak;
+            if ((f + 1) % 250 == 0) printf("  ... %u/%u files\n", f + 1, nf);
+        }
+        free(files);
     }
 
     printf("\n════════════════════════════════════════════════════════════\n");
-    printf("AGGREGATE\n");
-    printf("  files: %u (ok %u, fail %u, skip %u)\n", nf, n_ok, n_fail, n_skip);
-    printf("  bytes: %llu MB | chunks: %llu (16 KB)\n",
-           (unsigned long long)(tot_bytes >> 20), (unsigned long long)tot_chunks);
-    printf("  base windows (naive chain): %llu\n",
-           (unsigned long long)tot_base_windows);
-    printf("  stream windows (16 MB bounded, teardowns): %llu\n",
-           (unsigned long long)tot_teardowns);
-    printf("  field slots (Σ envelope of admitted): %llu (~%llu windows)\n",
-           (unsigned long long)tot_field_slots,
-           (unsigned long long)((tot_field_slots + CAP_WIN - 1) / CAP_WIN));
-    printf("  lifted chunks → residual_space: %llu\n",
-           (unsigned long long)tot_lift);
-    printf("  eviction pressure: peak rs.count %llu / window %u | forced evictions %llu\n",
-           (unsigned long long)peak_rs, WINDOW, (unsigned long long)tot_forced);
-    printf("  checksum: %u/%u files byte-for-byte\n", n_ok, n_ok + n_fail);
+    printf("AGGREGATE (%u files, %I64u MB)\n", n_files, (unsigned long long)(tot_bytes >> 20));
+    printf("  lossless (byte-for-byte): %u ok / %u (fail %u, skip %u)\n", n_ok, n_ok + n_fail, n_fail, n_skip);
+    printf("  field slots: %I64u (~%I64u windows of 20736)\n",
+           (unsigned long long)agg.field_slots,
+           (unsigned long long)((agg.field_slots + GHT_WIN - 1) / GHT_WIN));
+    printf("  lifted chunks → residual_space: %I64u | rejects: %I64u\n",
+           (unsigned long long)agg.lifts, (unsigned long long)agg.rejects);
+    printf("  stream windows: %I64u | forced evictions: %I64u | peak rs.count: %I64u\n",
+           (unsigned long long)agg.teardowns, (unsigned long long)agg.forced,
+           (unsigned long long)agg.peak);
     printf("════════════════════════════════════════════════════════════\n");
     return n_fail ? 1 : 0;
 }

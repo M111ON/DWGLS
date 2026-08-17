@@ -208,6 +208,73 @@ static void test_fs_vs_hs_speed(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   Test 5: Pred+Ent delta — lossless + real size vs full delta (T1.1c)
+   ═══════════════════════════════════════════════════════════════════════════ */
+static void test_ent_delta(void) {
+    printf("\nTEST 5: Pred+Ent delta (scale-predict + Huffman)\n");
+    printf("═══════════════════════════════════════════════\n");
+
+    uint8_t original[20736];
+    for (int i = 0; i < 20736; i++) original[i] = (uint8_t)(i % 256);
+
+    uint32_t scale = (uint32_t)(1.0 * 65536.0);
+    uint32_t kis[20736];
+    for (uint32_t i = 0; i < 20736; i++)
+        kis[i] = kis_project_4d_to_3d(i, 0, 0, 0, scale);
+
+    HyperDeltaEnt d;
+    hyper_delta_ent_calculate(&d, 1, original, kis, 20736);
+
+    uint8_t recovered[20736];
+    int ok = hyper_delta_ent_recover(&d, kis, recovered, 20736);
+    int match = ok;
+    for (int i = 0; i < 20736 && match; i++)
+        if (recovered[i] != original[i]) match = 0;
+    CHECK(14, "ent: pred+residual = original (lossless)", match);
+    CHECK(15, "ent: header valid", hyper_delta_is_valid(&d) == 1);
+    CHECK(16, "ent: data_len ≤ 20736+256 (bounded)", d.data_len <= 20736u + 256u);
+
+    printf("    full delta : %u B  (1 B/slot)\n", hyper_delta_size());
+    printf("    pred+ent   : %u B  (data_len %u)\n", hyper_delta_ent_size(&d), d.data_len);
+    printf("    ratio      : %.2f× full\n",
+           (double)hyper_delta_ent_size(&d) / (double)hyper_delta_size());
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Test 6: Ent delta on structured data + determinism
+   ═══════════════════════════════════════════════════════════════════════════ */
+static void test_ent_structured(void) {
+    printf("\nTEST 6: Ent delta — structured data + determinism\n");
+    printf("═══════════════════════════════════════════════\n");
+
+    /* structured: ramp + low-freq pattern (compressible residual) */
+    uint8_t original[20736];
+    for (int i = 0; i < 20736; i++)
+        original[i] = (uint8_t)((i * 7 + 13) % 256);
+
+    uint32_t scale = (uint32_t)(1.0 * 65536.0);
+    uint32_t kis[20736];
+    for (uint32_t i = 0; i < 20736; i++)
+        kis[i] = kis_project_4d_to_3d(i, 0, 0, 0, scale);
+
+    HyperDeltaEnt d1, d2;
+    hyper_delta_ent_calculate(&d1, 1, original, kis, 20736);
+    hyper_delta_ent_calculate(&d2, 1, original, kis, 20736);
+
+    uint8_t rec[20736];
+    int ok = hyper_delta_ent_recover(&d1, kis, rec, 20736);
+    int match = ok;
+    for (int i = 0; i < 20736 && match; i++)
+        if (rec[i] != original[i]) match = 0;
+    CHECK(17, "ent structured: lossless", match);
+    CHECK(18, "ent deterministic (same data_len)", d1.data_len == d2.data_len);
+
+    printf("    full : %u B | pred+ent : %u B (%.2f×)\n",
+           hyper_delta_size(), hyper_delta_ent_size(&d1),
+           (double)hyper_delta_ent_size(&d1) / (double)hyper_delta_size());
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    Main
    ═══════════════════════════════════════════════════════════════════════════ */
 int main(void) {
@@ -221,6 +288,8 @@ int main(void) {
     test_delta_scales();
     test_delta_header();
     test_fs_vs_hs_speed();
+    test_ent_delta();
+    test_ent_structured();
 
     printf("\n═══════════════════════════════════════════════\n");
     printf("RESULTS: %d PASS, %d FAIL\n", pass, fail);

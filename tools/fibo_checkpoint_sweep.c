@@ -46,6 +46,7 @@
 #include <dirent.h>
 #include "../core/infra/fibo_spine.h"
 #include "../core/geo_ghost_lift.h"
+#include "../core/fibo_walk.h"
 
 #define CKPT_HEADER 28u  /* seed(8)+round(8)+tick(4)+ver/res(8) */
 #define PERSIST_MAGIC "FCKP"
@@ -152,6 +153,107 @@ static uint32_t round_pow2(uint32_t v) {
     while (c < v) c <<= 1;
     return c;
 }
+
+/* ═══ §15.76 walk-based access — เดิน spine tick-by-tick หา route ที่ live ═══
+   state = (seed, round, tick) พอสำหรับทุกตำแหน่งทุกตาราง:
+   ที่ตำแหน่ง (r, t) route ที่ live = {i : rq_i == r และ rq_i % ticks == t}
+   — คำนวณสนามใหม่จาก (method + seed) (chunks array = field ที่ recompute)
+   → ไม่ต้อง index: เดินนาฬิกาจาก state ใดก็ถึงทุกตำแหน่ง อ่าน lossless */
+typedef struct { const Chunk *chunks; } SweepCtx;
+static void sweep_chunk_route(void *ctx, uint32_t i, FiboWalkRoute *out) {
+    const SweepCtx *sc = (const SweepCtx *)ctx;
+    out->block = sc->chunks[i].block;
+    out->r0    = sc->chunks[i].r0;
+    out->rq    = sc->chunks[i].rq;
+}
+
+/* เดินจาก start ไป target ของทุก chunk → อ่านผ่าน route → เทียบ data */
+static int walk_read_all(const Cfg *cfg, GhostLog *log, ResidualSpace *rs,
+                         const Chunk *chunks, uint32_t n,
+                         FiboWalkPos start, uint32_t *max_steps) {
+    int ok = 1;
+    for (uint32_t i = 0; i < n && ok; i++) {
+        FiboWalkPos target = { chunks[i].rq, (uint32_t)(chunks[i].rq % cfg->ticks), 0 };
+        FiboWalkPos pos;
+        if (!fibo_walk_to(NULL, NULL, cfg->ticks, cfg->cycles, start,
+                          target.round, target.tick, &pos)) { ok = 0; break; }
+        uint64_t expect = fibo_walk_dist(&start, &target, cfg->ticks, cfg->cycles);
+        if (pos.steps - start.steps != expect) { ok = 0; break; }
+        uint32_t d = (uint32_t)(pos.steps - start.steps);
+        if (d > *max_steps) *max_steps = d;
+        uint32_t sz = 0;
+        const void *got = ghost_read(log, rs, chunks[i].block, chunks[i].r0,
+                                     chunks[i].rq, &sz);
+        if (!got || sz != chunks[i].len ||
+            memcmp(got, chunks[i].data, chunks[i].len) != 0) ok = 0;
+    }
+    return ok;
+}
+
+/* พิสูจน์ walk-based access ทั้งชุด → 1 = ครบ (coverage + enter-anywhere +
+   ว่าง + field ต่างจับได้) — ใช้กับ state ใดก็ได้ (live / reload จาก disk) */
+static int walk_proof(const Cfg *cfg, GhostLog *log, ResidualSpace *rs,
+                      const Chunk *chunks, uint32_t n) {
+    SweepCtx ctx = { chunks };
+    uint32_t *counts = (uint32_t *)calloc((size_t)cfg->cycles * cfg->ticks,
+                                          sizeof(uint32_t));
+    if (!counts) return 0;
+    uint64_t total = fibo_walk_coverage(sweep_chunk_route, &ctx, n, cfg->ticks,
+                                        cfg->cycles, counts);
+    int ok = (total == n);
+
+    /* enter-anywhere: 3 start states → ทุก chunk lossless */
+    FiboWalkPos sA = { 0u, 0u, 0 };
+    FiboWalkPos sB = { cfg->cycles / 2u, 2u, 0 };
+    FiboWalkPos sC = { cfg->cycles - 1u, cfg->ticks - 1u, 0 };
+    uint32_t max_steps = 0;
+    int okA = walk_read_all(cfg, log, rs, chunks, n, sA, &max_steps);
+    int okB = walk_read_all(cfg, log, rs, chunks, n, sB, &max_steps);
+    int okC = walk_read_all(cfg, log, rs, chunks, n, sC, &max_steps);
+    int ok3 = okA && okB && okC;
+    ok = ok && ok3;
+
+    /* ตำแหน่งว่าง (tick ≠ รอบ%ticks) → 0 live */
+    uint32_t r_empty = cfg->cycles - 1u;
+    uint32_t t_empty = (r_empty % cfg->ticks + 1u) % cfg->ticks;
+    FiboWalkPos pe = { r_empty, t_empty, 0 };
+    FiboWalkRoute live[64];
+    uint32_t lc = fibo_walk_live(sweep_chunk_route, &ctx, n, cfg->ticks, &pe, live, 64);
+    ok = ok && lc == 0;
+
+    /* seed/method ต่าง = field ต่าง → route ไม่มีใน log → NULL (จับได้)
+       เปรียบเทียบ per-block (chunks ที่รับเข้ามาอาจถูก qsort แล้ว — ต้อง
+       regenerate field ใหม่เป็น array ตรงๆ ให้ index ตรงกัน) */
+    Cfg bad = *cfg;
+    if (cfg->pattern == PAT_RANDOM) bad.seed += 1u;
+    else                            bad.dist = cfg->dist + 3u;
+    Chunk *gchunks = (Chunk *)calloc(n, sizeof(Chunk));
+    Chunk *bchunks = (Chunk *)calloc(n, sizeof(Chunk));
+    uint32_t differs = 0, detected = 0;
+    if (gchunks && bchunks) {
+        gen_chunks(gchunks, n, cfg);
+        gen_chunks(bchunks, n, &bad);
+        for (uint32_t i = 0; i < n; i++) {
+            if (bchunks[i].r0 != gchunks[i].r0 || bchunks[i].rq != gchunks[i].rq)
+                differs++;
+            uint32_t sz = 0;
+            if (ghost_read(log, rs, bchunks[i].block, bchunks[i].r0,
+                           bchunks[i].rq, &sz) == NULL) detected++;
+        }
+        ok = ok && differs >= 1 && detected == differs && detected >= 1;
+        free(gchunks); free(bchunks);
+    } else { free(gchunks); free(bchunks); ok = 0; }
+
+    printf("       walk: coverage %llu/%u · enter-anywhere %s · lossless %s · "
+           "field-other %u/%u NULL · max %u steps%s\n",
+           (unsigned long long)total, n,
+           ok3 ? "3/3" : "FAIL", ok3 ? "3/3" : "FAIL",
+           detected, differs, max_steps,
+           ok ? "  ✓" : "  ✗");
+    free(counts);
+    return ok;
+}
+
 
 /* ═══ economy verdict — auto-detect "ไม่คุ้ม" ═══════════ */
 static const char *economy(double pct, double thr) {
@@ -297,10 +399,11 @@ static int verify_img_mode(const char *img_path, const char *cfg_path) {
     if (ok) {
         uint32_t sz = 0;
         uint8_t wr0 = (uint8_t)((chunks[0].r0 + 1u) % cfg.cycles);
-        uint8_t wrq = (uint8_t)((chunks[0].rq + 1u) % cfg.cycles);
-        if (ghost_read(&log, &rs, chunks[0].block, wr0, chunks[0].rq, &sz) != NULL) ok = 0;
-        if (ghost_read(&log, &rs, chunks[0].block, chunks[0].r0, wrq, &sz) != NULL) ok = 0;
+        uint8_t wrq = (uint8_t)((chunks[0].rq + 1u) % cfg.cycles);    if (ghost_read(&log, &rs, chunks[0].block, wr0, chunks[0].rq, &sz) != NULL) ok = 0;
+    if (ghost_read(&log, &rs, chunks[0].block, chunks[0].r0, wrq, &sz) != NULL) ok = 0;
     }
+    /* ── §15.76 walk-based access หลัง restore จากดิสก์ (fresh process) ── */
+    if (ok) ok = walk_proof(&cfg, &log, &rs, chunks, cfg.chunks);
     double overhead_pct = 100.0 * (double)((int64_t)n - (int64_t)cfg.chunks * cfg.size)
                                         / (double)((int64_t)cfg.chunks * cfg.size);
     printf("  [RESTORE %s] %s — %u chunks × %u B จาก %s (disk %llu B, overhead %+.2f%%, economy=%s)\n",
@@ -454,6 +557,9 @@ static int run_config(const Cfg *cfg, uint64_t *out_image, uint64_t *out_data,
     }
     if (!ok) { printf("  (final mismatch)\n"); goto out_fail2; }
 
+    /* ── §15.76 walk-based access: เดินนาฬิกาจาก state → หา route ที่ live ── */
+    int walk_ok = walk_proof(cfg, &log2, &rs2, chunks, cfg->chunks);
+
     int secure = 1;
     uint32_t sz = 0;
     uint8_t wr0 = (uint8_t)((chunks[0].r0 + 1u) % cfg->cycles);
@@ -471,7 +577,7 @@ static int run_config(const Cfg *cfg, uint64_t *out_image, uint64_t *out_data,
     *out_image = total_img;
     *out_data  = data_bytes;
 
-    int all_ok = ok && secure && log_ok && rs_ok;
+    int all_ok = ok && secure && log_ok && rs_ok && walk_ok;
     printf("  [%s] pipes=%u ticks=%u cycles=%u chunks=%u size=%u pat=%-8s dist=%u ckpt=%u\n",
            all_ok ? "PASS" : "FAIL",
            cfg->pipes, cfg->ticks, cfg->cycles, cfg->chunks, cfg->size,

@@ -202,7 +202,137 @@
       "body": "weight bytes จริง (Qwen2.5 Q8_0 output.weight 144MB): hyp_scatter ×47 mod 20736 → gather ×11471 → byte-identical. X bijection 20736 addr 0 collision, Y/Z offsets 1728/3456 ถูก, pyramid field decompose ครบ. test 7/7. commit ดู git log",
       "status": "todo",
       "created": "2026-08-09T05:36:00"
+    },
+    {
+      "id": 30,
+      "title": "Session 2026-08-17: tetrahedron anchor + heptagon boundary + decagram/Goldberg (from images)",
+      "body": "## ข้อมูลสะสมจาก session (17 ส.ค. 66) — จากรูป 1-8 + สนทนา\n\n### 1. รูป HPM cube (geo_jump default 4*4*3=48)\n- เกิดจาก project Metatron 3D เท่ากัน 3 แกน: แนวนอนถัก Hilbert (n=4), แนวตั้ง Peano (n=3)\n- 48 = 4x4x3 (beam_metatron_maze.c GEO_METATRON_COLS/ROWS/FLOORS) — ต่อมาเป็น LBlock + 4x4x4+Lblock (geo_lblock.h, GEO_Jump_HPMcube444a.png)\n\n### 2. gb2.png — reshape 2D<->3D\n- 6 หน้าด้านขนาน (frustum lateral faces) + ลูกศรชี้เข้า center = fold\n- frustum -> cubic -> hexagon (มองตาม body diagonal = hexagon) — GCFS (frustum_gcfs.h)\n\n### 3. รูป 6 (band structures) / รูป 7 (triangular grid 3 แกน i,j,k)\n- Brillouin lattice = hexagonal 2D 6 ทิศ — 3 พิกัด (i,j,k) + constraint i+j+k = const (=0 หรือ 1)\n- sum ∈ {0,1} = parity = orientation สามเหลี่ยมขึ้น/ลง — ตรง T1.3 Nagy เป๊ะ\n- hex_tile HEX_CELLS=7 (1 center + 6 ring = 6 ทิศของ triangular lattice) 144x7=1008\n\n### 4. ANCHOR: กฎ 3-in-1-out ของ tetrahedron (user ระบุให้เก็บเป็นจุดอ้างอิง)\n- tetrahedron V=4 E=6 F=4 -> 2E/F=3 (face view) = 2E/V=3 (vertex view) = 3-regular ทั้งสองระดับ\n- 3 ทางเลือกเสมอ, แต่ละ choice -> 1 ผล deterministic (ไม่สุ่ม ไม่ collapse)\n- กลิ้ง 1 ก้าว = เดิน 1 แกนของสนาม (0/60/120 องศา) + parity flip\n- 12 = 4x3 = 12 directed edges -> เลขศักดิ์สิทธิ์มาจากโครงสร้าง tetrahedron ไม่ใช่เลขเลือก\n- reconstruct ได้จากกฎเดียว: 3 ทิศ, 1 ผล, parity flip — rolling-seeker state = (cell, orientation in A4)\n- square ไม่สนิทเพราะ 2E/F=2 (4 ขอบ ≠ 3 ทิศ)\n- บันทึกแล้ว: docs/TETRA_FIELD_STRUCTURE.md §13 + TIMELINE_WORKING_MODEL.md §15.79\n\n### 5. เขปตากอน = BOUNDARY (สร้างเกิน hexagon ไม่ได้)\n- 60 องศา x 7 = 420 > 360 -> heptagon สร้างไม่ได้จาก triangle cell\n- {6,3} = flat (Euclidean) พอดี 1/p+1/3=1/2 -> p=6; {7,3} = hyperbolic\n- hexagon = ขอบเขต flat; heptagon = ประตูเข้าฝั่ง hyperbolic (ระบบมีฝั่งนี้อยู่แล้ว)\n\n### 6. Decagram สำหรับ map Goldberg ทุก face (dodeca bipolar inverted)\n- ต้องการ decagram (10 sector, 36 องศา/sector) ครอบ pentagon-pair 2 อันที่ inverted กัน\n- geo_goldberg_lut.h: 12 pentagon faces -> 6 bipolar pairs (face f <-> f+6), pair=f%6, pole=f/6\n- TW มี decagram แล้ว: TW_N_SECTORS=10, TW_BOUNDARY_DIR[10] ที่ (90-36k) องศา, TW_SCALE=207360=12^4 x10\n- Goldberg gp_lens_write(tile_id, dim) — sector layout ตอนนี้ round-robin ยังไม่ใช้ decagram (ช่องว่างให้ทำต่อ)\n\n### 7. Chain: tensor -> zero-copy -> Goldberg storage (เคยทำจริง)\n- gguf_box.h: tensor data = pointer ตรงเข้า mmap (zero-copy)\n- geo_zerocopy.h: mmap .gcube -> blocks pointer = mapped region (no fread/malloc)\n- geo_goldberg_sphere.h: gp_lens_write/read 64B chunk ที่ (tile_id, dim), tick=(tile_id<<8)|dim\n- test_geo_diamond_map.c: map weights -> GEO_GOLDBERG_92/132/192, Q8_0 simulation\n\n### 8. rdh_tw_5.png (ภาพ 8) — RDH ยังไม่วนครบ\n- '10x Radial Hexagon with 7CTD' = 1 center + 9 รอบ (ยังไม่กาง) — 7 cells/tile (HEX_CELLS=7)\n- จุดวงกลมแดง 2 จุด (บน/ล่าง) = จุดแชร์ข้าม 2 pentagon (Radial Pentagon x2) — shared vertex บนแกนตั้ง\n\n### 9. สรุปหลักการยึด\n- map ไม่ compress — coordinate = address — deterministic + replay — enter-anywhere\n- value-level ถึง entropy bound แล้ว -> จุดชนะจริง = โครงสร้างไฟล์ (tied/shared) + capability\n- 'Boundary' สำคัญ: heptagon = flat boundary, depth envelope, capacity 20736",
+      "status": "done",
+      "created": "2026-08-17T18:30:00"
+    },
+    {
+      "id": 31,
+      "title": "PLAN ต่อจาก session: container dual view + decagram→Goldberg",
+      "body": "## แผนงานถัดไป (จาก session 17 ส.ค. — ข้อมูลรวบรวมครบ)\n\n### สรุปสถานะ\n- โครงหลัก = สนามเลขคณิตแบน 20736 (144²) — placement/walk/dedup/checkpoint พิสูจน์แล้ว\n- ทรงกลม (Goldberg) = fabric เท่านั้น ยังไม่มี test ใช้ gp_lens_write\n- ข้อมูลสำคัญที่เก็บแล้ว: §⑬ 3-in-1-out anchor · §⑭ heptagon boundary · §⑮ decagram ·\n  §⑯ tensor→zero-copy→Goldberg · §⑰ container = icosa/dodeca dual view\n\n### แผน (เรียงตามลำดับ)\n1. **T1.2f — Decagram → Goldberg** ✅ DONE (2026-08-17): core/geo_goldberg_decagram.h\n   + test_goldberg_decagram.c 11/11 — 10(n²−1) หาร 10 ลงตัวทุก level, bijection ครบ,\n   bipolar inversion (sector d↔d+5, face f↔f+6), lossless 64B/tile (GP(3,0)=92)\n   🐛 จับ bug gp_lens_write (push next_tick vs tick sparse) → แก้ sparse insert\n   make test: TIER1 85/85 + TIER2 4/4\n2. **T1.2g — Container dual view proof** ✅ DONE (2026-08-17): tests/test_geo_dual_view.c\n   10/10 — payload (codebook+idx) ไม่แตะ geometry, เท่ากันทุก byte ข้าม 4 views\n   (12/20/144/192), decode lossless ทุก view — make test TIER1 86/86 + TIER2 4/4\n3. (จาก backlog เดิม) 18tes (FUTURE), cross-model tensor registry, persist walk clock\n\n### หลักการยึด\n- map ไม่ compress · coordinate = address · deterministic + replay + enter-anywhere\n- geometry = template เท่านั้น (rescope) — ข้อพิสูจน์ต้อง decode (ไม่เชื่อ encode-only)",
+      "status": "todo",
+      "created": "2026-08-17T19:00:00"
+    },
+    {
+      "id": 32,
+      "title": "goldberg_dual_probe: GGUF จริง → decagram-Goldberg + dual view ✅",
+      "body": "## T1.2f+g บนไฟล์จริง (2026-08-17, §15.82)\n- tools/goldberg_dual_probe.c (make goldberg_probe)\n- chain: tensor bytes (zero-copy mmap) → 64B chunks → gp_lens decagram tile → กลับ lossless\n- Qwen2.5 --all: 289/291 tensor, 362.9MB, fail 0, 302 MB/s\n- Qwen3: 59/59 · 80.8MB · 209 MB/s · Kokoro: 60/60 · 8.9MB · 182 MB/s\n- dual view: payload เท่ากัน 4 views + decode lossless ทุก view (dodeca/icosa/compound_144/goldberg_192)\n- ratio ~3.3x (Q8 bytes 256 ค่า → codebook ชนะ) — make test TIER1 86/86 + TIER2 4/4\n- **§15.83 streaming multi-sphere**: 291/291 (Qwen2.5 638.7MB) · 310/310 (Qwen3 604.1MB) · 775/775 (Kokoro 166.5MB) = ครบ 100% ทุก tensor fail 0\n- write→verify→destroy ทีละ sphere → RAM ~1.3MB ไม่ขึ้นกับขนาด tensor — 396/277/211 MB/s",
+      "status": "done",
+      "created": "2026-08-17T20:00:00"
+    },
+    {
+      "id": 33,
+      "title": "T1.2h: Goldberg storage = API ระบบ (geo_goldberg_store.h)",
+      "body": "ประกอบ goldberg storage เข้าระบบ (ต่อจาก T1.2f/T1.2g):\n- core/geo_goldberg_store.h — ggs_init/tile/dim/spheres/store (verify ภายใน, streaming)\n- tests/test_goldberg_store.c 30/30 (TIER1) — suite = TIER1 87/87 + TIER2 4/4\n- probe refactor → ใช้ API ระบบ (tools/goldberg_dual_probe.c)\n- ไฟล์จริง: Qwen2.5 291/291 · Qwen3 310/310 · Kokoro 775/775 — fail 0, 1,409.3 MB, 380.7 MB/s\n- docs/GOLDBERG_STORAGE.md (หลักการ + API + ผลจริง + ต่อยอด) + §15.84\nchain จบวงจร: tensor zero-copy → decagram-Goldberg lossless 100% → dual view",
+      "status": "done",
+      "created": "2026-08-17T00:00:00"
+    },
+    {
+      "id": 34,
+      "status": "done",
+      "created": "2026-08-18",
+      "title": "T1.2i: ggs_save/ggs_load — sphere ลงไฟล์ .ggf + อ่านกลับ lossless (ไฟล์จริง)",
+      "tags": [
+        "goldberg",
+        "persist",
+        "file",
+        "crc",
+        "lossless"
+      ],
+      "body": "- core/geo_goldberg_file.h: FILE LAYOUT [GGFHeader 64B] (GGF0 · version · level · n_spheres · n_chunks · n_bytes · crc32 · note) + ต่อ sphere [count u32] + count × [tick u32][data 64B] — tick = gp_addr_to_tick (self-describing)\n- ggs_save: write→verify(memcmp)→persist ทีละ sphere — verify ก่อน persist = เขียน data เสียลงไฟล์ไม่ได้\n- ggs_load: reconstruct ตามลำดับ chunk เดิม + validate tick ตรงตำแหน่ง + CRC32 จับ corruption\n- บทเรียน 2: (1) struct padding 68B≠64B — เรียง u64 ก่อน; (2) loader ต้อง validate tick กับตำแหน่ง (ไม่งั้น data สลับตำแหน่งแล้ว CRC ยังผ่าน)\n- ไฟล์จริง (--all --save): Qwen2.5 291/291 · Qwen3 310/310 · Kokoro 775/775 — saved+reloaded lossless fail 0\n- Corruption proof: flip 1 byte กลาง .ggf จริง → rc=-10 (CRC) จับได้\n- suite: TIER1 88/88 (test_goldberg_file 26/26) + TIER2 4/4 · §15.85 + backlog T1.2i\n- ต่อยอด: lazy read ต่อ sphere · รวมกับ dedup/walk clock เป็น read path เดียว"
+    },
+    {
+      "id": 35,
+      "status": "done",
+      "created": "2026-08-18",
+      "title": "T1.2j: Lazy read .ggf — GGFReader seek ต่อ node (RAM คงที่ ไม่โหลดทั้งไฟล์)",
+      "tags": [
+        "goldberg",
+        "lazy",
+        "seek",
+        "file",
+        "ram"
+      ],
+      "body": "- geo_goldberg_file.h + GGFReader: ggf_open (header + index sphere_off[], RAM ≈ 12B × n_spheres คงที่ — ไม่ขึ้นกับขนาด data) · ggf_chunk(k) seek O(1) + ตรวจ tick ตรงตำแหน่ง · ggf_read(off,n) byte range ตามออฟเซ็ตต้นฉบับ (ข้าม chunk เศษได้) · ggf_verify CRC lazy (RAM 64B) · ggf_close\n- test_goldberg_lazy.c TIER1 52/52: random access 1 sphere / ข้าม 3 spheres (edge + 100 random), lazy full == ggs_load byte-for-byte, unaligned ranges, lazy CRC detect, tick flip → per-node detect (node 0 พัง node 1 อ่านได้), empty, tail partial padded, bad magic, L5, 4MB ไม่ alloc data buffer\n- ไฟล์จริง: lazy == full + verify PASS บน .ggf Kokoro (4KB / 1.1MB / 512B)\n- suite: TIER1 89/89 + TIER2 4/4 · §15.86 + backlog T1.2j\n- ต่อยอด: ใช้ GGFReader เป็น read path ของ dedup/walk clock (อ่านเฉพาะ weight ที่ต้องการ ไม่ต้องโหลดโมเดลทั้งไฟล์) · mmap ต่อยอดได้ตรงๆ"
+    },
+    {
+      "id": 36,
+      "status": "done",
+      "created": "2026-08-18",
+      "title": "T1.2k: Single read path — walk clock + dedup registry + GGFReader (state seed/round/tick → .ggf)",
+      "tags": [
+        "goldberg",
+        "walk-clock",
+        "dedup",
+        "read-path",
+        "lazy",
+        "ggf"
+      ],
+      "body": "- core/geo_ggf_walk.h: state (seed, round, tick) → live tensor (rq_t = (seed + t·2654435761) % cycles,\ntick = rq % 12 — deterministic จาก (seed,t) ไม่ต้อง index) · registry {tensor_id → home} — dup resolve\n→ home .ggf (dedup ระดับไฟล์: 1 ไฟล์ต่อ home) · GGFReader lazy open-on-demand — RAM คงที่\n- API: ggf_walk_init/pos/live/to(home)/read/dedup_bytes/coverage — enter-anywhere ผ่าน fibo_walk_to\n- test_ggf_walk 29/29: registry จาก tied_dedup_scan จริง, coverage Σ==n, read by state 11/11,\ndup → เปิดไฟล์ home เท่านั้น (lazy 3 dup → 8 home), read_at ทุกตำแหน่ง, corrupt → verify จับ,\nว่าง → ปฏิเสธ, multi-sphere 745KB, deterministic replay\n- ไฟล์จริง (--walk): Qwen2.5 291/291 · Qwen3 310/310 · Kokoro 775/775 — fail 0\n  · dedup จับ tied pair จริง: output.weight == token_embd.weight (137.9 MB — เก็บ 290 ไฟล์แทน 291)\n- 🐛 Windows 512 open-file limit → fopen ล้มที่ ~509 — แก้ _setmaxstdio(2048) (4096 เกินเพดาน คืน -1)\n- suite: TIER1 90/90 + TIER2 4/4 · §15.87 + backlog T1.2k\n- ต่อยอด: mmap .ggf (อ่านตรงจากเพจ) / sequential batch ต่อ sphere / LRU close แทนถือทุกไฟล์เปิด"
+    },
+    {
+      "id": 37,
+      "status": "done",
+      "created": "2026-08-18",
+      "title": "T1.2l: ggf_mmap — อ่าน .ggf ตรงจากเพจ (zero-copy) + bench เทียบ lazy 27.5 MB/s",
+      "tags": [
+        "goldberg",
+        "mmap",
+        "zero-copy",
+        "bench",
+        "ggf"
+      ],
+      "body": "- geo_goldberg_file.h + GGFMap: ggf_map (mmap ทั้งไฟล์ Windows CreateFileMapping / POSIX mmap,\nindex จาก mapping — ไม่มี seek) · ggf_map_node(k) คืน pointer ตรงเข้า data (zero-copy, ตรวจ tick,\nNULL ถ้าพัง) · ggf_map_chunk/read drop-in แทน lazy · ggf_map_verify CRC เหนือ mapping · ggf_unmap\n- test_goldberg_mmap.c 48/48: zero-copy pointer ตรง + คงที่, random 1/3 spheres, unaligned ranges,\nverify + data corrupt จับ, tick flip → NULL, mmap == lazy ทุก chunk, tail partial padded,\nempty/bad magic/L5, unmap → node NULL ปลอดภัย\n- bench ไฟล์จริง Qwen2.5: lazy ~28 MB/s seq / 11-14 MB/s rand vs mmap ~1.3-1.8 GB/s seq /\n123-1006 MB/s rand — ~45× seq, ~10× rand · tools/ggf_mmap_bench.c + make ggf_bench\n- suite: TIER1 91/91 + TIER2 4/4 · §15.88 + backlog T1.2l\n- ต่อยอด: ใช้ ggf_map_node ใน ggf_walk_read — ได้ทั้ง walk clock + zero-copy (เปิด 1 mapping ต่อ home)"
+    },
+    {
+      "id": 38,
+      "status": "done",
+      "created": "2026-08-18",
+      "title": "T1.2m: Walk clock + mmap zero-copy — ggf_save_map + read path ผ่าน GGFMap (938 MB/s)",
+      "tags": [
+        "goldberg",
+        "mmap",
+        "zero-copy",
+        "walk-clock",
+        "save",
+        "bench"
+      ],
+      "body": "- geo_goldberg_file.h ggf_save_map: เขียน .ggf ผ่าน mmap VIEW (Windows PAGE_READWRITE / POSIX MAP_SHARED) — ไม่มี syscall ระหว่างเขียน, verify จาก view เองก่อน flush (เขียนเสียลงไฟล์ไม่ได้), อ่านด้วย GGFMap ได้ทันที, deterministic == ggs_save byte-for-byte\n- geo_ggf_walk.h + GGFMap read path: ggf_walk_map_open (เปิด mapping ต่อ home — open-on-demand) · ggf_walk_read_map (drop-in) · ggf_walk_node_map — zero-copy: chunk k ของ tensor → pointer ตรงเข้า mapping ของ home\n- test_ggf_walk_mmap.c 38/38: save_map → GGFMap อ่านทันที lossless + CRC (100B/745KB/empty/L1 ปฏิเสธ/corrupt), deterministic == ggs_save, resolve by state 11/11, zero-copy pointer ตรง, dup → home map (เปิด 8 maps จาก 11), read_map == read (lazy) ทุก byte, enter-anywhere, ว่าง → ปฏิเสธ\n- benchmark ใหม่ (probe --walk ใช้ mmap): Qwen2.5 291/291 @ 938.1 MB/s · Qwen3 310/310 @ 378.7 · Kokoro 775/775 @ 875.7 — fail 0 · เทียบ lazy 27.5 MB/s = ~14-34×\n- suite: TIER1 92/92 + TIER2 4/4 · §15.89 + backlog T1.2m\n- write path (save_map) + read path (walk+mmap) + dedup registry = เก็บ/อ่านโมเดลครบวงจร ~1 GB/s"
+    },
+    {
+      "id": 39,
+      "status": "done",
+      "created": "2026-08-18",
+      "title": "T1.2n: Checkpoint/replay ของ .ggf — fresh-process restore ผ่าน walk clock (600-758 MB/s)",
+      "tags": [
+        "goldberg",
+        "checkpoint",
+        "replay",
+        "fresh-process",
+        "walk-clock",
+        "manifest"
+      ],
+      "body": "- core/geo_ggf_ckpt.h: manifest .mfp (GGRP · seed/ticks/cycles/n · dup_bytes/data_bytes +\nentry name[128]/size/home_of) — เก็บแค่ seed+method (rq คำนวณใหม่) · paths derive จาก name ·\nggf_ckpt_write/read/replay (rebuild walk clock → resolve ทุก tensor → อ่านผ่าน GGFMap → cmp callback)\n- tools/ggf_checkpoint_replay.c: checkpoint (GGUF จริง → tied_dedup_scan → save เฉพาะ home ผ่าน\nggf_save_map + manifest) → spawn ตัวเองเป็น fresh process → replay: manifest + reopen GGUF + map .ggf\n- test_ggf_ckpt_replay.c 17/17: manifest roundtrip, replay ใน structures ใหม่ lossless 11/11,\ndup อ่านผ่าน home, corrupt manifest/.ggf จับ, home หาย จับ, n=0 ปฏิเสธ, deterministic, ว่างข้าม\n- ไฟล์จริง (fresh process จากดิสก์): Qwen2.5 291/291 @ 758.5 MB/s (dedup 137.9 MB tied pair) ·\nQwen3 310/310 @ 694.1 · Kokoro 775/775 @ 600.8 — fail 0\n- 🐛 Kokoro ล้ม 24/775: ชื่อ tensor ~63 ตัวถูกตัดที่ NAME_LEN=64 → derive path ผิด — แก้เป็น 128\n- suite: TIER1 93/93 + TIER2 4/4 · §15.90 + backlog T1.2n\n- ต่อยอด: checkpoint กลางรอบ, ต่อ GeoFS, manifest เพิ่ม provenance/checksum"
+    },
+    {
+      "id": 40,
+      "status": "done",
+      "created": "2026-08-18",
+      "title": "T1.2o: Manifest v3 — provenance + CRC64 checksum (จับ tamper ทุกจุด)",
+      "tags": [
+        "goldberg",
+        "manifest",
+        "provenance",
+        "crc64",
+        "tamper",
+        "checkpoint"
+      ],
+      "body": "- geo_ggf_ckpt.h GgfCkptHeader v3 (312B): created_utc (เมื่อไหร่) · note[64] (ใคร/อะไร) ·\nmodel[192] (โมเดลไหน) · crc64 — crc ครอบ header ยกเว้น crc64 field เอง + ทุก entry (chain)\n- crc64 ECMA-182 (poly เดียวกับ kis_crc64, seedable) — แก้ manifest ตรงไหนก็จับได้ rc=-7\n- test_ggf_ckpt_replay.c 24/24 (+7): provenance ตรง, tamper 6 จุดจับหมด\n(ชื่อ tensor / size / home_of / seed / note / model) · T5 เดิมล้มเพราะ header โต (junk 64→512B)\n- ไฟล์จริง: Qwen2.5 checkpoint → fresh-process replay 291/291 @ 737.8 MB/s ผ่าน manifest v3\n  · แก้ manifest จริง 1 byte (ชื่อ tensor) → replay ปฏิเสธทันที (crc64 จับ)\n- suite: TIER1 93/93 + TIER2 4/4 · §15.91 + backlog T1.2o"
     }
   ],
-  "next_id": 30
+  "next_id": 41
 }
