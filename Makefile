@@ -44,6 +44,11 @@ TIER1 := \
   test_tess_magnify \
   test_tess_hex_delta \
   test_tess_sacred \
+  test_dodeca_x2 \
+  test_walk_sync \
+  test_walk_bench \
+  test_parity_sector \
+  test_cache_locality \
   test_tess_subdivide \
   test_tess_scale_wire \
   test_tess_tetra_axis \
@@ -102,6 +107,7 @@ TIER1 := \
   test_goldberg_mmap \
   test_ggf_walk_mmap \
   test_ggf_ckpt_replay \
+  test_ggf_fs \
   test_geo_dual_view \
   test_geo_lblock \
   test_wang_tantrix \
@@ -516,4 +522,9 @@ ggf_ckpt: tools/ggf_checkpoint_replay.c core/geo_ggf_ckpt.h core/geo_ggf_walk.h 
 	@echo "▶ BUILD  ggf_checkpoint_replay"
 	$(CC) $(CFLAGS) -o $(BUILD)/ggf_checkpoint_replay tools/ggf_checkpoint_replay.c $(LDFLAGS)
 	@echo "✅ ggf_ckpt ready → ./$(BUILD)/ggf_checkpoint_replay <model.gguf> --ckpt-dir <dir>"
+
+ggf_fs: tools/ggf_fs_probe.c core/geo_ggf_fs.h core/geo_ggf_ckpt.h core/geo_ggf_walk.h core/geo_goldberg_file.h | $(BUILD)
+	@echo "▶ BUILD  ggf_fs_probe"
+	$(CC) $(CFLAGS) -o $(BUILD)/ggf_fs_probe tools/ggf_fs_probe.c $(LDFLAGS)
+	@echo "✅ ggf_fs ready → ./$(BUILD)/ggf_fs_probe --mount <ckpt-dir> [--sweep r1 t1 r2 t2]"
 

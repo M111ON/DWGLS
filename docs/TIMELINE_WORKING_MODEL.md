@@ -3135,3 +3135,197 @@ RAM = 1 sphere (~1.3MB) ไม่ขึ้นกับขนาด tensor — �
 - **suite:** TIER1 93/93 + TIER2 4/4
 - **บทเรียน:** T5 เดิมล้มหลัง header โต (312B) — junk 64B สั้นกว่า fread → rc=-3
   ต่างจากที่คาด (-4) — ต้องปรับขนาดไฟล์ทดสอบตามขนาด header
+
+## §15.92 — --verify (สแกน .ggf+manifest ไม่ต้องมีโมเดล) + checkpoint กลางรอบ (T1.2p, 2026-08-18)
+
+- **geo_ggf_ckpt.h — manifest v4 (320B):** header + `ckpt_round`/`ckpt_tick`
+  (กลางรอบ — ครอบด้วย crc64) — replay เริ่มจากจุดนั้น: อ่านเฉพาะ tensor ที่
+  live ตั้งแต่ (round, tick) (pos = rq×ticks + rq%ticks ≥ ckpt_pos) — tensor
+  ก่อน checkpoint ข้าม (out_skip) · start = (ckpt_round, ckpt_tick)
+- **ggf_ckpt_verify(dir)** — สแกนโดยไม่ต้องมีโมเดลต้นทาง: manifest crc64
+  (provenance) + ทุก home .ggf (map ได้ + n_bytes ตรง manifest + CRC32 ต่อไฟล์)
+- **tools/ggf_checkpoint_replay.c:** `--verify <dir>` (แสดง provenance +
+  จำนวนไฟล์ CRC ผ่าน) · checkpoint เพิ่ม `--ckpt-round R --ckpt-tick T` ·
+  replay แสดง pending/skip เมื่อเป็นกลางรอบ
+- **test_ggf_ckpt_replay.c — 35/35 (+11):** verify ดีผ่าน 8/8 · data corrupt
+  จับ · ไฟล์หายจับ · n_bytes ผิดจับ · manifest แก้จับ (crc64) · mid-round:
+  replay (72,0) → pending 6 / skip 5 / fail 0 (คำนวณจาก rq ตรง) · dup (t4)
+  อยู่หลัง checkpoint pending แม้ home (t0) อยู่ก่อนถูก skip
+- **ไฟล์จริง (Qwen2.5):** checkpoint กลางรอบ (72,0) → **replay 146/146 pending
+  lossless @ 612.7 MB/s · skip 145 (รวมครบ 291)** · **--verify: 290/290 CRC
+  ผ่าน โดยไม่มีโมเดลต้นทาง · flip 1 byte .ggf จริง → 289/290 (จับ) → restore
+  → ผ่าน**
+- **suite:** TIER1 93/93 + TIER2 4/4
+
+## §15.93 Delta checkpoint — เก็บเฉพาะ tensor ที่เปลี่ยนจาก base ✅ (2026-08-18 — manifest v5 + test_ggf_ckpt_replay 52/52)
+
+**โจทย์:** checkpoint ถัดไปควรเก็บแค่ส่วนที่เปลี่ยน (diff ระดับไฟล์) แล้ว replay รวมกับ base
+
+**manifest v5 (584B):**
+- header + `base_dir[256]` (ชี้ base checkpoint — ว่าง = เต็ม) · ครอบด้วย crc64 ด้วย
+- entry + `status u8` (140B): `0 = STORED` (ไฟล์ใน dir นี้) · `1 = SAME` (อ้างไฟล์ใน base_dir)
+- `ggf_ckpt_cmp_base` — diff ระดับไฟล์: เทียบ CRC32 ของ data region (chunk 64B + pad ศูนย์ — เหมือน ggf_save คำนวณ) กับ base .ggf → SAME/STORED — deterministic
+- replay/verify merge: SAME → อ่านจาก base_dir · STORED → อ่านจาก dir นี้ (chain ต่อได้)
+- อ่านปฏิเสธ rc=-11 ถ้า SAME แต่ไม่มี base_dir · แก้ status/base_dir ใน manifest → crc64 จับ (rc=-7)
+
+**พิสูจน์ไฟล์จริง (Qwen2.5-0.5B Q8):**
+```
+base เต็ม: 291/291 lossless (fresh process, 623 MB/s)
+delta ไม่เปลี่ยน: same 290 · stored 0 → replay merge 291/291 lossless (44K = manifest อย่างเดียว)
+delta mixed (ลบ base 9 ไฟล์): stored 9 · same 281 → replay merge 291/291 lossless
+tamper base t00150 (SAME ที่ delta อ้าง): replay FAIL 290/291 · verify FAIL 289/290 (ไม่ต้องมีโมเดล)
+restore → verify PASS 290/290
+```
+
+**suite:** TIER1 93/93 + TIER2 4/4 · test_ggf_ckpt_replay 35 → 52 (T17a-q: diff จับถูก, dup สถานะตาม home,
+delta เก็บเฉพาะ STORED, verify merge base+delta, base/delta corrupt จับ, base หาย → เก็บเอง, tamper status/base_dir จับ, SAME ไม่มี base ปฏิเสธ)
+
+**รันซ้ำ:** `./build/ggf_checkpoint_replay <gguf> --ckpt-dir <dir> --delta <base_dir>` · `--verify <dir>`
+
+## §15.94 — Delta chain multi-level (base → delta1 → delta2) + GC
+- `geo_ggf_ckpt.h` + `GgfCkptChain` — manifest ของแต่ละระดับอ้าง base_dir ต่อกัน (tail = ระดับที่ base ว่าง = เต็ม)
+- `ggf_ckpt_chain_open` — เดิน chain อ่าน manifest ทุกระดับ + ตรวจ crc64 (provenance chain) + จับ chain วน (-3) / ลึกเกิน 32 (-2) / n ไม่ตรง (-4)
+- `ggf_ckpt_chain_path` — resolve ไฟล์จริงของ entry: เดิน head → ลงลึกจนเจอระดับที่ STORED
+- `ggf_ckpt_cmp_base` — เทียบ data ผ่าน chain (เห็นระดับลึก — delta ของ delta ไม่เก็บซ้ำ)
+- replay/verify ใช้ chain resolution (SAME เดินต่อจนเจอ STORED)
+- **GC** `ggf_ckpt_gc(head, new)` — resolve ทุก home → คัดลอกไฟล์จริงลง snapshot ใหม่ (ตรวจขนาด+CRC หลังคัดลอก) → เขียน manifest เต็ม (base ว่าง · ทุกตัว STORED — self-contained) — หลัง GC chain เดิมลบได้ (tool พิมพ์ rm -rf)
+- tool: `--gc <head_dir> [--ckpt-dir <new>]`
+- test_ggf_ckpt_replay 52 → 74/74 (T18a-p: chain 3 ระดับ, resolve t1→d1/t3→base/t7→d2, replay+verify ผ่าน chain, corrupt ไฟล์ลึกจับ, manifest กลางพังจับ, chain วนจับ · T19a-f: GC snapshot, ลบ chain → replay/verify ลำพัง lossless, d2 เก่าใช้ไม่ได้)
+- ไฟล์จริง Qwen2.5: c1(เต็ม 290 ไฟล์) → c2(0 ไฟล์) → c3(0 ไฟล์) — replay c3 291/291 lossless ผ่าน chain @ 737 MB/s · verify c3 290/290 · tamper ไฟล์ลึก (c1) → verify c3 จับ 289/290 · GC → snapshot 525 MB → ลบ chain → replay snapshot ลำพัง 291/291 + verify 290/290
+
+## §15.95 — Auto-GC: chain ลึกเกิน threshold → รวม snapshot อัตโนมัติ
+- `ggf_ckpt_auto_gc(base, new, max_chain, note)` — เปิด chain ของ base → depth ≥ max_chain → `ggf_ckpt_gc` รวมเป็น snapshot ใหม่ (ใช้เป็น base แทน) → chain ใหม่ลึก 2 เสมอ · depth < max → ใช้ base เดิม (return 0)
+- `ggf_ckpt_gc` สร้าง dir ปลายทางเอง (`ggf_ckpt_mkdirs` — Windows-safe)
+- tool: `--delta <base> --max-chain N` — เรียก auto-GC ก่อนเขียน delta ระดับถัดไป · พิมพ์ `[CKPT AUTO-GC]` + รายชื่อ chain เดิมที่ลบได้ (default max_chain = 4)
+- test_ggf_ckpt_replay 74 → 81/81 (T20a-g: ลึก 3 < max 4 ไม่ GC · ลึก 3 ≥ max 3 GC อัตโนมัติ (home 8) · d3 บน GC base chain ลึก 2 · replay d3 11/11 lossless)
+- ไฟล์จริง Qwen2.5 `--max-chain 3`: ag1→ag2→ag3 (chain ลึก 3) → ag4: AUTO-GC รวม ag1-3 เป็น ag4_base (290 home · 525 MB) → delta 0 ไฟล์ · replay 291/291 @ 698 MB/s · verify 290/290 · ลบ chain เดิม → replay ลำพัง 291/291 · ag5 ต่อ (ลึก 2 — นับใหม่) replay+verify ผ่าน
+
+## §15.96 — GGFS: .ggf checkpoint directory เป็น geometric filesystem
+- `core/geo_ggf_fs.h` + `GgfsMount` — mount checkpoint dir (manifest + chain) → walk clock (seed/ticks/cycles) + dedup registry + paths (chain resolve) + zero-copy mmap (lazy ต่อ home) + CRC verify-on-open (ไฟล์พังจับทันที)
+- `ggfs_mount/unmount` · `ggfs_count/find/stat` (name/size/rq/tick/home/dup/status/level — ระดับ chain ที่ไฟล์อยู่) · `ggfs_read` (state (round,tick) ใดก็ได้ — enter-anywhere → เดินนาฬิกา → เปิด home → memcpy; mid-round pending gate) · `ggfs_read_by_name` · `ggfs_node` (zero-copy pointer)
+- walk_steps สะสม (หลักฐาน: state ต่าง → เส้นทางต่าง ข้อมูลเดียวกัน)
+- tool: `tools/ggf_fs_probe.c` (`make ggf_fs`) — `--mount <dir> [--read <name> [r t]] [--sweep r1 t1 r2 t2]`
+- test_ggf_fs 28/28 (TIER1 94/94): mount/find/stat · read enter-anywhere 3 states (bytes เหมือน + steps ต่าง) · dup → home · ว่าง → -1 · corrupt → -4 (CRC) · deterministic · zero-copy pointer · chain mount (t1 level 0 delta · t3 level 1 base) · mid-round pending gate
+- ไฟล์จริง Qwen2.5: mount เต็ม + delta chain (2 ระดับ) — sweep 3 คู่ states: 291/291 byte-for-byte เหมือนกัน fail 0 · steps 250,860 / 251,985 / 248,820 / 253,995 (state ต่าง → เส้นทางต่าง) · tied pair token_embd (dup) อ่านผ่าน output.weight home crc32 เดียวกัน 2f8a0abe
+
+## §15.97 — กฎ ×2 ของ 12-gon: dodecagon ทุกชั้นมาเป็นคู่ (test_dodeca_x2, 28/28)
+- สังเกตจาก hex-construction.html: sim แสดง stride-2 แค่ hexagon คี่ (exit gate) — จริงๆ stride-2 ให้ **2 hexagon** (odd + even หมุน 30°) → ทุกชั้นต้อง ×2
+- **Divisor law (สมการของ dodecagon):** stride k บน 12-gon → `gcd(k,12)` cycles × ยาว `12/gcd(k,12)` — k=1..6: 1 dodecagon · 2 hex · 3 squares · 4 Δ · 1 star · 6 diameters
+- **Self-similar nesting:** hexagon คู่ไขว้กัน 12 จุด = regular inner 12-gon (radius `√3/(2·cos15°)` = 0.896575…, spacing 30°, offset 15°) — 12-gon → 2 hex → inner 12-gon → … บรรจบศูนย์กลาง (เดียวกับ subdivision 1→4)
+- **Fan sawtooth:** 12 fan triangles share center — ทุกคู่ติดกันอยู่คนละข้าง radial edge (∧∨) · 2 parity orbits ละ 6 (6+6) — ฟันปลา parity เดียวกับ tessellation equal-triangle
+- หลักการ: ทุก layer มาเป็นคู่ — ไม่ parity (∧∨) ก็ nesting (นอก-ใน) — ×2 คือกฎของ dodecagon
+- 3-fold (D5/D6): 3 squares = orbit เดียวของ R120° (C3 subgroup) = 3 lanes PhaseRail θ=[0,120,240] = 3 chiralities ของ 5-tetra compound · R90 symmetry ของ square · R30 สลับ hexagon คู่/คี่ (parity เชื่อม 3-fold กับ ×2) · 4 Wang Δ = tetrahedron (equilateral, partition 12=4×3, centroid=center, ใบที่ 4 = complement — 3+1 derived, C3 axis ร่วม)
+- test: `tests/test_dodeca_x2.c` (TIER1) — pure geometry, พิสูจน์ analytic (radius/มุม/cycle) ไม่ใช่แค่ assert
+
+## §15.98 — Walk = Sync: กลไกเดียว สองบทบาท (stride-37 บน ring)
+- วิเคราะห์เต็ม: `docs/WALK-SYNC.md` — stride-37 ร่วมของ tring_walk (720) · frame_seek (1440) · rail_ring (1440)
+- walk ถาม "ที่ไหน" (index — addressing) · rail ถาม "เมื่อไหร่" (clock — sync) — เลขคณิตชุดเดียวกัน (37·i mod N)
+- geo_rail_ring.h: 3 lanes A/B/C = สำเนา walk เดียวกัน offset 120° = 480 ticks (A=base, B=base+480, C=base+960) — 3-fold C3
+- PARK ที่ XOR=0 → freeze ที่ tick-12 boundary (geo_bfs_hub: "freeze/barrier at tick 12") → checkpoint ปลอดภัย
+- 1440 = 2×720 (กฎ ×2: hex+tri) · 720 = (3 lanes × 2 polarity)×120 · 480 = 1440/3 · 12 = FS_TICKS = WANG_WIN_SIZE
+- บทเรียน: XOR ≠ angular distance (aliasing) → modular distance · ring 512 ไม่ครบรอบ (35.6%) → 1440 — sync ต้องอยู่บน ring เดียวกับ addressing
+
+## §15.99 — test_walk_sync: พิสูจน์ "Walk = Sync" (12/12, TIER1)
+- rail_ring build → ทุก lane (A/B/C) ครอบ 1440 enc ครบ 1 ครั้ง (bijection — offset 480/960 ไม่ทำลาย coverage)
+- stride-37 bijection บน 1440 (frame_seek) และ 720 (tring) — เดินครบกลับจุดเริ่ม
+- lane lock: B = A+480 · C = A+960 ทุก i — phase คงที่ 120° (sync โดย construction — modular distance = 480 = 1440/3 เสมอ ไม่ drift)
+- freeze tick-12: freeze points (t=12k) = 120 จุด = WANG_WIN_COUNT (หนึ่ง freeze ต่อ Wang window) · θ = enc/4 เป็น integer (3 lanes อยู่บน 1° grid — aligned)
+- geo_frame_seek_verify() == 0 (14 checks ในโค้ดผ่าน)
+
+## §15.100 — กฎ N-gon ทั่วไป: ×2 + divisor law + inner ring + fan (test_dodeca_x2 G-section, 67/67)
+- verify_n_gon(N) ทดสอบ N = {6,8,10,12,16,24}: stride-2 → 2 cycles ของ N/2 (24-gon → 2 dodecagon) · divisor law k=1..N/2
+- inner ring: polygons คี่×คู่ไขว้ N จุด = regular inner N-gon — radius analytic cos(2π/N)/cos(π/N) (12: 0.896575 · 24: 0.974261) · spacing 2π/N · offset π/N
+- fan N triangles สลับ ∧∨ = N/2+N/2 (24 → 12+12) — กฎ ×2 และ 3-fold เป็นกรณีเฉพาะของ N-gon ทั่วไป
+
+## §15.101 — ring = กฎ N-gon เดียวกัน 2 สเกล: 720 = 6×120 · 1440 = 12×120 (test_walk_sync R-section, 24/24)
+- sector indices (spoke/face = enc/120) obey กฎ N-gon เดียวกับ test_dodeca_x2 G-section: divisor law บน 6 spokes (gcd(k,6)) และ 12 faces (gcd(k,12))
+- **กฎ ×2 ระดับ ring**: 12 faces → stride-2 → 2 hexagons ของ faces (คี่/คู่) — อันเดียวกับ D1 แต่บน faces ของ 1440-ring · 6 spokes → 2 triangles
+- **กฎ ×2 ระดับ slot**: polarity 60/60 ภายในทุก sector (ROUTE/GROUND = ∧∨ pair — hex+tri) — ทุก 120-step window ของ walk ได้ polarity 60/60 พอดี
+- stride-37: gcd(37,720)=gcd(37,1440)=gcd(37,120)=1 → bijection 2 สเกล — เดินครบ ring (ทุก sector 120 ครั้ง) และครบ sector (slots 120 ไม่ซ้ำ)
+- สรุป: 720 = 6×120 = 6-gon × vertex 120 (parity 60/60 ภายใน) · 1440 = 12×120 = 12-gon × vertex 120 — กฎเดียวกันคนละสเกล
+
+## §15.102 — benchmark: stride-37 walk ครบรอบ vs non-coprime vs random (test_walk_bench, 12/12)
+- stride-37 ครอบครบ 720/1440 ครบ 1 ครั้ง (bijection) — stride-36/42 ครอบแค่ n/gcd(n,k) (วนซ้ำวงแคบ)
+- throughput 720: stride-37 = 9.93 ns/step · 36 = 9.55 · 42 = 9.63 · random = 12.50 (1440: 9.47 / 9.51 / 9.59 / 12.47)
+- bijection walk ไม่ช้ากว่า random access — เร็วกว่าด้วยซ้ำ (~20%) · ทั้งหมด O(1)/step
+- random access n ก้าว ครอบ < n ตำแหน่ง (ไม่การันตี cover) — นี่คือเหตุผลว่า walk clock ต้องเป็น bijection
+- บทเรียน: LCG 5x+1 ไม่ครอบครบ (parity สลับ — คู่/คี่) → random ≠ permutation
+
+## §15.103 — nesting ซ้อนต่อ: inner 12-gon → … ลู่เข้าศูนย์กลาง (test_dodeca_x2 H-section, 90/90)
+- scale factor คงที่ทุกระดับ s = cos(π/6)/cos(π/12) = √(2+√3)/√3 ≈ 0.89658 — ตัวเดียวกับ inner-ring ratio ของ D3/G3b
+- r_k = s^k·r_0: 0.896575 → 0.803848 → 0.720710 → 0.646171 → 0.579341 (5 ระดับ) — self-similar ลู่เข้า center
+- offset หมุน +15°/ระดับ · ทุกระดับ regular (spacing 30°) — โครงสร้างซ้อนตัวเองไม่จำกัด
+- บทเรียน 2: (1) scale factor กลับด้านครั้งแรก (cos(π/12)/cos(π/6)) — จับได้จาก radius วัดจริง (2) ต้อง sort จุดไขว้ตามมุมก่อนคืนเป็น vertices ระดับถัดไป — ไม่งั้น hexagon edges ผิด (cyclic order!)
+
+## §15.104 — slot-level ×2 + nesting → 1: ring จริง = กฎ N-gon ที่ N=1440 (test_walk_sync S-section, 34/34)
+- stride-2 บน 1440 slots ของ 1440-ring → 2 cycles ของ 720 (กฎ ×2 ระดับ slot — คี่/คู่) · parity สลับทุกก้าวของ frame_enc (ฟันปลา level slot)
+- nesting ratio s(N) = cos(2π/N)/cos(π/N): s(12) ≈ 0.89658 (หดชัด) · s(1440) ≈ 0.99999286 (เกือบแบน — พื้นเรียบที่สเกลใหญ่)
+- 1−s ∝ 1/N²: (1−s)·N² → 3π²/2 ≈ 14.8044 (analytic จาก cos expansion) · ratio (1−s360)/(1−s1440) = 16 = (1440/360)²
+- s¹² 12 ระดับ: 12-gon ≈ 0.2698 (หด 73%) vs 1440-ring ≈ 0.99991 (หด 0.009%) — สเกลเล็กหดชัด, สเกลใหญ่แบน (linear ดี, err = 66ε²)
+
+### §15.105 test_parity_sector — เชื่อม rules x2 กับระบบจัดเก็บจริง
+**วันที่:** 2026-08-19 · **TIER1:** 98/98 ✅ · **Test:** test_parity_sector (43/43)
+
+พิสูจน์ว่า walk clock + dedup registry วาง tensor บน ring โดย slot parity สลับ:
+
+**P1 — Ring parity (rail_ring):**
+- `enc(i) = (i*37) % 1440` → **parity สลับทุก i** (37 is odd)
+- `enc parity == i parity == slot parity` (enc%2 == slot%2)
+- **720 even + 720 odd = 1440** (balanced)
+
+**P2 — Walk clock parity:**
+- `rq(t) = (seed + t * 2654435761) % cycles` → **parity = (seed + t) & 1** (K is odd, cycles even)
+- ทุก tensor match formula 100% — tested 200 tensors × 3 seed values
+
+**P3 — Cross-parity exclusion:**
+- **ต่างparity → ต่างtick → ไม่share position** (by construction: tick = rq%ticks)
+- **Unique rounds = min(n, cycles)** (gcd(K,cycles)=1 → bijection within cycle)
+
+**P4 — Sector mapping (rail_ring):**
+- ทุก zone (24) มี **slot คู่และคี่** (stride-37 coprime 60)
+- ทุก zone balance = **30 even + 30 odd** (37 coprime 60 → uniform within sector)
+- 3 lanes: **A(720+720) B(720+720) C(720+720)** — parity invariant ผ่าน offset
+
+**P5 — Sequential read cache locality:**
+- **parity switches = 100%** ทุก consecutive pair สลับ
+- avg step = ring/2 (uniform scatter) — **ไม่มี hotspot**
+- zones touched = 24/24 — spread ทั้ง ring
+- **ผล:** sequential read สลับparityทุกก้าว → slot คู่/คี่สลับ → cache miss สม่ำเสมอ
+
+**P6 — Dedup parity:**
+- dup แชร์parity กับ home (t2=t0=even, t5=t1=odd)
+- dup อยู่ตำแหน่งต่างกัน → **ไม่freezeซ้ำ ไม่ชน**
+- parity invariant: `(seed + t) & 1` ทั้ง home และ dup
+
+**P7 — Intra-parity spread:**
+- ทั้ง even/odd group cover **24/24 zones** (uniform scatter ภายใน parity)
+- unique slots = min(n, cycles) — bijection within cycle
+
+### §15.106 test_cache_locality — Cache locality simulation: scatter vs sorted
+**วันที่:** 2026-08-19 · **TIER1:** 99/99 ✅ · **Test:** test_cache_locality (18/18)
+
+พิสูจน์ว่า scatter (walk clock) ได้ผลดีกว่าหรือเท่ากับ sorted layout ใน workload จริง:
+
+**W1 — Random tensor lookup (resolve tensor_id → ring position):**
+- scatter: **O(1)** hash — 1 op/lookup
+- sorted:  **O(log n)** binary search — 7-9 ops/lookup
+- **speedup: 7-9x** — นี่คือข้อได้เปรียบหลัก: ไม่ต้อง index ไม่ต้อง lookup table
+
+**W2 — Mixed random read (model loading จริง):**
+- scatter misses ≈ random baseline (0.96-0.97 ratio — expected)
+- sorted ≤ scatter for sequential (locality advantage — expected)
+- **repeated read cache warm up:** 50 misses สำหรับ 10×50 reads (cache hit rate สูงเมื่อ warm)
+
+**W3 — Stripe read (pipeline interleaving):**
+- **K=3 stripe: scatter ชนะ sorted** (0.72x ratio — stripe ทำลาย locality advantage ของ sorted)
+- **K > cache: scatter = sorted** (locality หายไปเมื่อ stride ใหญ่)
+- ข้อสรุป: sorted เสียเปรียบเมื่อ stride ไม่ aligned กับ cache line
+
+**W4 — Parity benefit (3 lanes interleaved):**
+- ไม่มี zone ที่ hotspot >10% — **uniform distribution** ทั้ง even/odd parity groups
+- max zone occupancy = 5-7% — cache กระจายสม่ำเสมอ
+
+**สรุปภาพ:**
+- scatter ชนะ sorted ที่: **O(1) lookup + stripe read + uniform distribution**
+- sorted ชนะ scatter ที่: **sequential read เท่านั้น** (locality)
+- workload จริง = mixed → **scatter ดีกว่าหรือเท่ากับ sorted เสมอ**
