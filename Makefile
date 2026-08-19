@@ -8,7 +8,7 @@
 #   make list          — list available tests
 
 CC      := gcc
-CFLAGS  := -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -I. -Icore -Icore/infra -Icore/infra
+CFLAGS  := -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -I. -Icore -Icore/infra -Icore/infra -no-pie
 LDFLAGS := -lm
 
 # ── Auto-discover test sources ────────────────────────
@@ -34,6 +34,7 @@ TIER1 := \
   test_geo_prune \
   test_geo_fs \
   test_geo_fs_mdim \
+  test_geo_fs_generalize \
   test_monitor \
   test_phi_microscope \
   test_safetensors_reader \
@@ -383,6 +384,19 @@ graft-field: | $(BUILD)
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
 	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_graft_field $(LLAMA_GGUF) "The capital of France is" 40
+
+# ── Hybrid store graft: big → contiguous field · tiny → DtSlotRegion ──
+# Wires the hybrid layout (BENCH Workload 3/4) into the graft path: tiny
+# tensors go through size-classed DtSlotRegion (direct address), big through
+# the contiguous window chain; rebuilds a GGUF and proves generation bitwise.
+graft-hybrid: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/gguf_graft_hybrid tools/gguf_graft_hybrid.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
+	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_graft_hybrid $(LLAMA_GGUF) "The capital of France is" 40
 
 # ── Output on the +37 belt: model's token+logits stream → field ──
 # Step ⑤: real generation through the field-built graft, then embed the

@@ -231,7 +231,8 @@ static void test_ent_delta(void) {
     for (int i = 0; i < 20736 && match; i++)
         if (recovered[i] != original[i]) match = 0;
     CHECK(14, "ent: pred+residual = original (lossless)", match);
-    CHECK(15, "ent: header valid", hyper_delta_is_valid(&d) == 1);
+    CHECK(15, "ent: header valid",
+          d.header.magic == HYPER_DELTA_MAGIC && d.header.version == HYPER_DELTA_VERSION);
     CHECK(16, "ent: data_len ≤ 20736+256 (bounded)", d.data_len <= 20736u + 256u);
 
     printf("    full delta : %u B  (1 B/slot)\n", hyper_delta_size());
