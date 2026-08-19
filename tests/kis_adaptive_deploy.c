@@ -46,12 +46,19 @@ static void test_T1(void)
 
 /* ══════════════════════════════════════════════════════════════════
    T2: Frame count per tier
-   tier 0→1, tier 1→3, tier 2→7, tier 3→27
+   Design derivation (independent of implementation):
+     frame_count = 2·span + 1 over representative Fibonacci spans {0,1,3,13}
+     (span ladder FIB = {0,1,1,2,3,5,8,13,21,34,55,89}; 13 = FIB[7])
+     capacity = frame_count × 12 edges × 64 floats:
+       1×12×64 = 768 · 3×12×64 = 2304 · 7×12×64 = 5376 · 27×12×64 = 20736
+     ⇒ tier 3 MUST exactly fill the sacred window 20736 (144²) — the anchor
+       that rules out 2ⁿ−1 (15×768 = 11520 ≠ 20736)
    ══════════════════════════════════════════════════════════════════ */
 static void test_T2(void)
 {
     TEST(2, "Frame count per tier");
-    uint8_t expected[] = {1, 3, 7, 27};
+    uint8_t expected[] = {1, 3, 7, 27};              /* = 2×{0,1,3,13}+1 */
+    uint32_t expected_cap[] = {768, 2304, 5376, 20736}; /* fc×12×64 */
     for (uint8_t tier = 0; tier < 4; tier++) {
         uint8_t fc = adaptive_frame_count(tier);
         if (fc != expected[tier]) {
@@ -61,7 +68,18 @@ static void test_T2(void)
             FAIL(buf);
             return;
         }
+        /* Capacity invariant: fc × 12 × 64 == design capacity (hand table) */
+        uint32_t cap = (uint32_t)fc * ADPT_EDGES_PER_FRAME * ADPT_BLOCK_WORDS;
+        if (cap != expected_cap[tier]) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "tier %u capacity %u, expected %u",
+                     tier, cap, expected_cap[tier]);
+            FAIL(buf);
+            return;
+        }
     }
+    /* Full-window invariant: tier-3 capacity must equal the sacred 20736 */
+    if (expected_cap[3] != 20736u) { FAIL("tier-3 capacity != 20736"); return; }
     PASS();
 }
 
@@ -135,6 +153,8 @@ static void test_T5(void)
     if (rc != 0) { FAIL("write failed"); return; }
     if (as.tier != 1)        { FAIL("tier != 1"); return; }
     if (as.frame_count != 3) { FAIL("frame_count != 3"); return; }
+    /* block_count = frame_count × 12 edges (independent formula) */
+    if (as.block_count != 3 * ADPT_EDGES_PER_FRAME) { FAIL("block_count != 36"); return; }
     PASS();
 }
 
@@ -155,6 +175,8 @@ static void test_T6(void)
     if (rc != 0) { FAIL("write failed"); return; }
     if (as.tier != 2)        { FAIL("tier != 2"); return; }
     if (as.frame_count != 7) { FAIL("frame_count != 7"); return; }
+    /* block_count = frame_count × 12 edges (independent formula) */
+    if (as.block_count != 7 * ADPT_EDGES_PER_FRAME) { FAIL("block_count != 84"); return; }
     PASS();
 }
 
@@ -175,6 +197,10 @@ static void test_T7(void)
     if (rc != 0) { FAIL("write failed"); return; }
     if (as.tier != 3)         { FAIL("tier != 3"); return; }
     if (as.frame_count != 27) { FAIL("frame_count != 27"); return; }
+    /* block_count = frame_count × 12 edges (independent formula) */
+    if (as.block_count != 27 * ADPT_EDGES_PER_FRAME) { FAIL("block_count != 324"); return; }
+    /* tier-3 capacity = 27 × 12 × 64 = 20736 = full sacred window */
+    if (as.block_count * ADPT_BLOCK_WORDS != 20736u) { FAIL("tier-3 not full window"); return; }
     PASS();
 }
 

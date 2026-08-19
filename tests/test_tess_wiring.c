@@ -48,7 +48,9 @@ int main(void) {
             uint32_t base, len, stride;
             tess_read_index(index_frame, c, &base, &len, &stride);
             
-            uint32_t expected_base = tess_to_flat(0, c, 0);
+            /* tess_to_flat(0,c,0) = (0×1152 + c×144 + 0) % 20736 = c×144
+             * written by hand — not derived from the function under test */
+            uint32_t expected_base = c * 144u;
             if (base != expected_base || len != 144 || stride != 37) {
                 printf("  ❌ Index read failed: cube=%u base=%u (expected %u) len=%u stride=%u\n",
                        c, base, expected_base, len, stride);

@@ -132,7 +132,9 @@ int main(void)
         CHECK(4, "5 hops = +185 (mod 1440)",
               h == (uint16_t)((frame_enc(500) + 5*FRAME_STRIDE) % FRAME_CYCLE));
         h = bfs_anchor_hop(999, 1440);
-        CHECK(4, "1440 hops = full cycle = same frame", h == frame_enc(999));
+        /* 999×37 mod 1440 = 963 — hand-computed; 1440 hops ≡ 0 (mod 1440)
+         * → full cycle returns to the start enc (independent oracle) */
+        CHECK(4, "1440 hops = full cycle = same frame", h == 963);
     }
 
     /* ── T5: anchor read lossless ── */

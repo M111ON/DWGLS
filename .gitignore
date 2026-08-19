@@ -46,3 +46,14 @@ tests/test_verify.c
 
 # Tooling state (client metadata — not project code)
 .freebuff/
+
+# Playwright test artifacts
+.playwright-mcp/
+
+# Wrangler local cache (also ignored globally via core.excludesFile)
+.wrangler/
+
+# Cloud Memory worker — secrets & local state (source itself is committed)
+cloud-memory/.api_key
+cloud-memory/.wrangler/
+cloud-memory/**/__pycache__/

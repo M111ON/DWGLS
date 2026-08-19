@@ -1,0 +1,15 @@
+name = "cloud-memory-worker"
+main = "src/index.ts"
+compatibility_date = "2026-08-18"
+
+[[d1_databases]]
+binding = "cloud_memory_db"
+database_name = "cloud-memory-db"
+database_id = "6f5eec11-3035-4774-8e08-98abc856ef13"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "cloud-memory-vectors"
+
+[ai]
+binding = "AI"

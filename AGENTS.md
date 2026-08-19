@@ -139,6 +139,18 @@ DWGLS/
 - `geo_codec_verify()` = binary truth
 - Ratio < 1.0 must prove via decode (never trust encode-only)
 
+### Test Integrity (ห้าม expected values แบบ circular)
+- **expected ต้องมาจาก oracle อิสระเท่านั้น**: spec / คณิตศาสตร์ / ข้อมูลต้นทาง / reference implementation
+  — ห้ามมาจากฟังก์ชันที่กำลังเทส (f(x) == f(x) = tautology, เทสไม่มีทาง fail)
+- **ห้าม "run แล้วแปะ output เป็น expected"** — characterization test แบบนี้ freeze bug ให้เข้ากล่อง
+  (ตัวเลข {1,3,7,27} ที่ copy จาก implementation constant มาเป็น expected = ผิดแบบเดียวกัน)
+- **ห้าม copy comment/spec จาก implementation ไปใส่ใน test** — spec ต้องมาก่อน code ไม่ใช่เอามาจาก code
+- **ทุกเทสต้อง fail ได้จริง**: mutation check — เปลี่ยน logic 1 บรรทัดใน core → เทสต้องแดง
+- เทส wrapper ที่เทียบ `adapter(x)` กับ `core(x)` ที่ adapter เรียกข้างใน ต้องมี assertion อิสระ
+  ของ core ด้วย (ตรวจ formula จริง เช่น bijection/permutation หรือค่า hand-computed ที่รู้แล้ว)
+- ระวังกับดัก: เทสที่ตรวจแค่ "ค่าเดิมถูก persist กลับมาเหมือนเดิม" (เช่น expected = frame_enc(...)
+  เทียบกับ field ที่ set ด้วย frame_enc เดียวกัน) พิสูจน์ได้แค่ wiring ไม่ได้พิสูจน์ formula
+
 ### Design Principles (Timeline-First)
 - เลือกใช้ **timeline-first**: int, base-2 scale, ไม่มี 0, ทุกสถานะ deterministic + replay ได้
 - hyperbolic/residual = เก็บส่วนต่างที่ explicit; geometry = template เท่านั้น (ไม่ใช่ตัวคำนวณ)

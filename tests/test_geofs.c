@@ -541,8 +541,10 @@ static void test_kis_timeline(void) {
     GeosInode *inode = geos_summon(&v, "timeline.dat", 32, data, 0, 0, 0);
     ASSERT(inode != NULL, "summon should succeed");
 
-    /* created_kis_enc should be frame_enc(inode_count-1) */
-    uint64_t expected_enc = frame_enc(v.inode_count - 1);
+    /* created_kis_enc = frame_enc(inode_count-1) — independent formula written
+     * by hand: frame_enc(t) = (t × 37) mod 1440 (FRAME_STRIDE=37, FRAME_CYCLE=1440).
+     * NOT derived from the implementation under test. */
+    uint64_t expected_enc = (uint64_t)(((v.inode_count - 1) * 37u) % 1440u);
     ASSERT(inode->created_kis_enc == expected_enc,
            "created_kis_enc should match frame_enc");
 

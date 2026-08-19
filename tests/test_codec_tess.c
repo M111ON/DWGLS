@@ -157,18 +157,45 @@ static void test_verify_corruption(void)
     PASS();
 }
 
-/* ── T6: resolve() matches stride_scatter ───────────────────── */
+/* ── T6: resolve() matches stride-37 scatter formula ────────── */
 static void test_resolve(void)
 {
-    TEST("resolve() = stride_scatter for all 20736 slots");
+    TEST("resolve() = (slot×37) mod 20736 for all slots");
     DWGLS_CodecCtx ctx = dwgls_ctx_default(65536);
+    /* Independent oracle: scatter formula written by hand — (w×37) mod 20736.
+     * 37 coprime to 20736 → permutation (design spec: stride-37, AGENTS.md). */
     for (uint32_t slot = 0; slot < TESS_TOTAL_SLOTS; slot++) {
         uint32_t r = DWGLS_CODEC_TESS.resolve(slot, &ctx);
-        uint32_t expected = tess_stride_scatter(slot);
+        uint32_t expected = (slot * 37u) % 20736u;
         if (r != expected) {
             FAIL("mismatch at slot"); return;
         }
     }
+    PASS();
+}
+
+/* ── T6b: scatter is a bijection (permutation of 20736 cells) ── */
+static void test_scatter_bijection(void)
+{
+    TEST("stride-37 scatter is a bijection (all unique)");
+    static uint8_t seen[20736];
+    memset(seen, 0, sizeof(seen));
+    for (uint32_t slot = 0; slot < TESS_TOTAL_SLOTS; slot++) {
+        uint32_t c = tess_stride_scatter(slot);
+        if (c >= 20736u) { FAIL("cell out of range"); return; }
+        if (seen[c]) { FAIL("duplicate cell — not a permutation"); return; }
+        seen[c] = 1;
+    }
+    for (uint32_t c = 0; c < TESS_TOTAL_SLOTS; c++) {
+        if (!seen[c]) { FAIL("missing cell — not a permutation"); return; }
+    }
+    /* Hand-computed edge values: scatter(k) = k×37 mod 20736
+     *  scatter(0)=0 · scatter(1)=37 · scatter(2)=74
+     *  scatter(20735) = 20735×37 = 767195 = 37×20736 − 37 → 20699 */
+    if (tess_stride_scatter(0)      != 0)     { FAIL("scatter(0)"); return; }
+    if (tess_stride_scatter(1)      != 37)    { FAIL("scatter(1)"); return; }
+    if (tess_stride_scatter(2)      != 74)    { FAIL("scatter(2)"); return; }
+    if (tess_stride_scatter(20735)  != 20699) { FAIL("scatter(20735)"); return; }
     PASS();
 }
 
@@ -209,15 +236,38 @@ static void test_shell_header_roundtrip(void)
     PASS();
 }
 
-/* ── T9: resolve_octant = scatter(resolve_octant_raw) ──────── */
+/* ── T9: resolve_octant — independent mirror properties ─────── */
 static void test_resolve_octant(void)
 {
-    TEST("resolve_octant = scatter(resolve_octant_raw)");
+    TEST("resolve_octant: octant-0 identity + mirror involution");
     TESS_Header h;
     tess_header_init(&h, TESS_GGML_F32, TESS_CELL_F32);
 
-    /* Test a sample of slots and all octants */
     uint32_t slots[] = {0, 1, 100, 6911, 6912, 13823, 13824, 20735};
+
+    /* (a) Octant 0 = no mirror (design spec: bit0/1/2 = X/Y/Z sign) →
+     *     resolve_octant(slot, 0) = scatter(slot) = (slot×37) mod 20736 — hand formula */
+    for (int si = 0; si < 8; si++) {
+        uint32_t actual = tess_codec_resolve_octant(slots[si], 0, &h);
+        uint32_t expected = (slots[si] * 37u) % 20736u;
+        if (actual != expected) { FAIL("octant-0 not identity"); return; }
+    }
+
+    /* (b) Mirror is an involution: m² = id in raw space.
+     *     gather(cell) = raw slot; so gather(resolve_octant(s,o)) = m(s), and
+     *     resolve_octant(m(s), o) must equal scatter(s) = (s×37) mod 20736 */
+    for (int si = 0; si < 8; si++) {
+        for (uint8_t oct = 0; oct < 8; oct++) {
+            uint32_t c1 = tess_codec_resolve_octant(slots[si], oct, &h);
+            uint32_t m = tess_stride_gather(c1);
+            uint32_t c2 = tess_codec_resolve_octant(m, oct, &h);
+            uint32_t expected = (slots[si] * 37u) % 20736u;
+            if (c2 != expected) { FAIL("mirror not involutive"); return; }
+        }
+    }
+
+    /* (c) Wiring consistency: codec adapter == wiring layer (regression only,
+     *     formula correctness is covered by (a)+(b)) */
     for (int si = 0; si < 8; si++) {
         for (uint8_t oct = 0; oct < 8; oct++) {
             uint32_t expected = tess_stride_scatter(
@@ -256,6 +306,7 @@ int main(void)
     test_payload_size();
     test_verify_corruption();
     test_resolve();
+    test_scatter_bijection();
     test_encode_overflow();
     test_shell_header_roundtrip();
     test_resolve_octant();

@@ -110,8 +110,11 @@ static void address_identity(void) {
           bond_of(7, 3, 5) != bond_of(7, 9, 5));
     CHECK(6, "to_scale ต่าง → bond เท่าเดิม (telescope: 1 data, หลาย route)",
           bond_of(7, 3, 5) == bond_of(7, 3, 140));
+    /* bond_of(21,100,7) hand-computed from spec: rdh_addr = block×256+from
+     *   a = 21×256+100 = 5476 → bond = (5477) ^ (5477<<24) = 91888817509
+     *   (independent oracle — NOT derived from the implementation) */
     CHECK(7, "deterministic: (block, round, to) เดิม → bond เดิมเสมอ",
-          bond_of(21, 100, 7) == bond_of(21, 100, 7) &&
+          bond_of(21, 100, 7) == UINT64_C(91888817509) &&
           bond_of(21, 100, 7) != bond_of(21, 101, 7));
 }
 
