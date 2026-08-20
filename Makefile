@@ -100,6 +100,7 @@ TIER1 := \
   test_fibo_walk \
   test_fibo_dual_rail \
   test_geo_hyperbolic \
+  test_geo_hyper_fs \
   test_rdh_addr \
   test_tied_dedup \
   test_goldberg_decagram \

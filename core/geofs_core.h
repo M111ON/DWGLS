@@ -39,6 +39,7 @@
 #include "geo_kis_container.h"
 #include "geo_fs_voronoi.h"
 #include "geo_ghost_lift.h"   /* ghost_read_rule — §15.73: อ่านผ่านกฎที่ train มา */
+#include "geo_hyperbolic_walk.h" /* HWRouter — deterministic centroid walk */
 #include "infra/gear_lock.h"
 #include "infra/fibo_spine.h"
 
@@ -99,6 +100,7 @@ static inline GeosAddr geos_addr_make(uint8_t gen, uint8_t face, uint16_t slot) 
 #define GEOS_FLAG_MMAP       0x04u
 #define GEOS_FLAG_FROZEN     0x08u
 #define GEOS_FLAG_PINNED     0x10u
+#define GEOS_FLAG_HYPER      0x20u  /* block addresses = centroid walk (MAP) */
 
 typedef struct {
     GeosAddr   addr;
@@ -112,6 +114,7 @@ typedef struct {
     uint8_t    tier;
     uint8_t    flags;
     uint8_t    depth;
+    uint8_t    hyper_axis;  /* GEOS_FLAG_HYPER: which stride walks the blocks */
     uint32_t   parent_addr;
     uint64_t   created_kis_enc;
     uint64_t   accessed_kis_enc;
@@ -169,6 +172,16 @@ typedef struct {
     uint32_t    walk_tick;      /* tick ปัจจุบัน (0..11)                */
     uint64_t    walk_steps;     /* สะสม steps ที่เดิน (หลักฐาน walk)   */
 } GeosVolume;
+
+/* ── Forward declarations (GEOS_HYPER section lives below) ───────── */
+static inline GeosInode* geos_hyper_place(GeosVolume *v, const char *name,
+                                           uint32_t size_bytes, const uint8_t *data,
+                                           uint32_t seed, uint32_t axis);
+static inline int geos_hyper_read(GeosVolume *v, const char *name,
+                                  uint8_t *buf, uint32_t buf_size);
+static inline const uint8_t* geos_hyper_project_block(GeosVolume *v,
+                                                      const char *name, uint32_t b);
+static inline void _geos_free_inode_blocks(GeosVolume *v, GeosInode *in);
 
 /* ═══════════════════════════════════════════════════════════
    INIT / FREE
@@ -241,6 +254,35 @@ static inline void _geos_freelist_merge(GeosFreeList *fl) {
         }
     }
     fl->count = write + 1;
+}
+
+/* ── Internal: remove a single scattered address from free list ──── */
+/* The centroid walk scatters blocks (stride > 1); a hyper file's
+ * addresses are not contiguous, so each reservation splits a range.
+ * No-op if the address is not free (already allocated). */
+
+static inline void _geos_freelist_remove_addr(GeosFreeList *fl, uint32_t addr) {
+    for (uint16_t i = 0; i < fl->count; i++) {
+        GeosFreeRange *r = &fl->ranges[i];
+        if (addr < r->start || addr >= r->start + r->count) continue;
+        uint32_t before = addr - r->start;
+        uint32_t after  = (r->start + r->count) - addr - 1u;
+        if (before == 0u && after == 0u) {
+            for (uint16_t j = i; j < fl->count - 1u; j++)
+                fl->ranges[j] = fl->ranges[j + 1u];
+            fl->count--;
+        } else if (before == 0u) {
+            r->start++; r->count--;
+        } else if (after == 0u) {
+            r->count--;
+        } else {
+            uint32_t second_start = addr + 1u;
+            uint32_t second_count = after;
+            r->count = before;
+            _geos_freelist_insert(fl, second_start, second_count);
+        }
+        return;
+    }
 }
 
 /* ── Internal: mark bitmap for range ──────────────────────── */
@@ -395,6 +437,8 @@ static inline int geos_read(GeosVolume *v, const char *name,
                              uint8_t *buf, uint32_t buf_size) {
     GeosInode *inode = geos_find(v, name);
     if (!inode || !buf) return -1;
+    if (inode->flags & GEOS_FLAG_HYPER)
+        return geos_hyper_read(v, name, buf, buf_size);
 
     uint32_t bytes = (buf_size < inode->size_bytes) ? buf_size : inode->size_bytes;
 
@@ -417,7 +461,7 @@ static inline int geos_delete(GeosVolume *v, const char *name) {
 
     for (uint16_t i = 0; i < v->inode_count; i++) {
         if (strcmp(v->inodes[i].name, name) == 0) {
-            geos_free_blocks(v, v->inodes[i].block_start, v->inodes[i].block_count);
+            _geos_free_inode_blocks(v, &v->inodes[i]);
             if (i < v->inode_count - 1) {
                 memmove(&v->inodes[i], &v->inodes[i + 1],
                         sizeof(GeosInode) * (v->inode_count - 1 - i));
@@ -492,11 +536,29 @@ static inline GeosInode* geos_summon(GeosVolume *v,
    Coordinate becomes available for new summon.
    ═══════════════════════════════════════════════════════════ */
 
+/* ── Internal: free an inode's blocks (hyper = scatter-walk free) ── */
+
+static inline void _geos_free_inode_blocks(GeosVolume *v, GeosInode *in) {
+    if (in->flags & GEOS_FLAG_HYPER) {
+        HWRouter r; hw_init(&r, in->block_start, in->hyper_axis);
+        for (uint32_t b = 0; b < in->block_count; b++) {
+            uint32_t addr = hw_at(&r, b);
+            _geos_bitmap_set(v, addr, 1, 0);
+            _geos_freelist_insert(&v->free_list, addr, 1);
+            v->total_blocks_used--;
+            v->total_blocks_free++;
+        }
+        _geos_freelist_merge(&v->free_list);
+    } else {
+        geos_free_blocks(v, in->block_start, in->block_count);
+    }
+}
+
 static inline int geos_unsummon(GeosVolume *v, const char *name) {
     if (!v || !name) return -1;
     for (uint16_t i = 0; i < v->inode_count; i++) {
         if (strcmp(v->inodes[i].name, name) == 0) {
-            geos_free_blocks(v, v->inodes[i].block_start, v->inodes[i].block_count);
+            _geos_free_inode_blocks(v, &v->inodes[i]);
             if (i < v->inode_count - 1) {
                 memmove(&v->inodes[i], &v->inodes[i + 1],
                         sizeof(GeosInode) * (v->inode_count - 1 - i));
@@ -507,6 +569,126 @@ static inline int geos_unsummon(GeosVolume *v, const char *name) {
         }
     }
     return -2;  /* not found */
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GEOS_HYPER — hyperbolic key-frame files (§2026-08-21)
+   ═══════════════════════════════════════════════════════════
+   A hyper file's block addresses are COMPUTED from ONE key frame
+   (the seed) by the deterministic centroid walk:
+
+       address(block b) = hw_at(&(HWRouter){seed, axis}, b)
+                        = (seed + stride[axis]·b) mod 20736
+
+   MAP not COMPRESS: the block list is never stored — geometry IS the
+   address map. The walk is a bijection (odd stride, coprime with the
+   field) so the placement never collides within the file, and reading
+   back is lossless by construction. Key frame = a few bytes.
+
+   - enter anywhere: any seed works (the walk covers the whole field)
+   - scatter: stride 9/81 places blocks across the field, not linearly
+   - axis 0 (stride 1) degenerates to the linear GeoFS layout
+   - f(step): block b's address IS f(b) — deterministic, O(1)
+   ═══════════════════════════════════════════════════════════ */
+
+/* address of block `b` in a hyper file — pure computation, no lookup */
+static inline uint32_t geos_hyper_address(GeosVolume *v, const char *name,
+                                          uint32_t b) {
+    if (!v || !name) return 0xFFFFFFFFu;
+    GeosInode *in = geos_find(v, name);
+    if (!in || !(in->flags & GEOS_FLAG_HYPER) || b >= in->block_count)
+        return 0xFFFFFFFFu;
+    HWRouter r; hw_init(&r, in->block_start, in->hyper_axis);
+    return hw_at(&r, b);
+}
+
+/* place a hyper file: walk (seed, axis) and reserve + write each
+ * address. Fails atomically on any collision / volume-header hit. */
+static inline GeosInode* geos_hyper_place(GeosVolume *v,
+                                           const char *name,
+                                           uint32_t size_bytes,
+                                           const uint8_t *data,
+                                           uint32_t seed, uint32_t axis) {
+    if (!v || !name || v->inode_count >= GEOS_MAX_INODES) return NULL;
+
+    uint16_t n_blocks = (uint16_t)((size_bytes + GEOS_BLOCK_SZ - 1) / GEOS_BLOCK_SZ);
+    if (n_blocks == 0) n_blocks = 1;
+    if (n_blocks > hw_round_len(axis % HW_AXES)) return NULL;  /* no wrap */
+    if ((uint32_t)n_blocks > v->total_blocks_free) return NULL;
+
+    HWRouter r; hw_init(&r, seed, axis);
+    for (uint32_t b = 0; b < n_blocks; b++) {
+        uint32_t addr = hw_at(&r, b);
+        if (addr < GEOS_VOL_DATA_START) return NULL;              /* volume blocks */
+        if (v->block_map[addr / 8] & (1u << (addr % 8))) return NULL;  /* in use */
+    }
+
+    for (uint32_t b = 0; b < n_blocks; b++) {
+        uint32_t addr = hw_at(&r, b);
+        _geos_bitmap_set(v, addr, 1, 1);
+        _geos_freelist_remove_addr(&v->free_list, addr);
+        v->total_blocks_used++;
+        v->total_blocks_free--;
+        if (data) {
+            uint32_t off = addr * GEOS_BLOCK_SZ;
+            uint32_t chunk = size_bytes - b * GEOS_BLOCK_SZ;
+            if (chunk > GEOS_BLOCK_SZ) chunk = GEOS_BLOCK_SZ;
+            memcpy(&v->data[off], data + b * GEOS_BLOCK_SZ, chunk);
+        }
+    }
+
+    GeosInode *inode = &v->inodes[v->inode_count];
+    memset(inode, 0, sizeof(*inode));
+    inode->addr = geos_addr_from_flat(seed);
+    strncpy(inode->name, name, GEOS_MAX_NAME - 1);
+    inode->size_bytes = size_bytes;
+    inode->block_start = seed;          /* the key frame */
+    inode->block_count = n_blocks;
+    inode->hyper_axis = (uint8_t)(axis % HW_AXES);
+    inode->flags |= GEOS_FLAG_HYPER;
+    inode->created_kis_enc = frame_enc(v->inode_count);
+    inode->accessed_kis_enc = inode->created_kis_enc;
+
+    if (data && size_bytes > 0) {
+        uint8_t seen[256] = {0};
+        for (uint32_t i = 0; i < size_bytes && i < n_blocks * GEOS_BLOCK_SZ; i++)
+            seen[data[i]] = 1;
+        uint16_t unique = 0;
+        for (int i = 0; i < 256; i++) unique += seen[i];
+        inode->entropy = (uint8_t)((unique * 255) / 256);
+        inode->tier = adaptive_tier(inode->entropy);
+    }
+
+    v->inode_count++;
+    v->n_files++;
+    return inode;
+}
+
+/* read a hyper file back by walking from its key frame — lossless
+ * because the walk is a bijection (addresses recomputed, not stored) */
+static inline int geos_hyper_read(GeosVolume *v, const char *name,
+                                  uint8_t *buf, uint32_t buf_size) {
+    GeosInode *in = geos_find(v, name);
+    if (!in || !buf || !(in->flags & GEOS_FLAG_HYPER)) return -1;
+
+    uint32_t bytes = (buf_size < in->size_bytes) ? buf_size : in->size_bytes;
+    HWRouter r; hw_init(&r, in->block_start, in->hyper_axis);
+    for (uint32_t b = 0; b < in->block_count && b * GEOS_BLOCK_SZ < bytes; b++) {
+        uint32_t addr = hw_at(&r, b);
+        uint32_t off = b * GEOS_BLOCK_SZ;
+        uint32_t n = bytes - off; if (n > GEOS_BLOCK_SZ) n = GEOS_BLOCK_SZ;
+        memcpy(buf + off, &v->data[addr * GEOS_BLOCK_SZ], n);
+    }
+    return (int)bytes;
+}
+
+/* zero-copy project of one hyper block (computed address → store ptr) */
+static inline const uint8_t* geos_hyper_project_block(GeosVolume *v,
+                                                      const char *name,
+                                                      uint32_t b) {
+    uint32_t addr = geos_hyper_address(v, name, b);
+    if (addr == 0xFFFFFFFFu) return NULL;
+    return &v->data[addr * GEOS_BLOCK_SZ];
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -596,6 +778,8 @@ static inline const uint8_t* geos_project_block(GeosVolume *v, const char *name,
 
     GeosInode *inode = geos_find(v, name);
     if (!inode || block_idx >= inode->block_count) return NULL;
+    if (inode->flags & GEOS_FLAG_HYPER)
+        return geos_hyper_project_block(v, name, block_idx);
 
     return &v->data[(inode->block_start + block_idx) * GEOS_BLOCK_SZ];
 }
@@ -654,6 +838,7 @@ typedef struct {
     uint8_t  tier;
     uint8_t  entropy;
     uint8_t  flags;
+    uint8_t  hyper_axis;
     uint16_t pipe_id;
     uint8_t  tick;
 } GeosStat;
@@ -673,6 +858,7 @@ static inline int geos_stat(GeosVolume *v, const char *name, GeosStat *st) {
     st->tier        = inode->tier;
     st->entropy     = inode->entropy;
     st->flags       = inode->flags;
+    st->hyper_axis  = inode->hyper_axis;
 
     geo_cell_addr_offset_to_pipe(inode->block_start, &st->pipe_id, &st->tick);
     return 0;
@@ -714,8 +900,10 @@ static inline void geos_visualize(GeosVolume *v, const char *highlight_name) {
         GeosInode *inode = geos_find(v, highlight_name);
         if (inode) {
             char m = '@';
+            int hyper = (inode->flags & GEOS_FLAG_HYPER) != 0;
+            HWRouter hr; if (hyper) hw_init(&hr, inode->block_start, inode->hyper_axis);
             for (uint16_t b = 0; b < inode->block_count; b++) {
-                uint32_t flat = inode->block_start + b;
+                uint32_t flat = hyper ? hw_at(&hr, b) : (inode->block_start + b);
                 uint32_t row = flat / 144, col = flat % 144;
                 grid[row][col] = m;
             }
@@ -778,8 +966,11 @@ static inline int geos_serialize(GeosVolume *v, const char *path) {
     /* Write data blocks (only used blocks, compressed) */
     for (uint16_t i = 0; i < v->inode_count; i++) {
         GeosInode *inode = &v->inodes[i];
+        int hyper = (inode->flags & GEOS_FLAG_HYPER) != 0;
+        HWRouter hr; if (hyper) hw_init(&hr, inode->block_start, inode->hyper_axis);
         for (uint16_t b = 0; b < inode->block_count; b++) {
-            uint32_t offset = (inode->block_start + b) * GEOS_BLOCK_SZ;
+            uint32_t flat = hyper ? hw_at(&hr, b) : (inode->block_start + b);
+            uint32_t offset = flat * GEOS_BLOCK_SZ;
             fwrite(&v->data[offset], GEOS_BLOCK_SZ, 1, f);
         }
     }
@@ -833,8 +1024,11 @@ static inline int geos_deserialize(GeosVolume *v, const char *path) {
     v->free_list.count = 0;
 
     for (uint16_t i = 0; i < v->inode_count; i++) {
-        for (uint16_t b = 0; b < v->inodes[i].block_count; b++) {
-            uint32_t flat = v->inodes[i].block_start + b;
+        GeosInode *in = &v->inodes[i];
+        int hyper = (in->flags & GEOS_FLAG_HYPER) != 0;
+        HWRouter hr; if (hyper) hw_init(&hr, in->block_start, in->hyper_axis);
+        for (uint16_t b = 0; b < in->block_count; b++) {
+            uint32_t flat = hyper ? hw_at(&hr, b) : (in->block_start + b);
             v->block_map[flat / 8] |= (1u << (flat % 8));
             /* Read data block from file */
             uint32_t offset = flat * GEOS_BLOCK_SZ;
