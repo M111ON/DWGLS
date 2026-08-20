@@ -289,7 +289,9 @@ edges per vertex = 2E/V = 12/4 = 3   ← vertex view: 3 ทิศเดียว
 
 **ใช้ reconstruct ยังไง (ในอนาคต):**
 - จากกฎ 3-in-1-out เพียงอย่างเดียว → สร้าง tetrahedron ใหม่ได้ครบ (4/6/4/12)
-- rolling-seeker state = (cell, orientation∈A4) — deterministic + replay + enter-anywhere
+- rolling-seeker state = (cell, orientation∈S4) — deterministic + replay + enter-anywhere
+  (แก้ไข 2026-08-21: กลิ้งข้าม edge = transposition = permutation คี่ → orientation ∈ S4 (24)
+  ไม่ใช่ A4 (12) — พิสูจน์แล้วใน test_tetra_roll_probe.c)
 - ไม่ต้องจำพิกัด/ตาราง — กฎเดียวพอ: 3 ทิศ, 1 ผล, parity flip ต่อก้าว
 
 ### ⑭ เขปตากอน = BOUNDARY — สร้างเกิน hexagon ไม่ได้ (2026-08-17)

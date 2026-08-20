@@ -2831,7 +2831,8 @@ tetrahedron V=4 E=6 F=4 → 2E/F = 3 (face view) = 2E/V = 3 (vertex view)
 - กลิ้ง 1 ก้าว = เดินตาม 1 แกนของสนาม (0°/60°/120°) + parity flip — 3 ทิศ ↔ 3 แกน
 - 12 = 4×3 = 12 directed edges — เลขศักดิ์สิทธิ์เกิดจากโครงสร้าง tetrahedron ไม่ใช่เลขเลือก
 - reconstruct ได้จากกฎเดียว: 3 ทิศ, 1 ผล, parity flip ต่อก้าว → tetrahedron + สนามครบ
-- rolling-seeker state = (cell, orientation∈A4) — deterministic, replay ได้, enter-anywhere
+- rolling-seeker state = (cell, orientation∈S4) — deterministic, replay ได้, enter-anywhere
+  (แก้ไข 2026-08-21: กลิ้ง = transposition = permutation คี่ → S4 (24) ไม่ใช่ A4 (12) — พิสูจน์แล้วใน test_tetra_roll_probe.c)
 
 **ทำไม square ถึงไม่สนิท:** 2E/F = 2 — 4 ขอบ ≠ 3 ทิศของ tetrahedron (เกิน/ขาด) —
 สามเหลี่ยมคือ cell เดียวที่ 3-regular ตรงกับ 3 ทิศพอดี
