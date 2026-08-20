@@ -590,11 +590,11 @@ static inline int geos_unsummon(GeosVolume *v, const char *name) {
     - axis 0 (stride 1) degenerates to the linear GeoFS layout
     - f(step): block b's address IS f(b) — deterministic, O(1)
 
-    Axis constraint (found on real GGUF data): axis-2 files (stride 81)
-    must stay small enough that seed+81·(n-1) < 20736 — a FULL-orbit
-    axis-2 walk always passes through its coset residue 0..80, which is
-    inside the volume header (blocks 0..255) and is therefore rejected.
-    Axis-1 files (stride 9) tolerate up to ~2300 blocks without wrap.
+    Axis constraints (found on real GGUF data): axis-2 (stride 81) and
+    axis-3 (stride 27) walks each hit their coset residue 0..80 / 0..26
+    inside the volume header (blocks 0..255) on a FULL orbit, so those
+    files must stay small enough that seed+stride·(n-1) < 20736 (no wrap).
+    Axis-0 (stride 1) full field; axis-1 (stride 9) tolerates ~2300 blocks.
     ═══════════════════════════════════════════════════════════ */
 
 /* address of block `b` in a hyper file — pure computation, no lookup */

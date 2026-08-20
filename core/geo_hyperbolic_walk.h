@@ -18,14 +18,14 @@
  *   = th_cell_anchor(node, aperture, depth) — canonical cell address.
  *   Walking crosses a shared edge: node' = node + stride[axis] (mod 20736).
  *   - reversible:   +s แล้ว −s กลับที่เดิม (all 3 axes, 20736 nodes)
- *   - parity flip:  stride คี่ทุกตัว (1, 9, 81) → 100% up/down flip ต่อก้าว
+ *   - parity flip:  stride คี่ทุกตัว (1, 9, 27, 81) → 100% up/down flip ต่อก้าว
  *   - coverage:     axis 0 (stride 1) orbit = 20736 → 1 key frame ครอบทั้งสนาม
  *   - snap:         จาก centroid ข้าม 3 edge → 3 centroids ต่างกัน (3-in-1-out)
  *
  * ROUTE = (seed, axis, step). f(step) = (seed + stride[axis]·step) mod 20736.
  *   - key frame = seed (few bytes) — reconstruct ใดๆ จาก seed
  *   - enter anywhere: O(1) — ให้ seed ใดก็ได้
- *   - direction = +/− stride (axis 0/1/2)
+ *   - direction = +/− stride (axis 0/1/2/3)
  *   - scale dimension = depth (aperture 4 → 2^depth cells) — int-only,
  *     base-2, no float, no trig (rescope 2026-08-14).
  *
@@ -38,15 +38,17 @@
 #include <stdint.h>
 #include "tri_hex_tess.h"
 
-/* ── Strides: the 3 edge directions of the triangle field ────────── */
-/* 1 = lo+1      (3-ladder, finest)   — orbit 20736 (full field)
- * 9 = lo+9      (3-ladder, level 2)  — orbit 2304
- * 81 = hi+1     (4-ladder, coarse)   — orbit 256
+/* ── Strides: the 4 edge directions of the triangle field ────────── */
+/* 1  = 3^0  (finest)          — orbit 20736 (full field)
+ * 9  = 3^2  (level 2)         — orbit 2304
+ * 27 = 3^3  (level 3)         — orbit 768  (user: 27 ใช้ได้)
+ * 81 = 3^4  (coarsest)        — orbit 256
  * all odd → parity flips every step (sawtooth / ฟันปลา) */
-#define HW_AXES            3u
+#define HW_AXES            4u
 #define HW_STRIDE_AXIS0    1u
 #define HW_STRIDE_AXIS1    9u
 #define HW_STRIDE_AXIS2    81u
+#define HW_STRIDE_AXIS3    27u
 
 /* ── Route state ─────────────────────────────────────────────────── */
 typedef struct {
@@ -56,10 +58,11 @@ typedef struct {
 } HWRouter;
 
 static inline uint32_t hw_stride(uint32_t axis) {
-    switch (axis) {
+    switch (axis % HW_AXES) {
     case 0u:  return HW_STRIDE_AXIS0;
     case 1u:  return HW_STRIDE_AXIS1;
-    default:  return HW_STRIDE_AXIS2;
+    case 2u:  return HW_STRIDE_AXIS2;
+    default:  return HW_STRIDE_AXIS3;
     }
 }
 
@@ -90,10 +93,11 @@ static inline uint32_t hw_backward(HWRouter *r) { hw_step(r, -1); return hw_pos(
 
 /* number of steps to complete one full round on this axis (orbit size) */
 static inline uint32_t hw_round_len(uint32_t axis) {
-    switch (axis) {
+    switch (axis % HW_AXES) {
     case 0u:  return 20736u;  /* stride 1  — full field */
     case 1u:  return 2304u;   /* stride 9  — 9 rounds */
-    default:  return 256u;    /* stride 81 — 81 rounds */
+    case 2u:  return 256u;    /* stride 81 — 81 rounds */
+    default:  return 768u;    /* stride 27 — 27 rounds */
     }
 }
 

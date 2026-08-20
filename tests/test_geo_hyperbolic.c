@@ -35,23 +35,26 @@ static int g_fail = 0;
          else { printf("  PASS %s\n", name); } } while (0)
 
 /* SPEC strides — mixed-radix geometry, independent of hw_stride():
- * 20736 = 256×81 = 2^8 × 3^4. hi digit stride = 81 (4-ladder),
- * lo digit strides = 1 (unit) and 9 (level-2). */
+ * 20736 = 256×81 = 2^8 × 3^4. hi digit stride = 81 (3^4),
+ * lo digit strides = 1 (3^0), 9 (3^2), 27 (3^3). */
 #define SPEC_S0 1u
 #define SPEC_S1 9u
 #define SPEC_S2 81u
+#define SPEC_S3 27u
 
-/* T0: stride table must equal the mixed-radix spec {1,9,81} */
+/* T0: stride table must equal the mixed-radix spec {1,9,81,27} */
 static void t0_stride_spec(void) {
-    printf("── T0 stride values match mixed-radix spec {1,9,81}\n");
-    CHECK(hw_stride(0u) == SPEC_S0, "axis 0 stride == 1 (lo unit)");
-    CHECK(hw_stride(1u) == SPEC_S1, "axis 1 stride == 9 (lo level 2)");
-    CHECK(hw_stride(2u) == SPEC_S2, "axis 2 stride == 81 (hi digit)");
-    CHECK(hw_stride(3u) == SPEC_S2, "axis 3 wraps to 81 (axis%3)");
+    printf("── T0 stride values match mixed-radix spec {1,9,81,27}\n");
+    CHECK(hw_stride(0u) == SPEC_S0, "axis 0 stride == 1 (3^0)");
+    CHECK(hw_stride(1u) == SPEC_S1, "axis 1 stride == 9 (3^2)");
+    CHECK(hw_stride(2u) == SPEC_S2, "axis 2 stride == 81 (3^4)");
+    CHECK(hw_stride(3u) == SPEC_S3, "axis 3 stride == 27 (3^3)");
+    CHECK(hw_stride(4u) == SPEC_S0, "axis 4 wraps to 1 (axis%4)");
     /* round lengths follow from the field size and the spec strides */
     CHECK(hw_round_len(0u) == GEO_FULL / SPEC_S0, "round 0 = 20736/1");
     CHECK(hw_round_len(1u) == GEO_FULL / SPEC_S1, "round 1 = 20736/9");
     CHECK(hw_round_len(2u) == GEO_FULL / SPEC_S2, "round 2 = 20736/81");
+    CHECK(hw_round_len(3u) == GEO_FULL / SPEC_S3, "round 3 = 20736/27");
 }
 
 /* T1: orbit — stride-1 walk visits all 20736 nodes exactly once
@@ -81,34 +84,34 @@ static void t1_orbit(void) {
 /* T2: reversibility — modular identity with the SPEC strides
  * (stride values are pinned in T0; here we prove the arithmetic) */
 static void t2_reversibility(void) {
-    printf("── T2 reversibility (all nodes × 3 axes, spec strides)\n");
-    const uint32_t strides[3] = {SPEC_S0, SPEC_S1, SPEC_S2};
+    printf("── T2 reversibility (all nodes × 4 axes, spec strides)\n");
+    const uint32_t strides[4] = {SPEC_S0, SPEC_S1, SPEC_S2, SPEC_S3};
     int ok = 1;
     for (uint32_t n = 0; n < GEO_FULL && ok; n++) {
-        for (uint32_t a = 0; a < 3u; a++) {
+        for (uint32_t a = 0; a < 4u; a++) {
             uint32_t s = strides[a];
             uint32_t fwd = (uint32_t)((n + s) % GEO_FULL);
             uint32_t back = (uint32_t)((fwd + GEO_FULL - s) % GEO_FULL);
             if (back != n) { ok = 0; break; }
         }
     }
-    CHECK(ok, "all nodes return after +s then −s (3 axes)");
+    CHECK(ok, "all nodes return after +s then −s (4 axes)");
 }
 
 /* T3: parity flip — all SPEC strides odd ⇒ up/down flips every step */
 static void t3_parity(void) {
-    printf("── T3 parity flip (all nodes × 3 axes, spec strides)\n");
-    const uint32_t strides[3] = {SPEC_S0, SPEC_S1, SPEC_S2};
+    printf("── T3 parity flip (all nodes × 4 axes, spec strides)\n");
+    const uint32_t strides[4] = {SPEC_S0, SPEC_S1, SPEC_S2, SPEC_S3};
     int ok = 1;
     for (uint32_t n = 0; n < GEO_FULL && ok; n++) {
-        for (uint32_t a = 0; a < 3u; a++) {
+        for (uint32_t a = 0; a < 4u; a++) {
             uint32_t s = strides[a];
             if (s % 2u == 0u) { ok = 0; break; }       /* spec must be odd */
             uint32_t fwd = (uint32_t)((n + s) % GEO_FULL);
             if ((fwd & 1u) == (n & 1u)) { ok = 0; break; } /* no flip */
         }
     }
-    CHECK(ok, "parity flips every step on all 3 axes");
+    CHECK(ok, "parity flips every step on all 4 axes");
 }
 
 /* T4: store cross-check against the REFERENCE primitive.
@@ -125,7 +128,7 @@ static void t4_reconstruct(void) {
     int all_ok = 1;
     for (int ai = 0; ai < 2; ai++) {
         for (uint32_t depth = 0; depth <= 4u; depth++) {
-            for (uint32_t axis = 0; axis < 3u; axis++) {
+            for (uint32_t axis = 0; axis < 4u; axis++) {
                 HWFrames f;
                 hwf_init(&f, apertures[ai], depth, axis);
                 uint32_t cells = hwf_count(&f);
@@ -160,9 +163,9 @@ static void t4_reconstruct(void) {
  * Uses SPEC round lengths, not hw_round_len, to avoid self-reference. */
 static void t5_enter_anywhere(void) {
     printf("── T5 enter anywhere\n");
-    const uint32_t strides[3] = {SPEC_S0, SPEC_S1, SPEC_S2};
+    const uint32_t strides[4] = {SPEC_S0, SPEC_S1, SPEC_S2, SPEC_S3};
     int ok = 1;
-    for (uint32_t a = 0; a < 3u && ok; a++) {
+    for (uint32_t a = 0; a < 4u && ok; a++) {
         uint32_t round = GEO_FULL / strides[a];
         for (int k = 0; k < 8; k++) {
             uint32_t seed = (uint32_t)(k * 2597u) % GEO_FULL;
@@ -172,7 +175,7 @@ static void t5_enter_anywhere(void) {
             if (hw_at(&r, round * 2u) != seed) { ok = 0; break; }
         }
     }
-    CHECK(ok, "any seed returns to itself after one/two full rounds (3 axes)");
+    CHECK(ok, "any seed returns to itself after one/two full rounds (4 axes)");
 }
 
 /* T6: centroid layer — every node snaps to its cell centroid, and

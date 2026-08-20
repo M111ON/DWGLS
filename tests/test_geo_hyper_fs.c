@@ -6,8 +6,8 @@
  * The block list is never stored — geometry IS the address map (MAP).
  *
  * ORACLE (independent — NEVER read from the implementation):
- *   SPEC strides {1,9,81} pinned below from the mixed-radix spec
- *   20736 = 2^8·3^4 = 256·81; axis-2 orbit = 20736/81 = 256.
+ *   SPEC strides {1,9,81,27} pinned below from the mixed-radix spec
+ *   20736 = 2^8·3^4 = 256·81; orbits: 20736/1, /9=2304, /81=256, /27=768.
  *   Expected addresses are recomputed here with pure modular arithmetic,
  *   so a wrong stride constant in the core turns these tests RED.
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -21,8 +21,10 @@
 #define SPEC_STRIDE_AXIS0  1u
 #define SPEC_STRIDE_AXIS1  9u
 #define SPEC_STRIDE_AXIS2  81u
+#define SPEC_STRIDE_AXIS3  27u
 #define SPEC_GEO_FULL      20736u
 #define SPEC_AXIS2_ORBIT   (SPEC_GEO_FULL / SPEC_STRIDE_AXIS2)  /* 256 */
+#define SPEC_AXIS3_ORBIT   (SPEC_GEO_FULL / SPEC_STRIDE_AXIS3)  /* 768 */
 #define SPEC_FREE_INIT     (SPEC_GEO_FULL - GEOS_VOL_DATA_START) /* 20480 */
 
 static int tests_passed = 0;
@@ -35,9 +37,12 @@ static int tests_failed = 0;
 #define PASS() do { printf("✅ PASS\n"); tests_passed++; } while(0)
 #define FAIL(msg) do { printf("❌ FAIL: %s\n", msg); tests_failed++; } while(0)
 
-/* expected address of block b on axis 2 — pure modular arithmetic */
+/* expected addresses — pure modular arithmetic (independent oracle) */
 static uint32_t spec_addr2(uint32_t seed, uint32_t b) {
     return (seed + SPEC_STRIDE_AXIS2 * b) % SPEC_GEO_FULL;
+}
+static uint32_t spec_addr3(uint32_t seed, uint32_t b) {
+    return (seed + SPEC_STRIDE_AXIS3 * b) % SPEC_GEO_FULL;
 }
 
 /* ── T1: place + read roundtrip (lossless, axis 2 scatter) ─────────── */
@@ -329,6 +334,42 @@ static void test_hyper_orbit_guard(void) {
     PASS();
 }
 
+/* ── T11: axis 3 (stride 27, orbit 768) — กลางระหว่าง 9 กับ 81 ───── */
+
+static void test_hyper_axis3(void) {
+    TEST("Axis 3 stride 27 (orbit 768) — address + roundtrip");
+    GeosVolume vol;
+    geos_volume_init(&vol);
+
+    uint8_t src[320];  /* 5 blocks */
+    for (int i = 0; i < 320; i++) src[i] = (uint8_t)(i * 11 + 5);
+    uint32_t seed = 7000;
+    GeosInode *in = geos_hyper_place(&vol, "a3.bin", 320, src, seed, 3);
+    if (!in) { FAIL("a3 place"); geos_volume_free(&vol); return; }
+    if (in->hyper_axis != 3u) { FAIL("axis != 3"); geos_volume_free(&vol); return; }
+
+    for (uint32_t b = 0; b < 5; b++) {
+        if (geos_hyper_address(&vol, "a3.bin", b) != spec_addr3(seed, b)) {
+            FAIL("a3 address != spec formula"); geos_volume_free(&vol); return;
+        }
+    }
+    uint8_t dst[320];
+    if (geos_hyper_read(&vol, "a3.bin", dst, sizeof(dst)) != 320 || memcmp(src, dst, 320)) {
+        FAIL("a3 read"); geos_volume_free(&vol); return;
+    }
+    /* orbit guard: 769 blocks > 768 → rejected */
+    uint8_t *big = (uint8_t *)malloc(769 * GEOS_BLOCK_SZ);
+    if (!big) { FAIL("malloc"); geos_volume_free(&vol); return; }
+    memset(big, 0x33, 769 * GEOS_BLOCK_SZ);
+    if (geos_hyper_place(&vol, "a3big.bin", 769 * GEOS_BLOCK_SZ, big, 900, 3) != NULL) {
+        FAIL("a3 over-orbit not rejected"); free(big); geos_volume_free(&vol); return;
+    }
+    free(big);
+
+    geos_volume_free(&vol);
+    PASS();
+}
+
 /* ── T10: collision with an occupied address → rejected ────────────── */
 
 static void test_hyper_collision(void) {
@@ -369,6 +410,7 @@ int main(void) {
     test_hyper_axis0_linear();
     test_hyper_orbit_guard();
     test_hyper_collision();
+    test_hyper_axis3();
 
     printf("\n───────────────────────────────────────\n");
     printf("PASS: %d / %d  FAIL: %d\n", tests_passed, tests_passed + tests_failed, tests_failed);

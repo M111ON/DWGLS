@@ -29,6 +29,7 @@
 
 /* ── SPEC constants (independent oracle) ───────────────────────────── */
 #define SPEC_STRIDE_AXIS1  9u
+#define SPEC_STRIDE_AXIS3  27u
 #define SPEC_GEO_FULL      20736u
 #define SPEC_FREE_INIT     (SPEC_GEO_FULL - GEOS_VOL_DATA_START) /* 20480 */
 
@@ -43,6 +44,10 @@
 #define AX2_CHUNK_SZ       (AX2_BLOCKS * GEOS_BLOCK_SZ)     /* 1 KB  */
 #define AX2_FILES          64u
 #define AX2_BYTES          (AX2_FILES * AX2_CHUNK_SZ)       /* 64 KB */
+#define AX3_BLOCKS         48u     /* axis-3 (stride 27) กลางระหว่าง 9 กับ 81 */
+#define AX3_CHUNK_SZ       (AX3_BLOCKS * GEOS_BLOCK_SZ)     /* 3 KB  */
+#define AX3_FILES          16u
+#define AX3_BYTES          (AX3_FILES * AX3_CHUNK_SZ)       /* 48 KB */
 
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -134,6 +139,14 @@ static int seed_ok(const uint8_t *map, uint32_t seed) {
 static int seed_ok2(const uint8_t *map, uint32_t seed) {
     for (uint32_t b = 0; b < AX2_BLOCKS; b++) {
         uint32_t addr = (seed + 81u * b) % SPEC_GEO_FULL;
+        if (addr < GEOS_VOL_DATA_START) return 0;
+        if (map[addr / 8] & (1u << (addr % 8))) return 0;
+    }
+    return 1;
+}
+static int seed_ok3(const uint8_t *map, uint32_t seed) {
+    for (uint32_t b = 0; b < AX3_BLOCKS; b++) {
+        uint32_t addr = (seed + SPEC_STRIDE_AXIS3 * b) % SPEC_GEO_FULL;
         if (addr < GEOS_VOL_DATA_START) return 0;
         if (map[addr / 8] & (1u << (addr % 8))) return 0;
     }
@@ -356,8 +369,45 @@ static int run(int argc, char **argv) {
     free(rb2c);
     PASS();
 
+    /* ── Phase C2: axis-3 (stride 27) medium scatter — เหนือ 81 ─────── */
+    TEST("Axis-3 stride 27 medium scatter (real header, RDH)");
+    uint32_t a3seed[AX3_FILES]; char a3name[AX3_FILES][12];
+    for (int k = 0; k < (int)AX3_FILES; k++) {
+        snprintf(a3name[k], sizeof(a3name[k]), "a3%03d", k);
+        uint32_t seed = 400u + (uint32_t)k * 100u;
+        while (!seed_ok3(vol.block_map, seed)) seed++;
+        GeosInode *in = geos_hyper_place(&vol, a3name[k], AX3_CHUNK_SZ,
+                                         hdr + AX2_BYTES + (size_t)k * AX3_CHUNK_SZ,
+                                         seed, 3);
+        if (!in) { FAIL("a3 place"); free(hdr); goto out; }
+        a3seed[k] = seed;
+    }
+    uint8_t *rb3c = (uint8_t *)malloc(AX3_CHUNK_SZ);
+    if (!rb3c) { FAIL("malloc rb3c"); free(hdr); goto out; }
+    for (int k = 0; k < (int)AX3_FILES; k++) {
+        for (uint32_t b = 0; b < AX3_BLOCKS; b++) {
+            if (geos_hyper_address(&vol, a3name[k], b) !=
+                (a3seed[k] + SPEC_STRIDE_AXIS3 * b) % SPEC_GEO_FULL) {
+                FAIL("a3 address formula"); free(rb3c); free(hdr); goto out;
+            }
+        }
+        geos_hyper_read(&vol, a3name[k], rb3c, AX3_CHUNK_SZ);
+        if (memcmp(hdr + AX2_BYTES + (size_t)k * AX3_CHUNK_SZ, rb3c, AX3_CHUNK_SZ) != 0) {
+            FAIL("a3 data mismatch"); free(rb3c); free(hdr); goto out;
+        }
+        if (rdh_of(rb3c, AX3_CHUNK_SZ) !=
+            rdh_of(hdr + AX2_BYTES + (size_t)k * AX3_CHUNK_SZ, AX3_CHUNK_SZ)) {
+            FAIL("a3 RDH mismatch"); free(rb3c); free(hdr); goto out;
+        }
+    }
+    printf("(%u files x 3 KB, stride 27, RDH per file)\n", (unsigned)AX3_FILES);
+    free(rb3c);
+    PASS();
+
     /* ── Phase D: unplace everything → free fully restored ──────────── */
-    TEST("Unplace header + axis-2 files → free restored");
+    TEST("Unplace header + axis-2/3 files → free restored");
+    for (int k = 0; k < (int)AX3_FILES; k++)
+        if (geos_delete(&vol, a3name[k]) != 0) { FAIL("a3 delete"); free(hdr); goto out; }
     for (int k = 0; k < (int)AX2_FILES; k++)
         if (geos_delete(&vol, a2name[k]) != 0) { FAIL("a2 delete"); free(hdr); goto out; }
     for (int k = 0; k < (int)HDR_FILES; k++)
@@ -368,9 +418,9 @@ static int run(int argc, char **argv) {
     free(hdr);
     PASS();
 
-    printf("\n  real-data verdict: lossless (%d blocks + %u small a2 files, "
+    printf("\n  real-data verdict: lossless (%d blocks + %u a2 + %u a3 files, "
            "weights + header regions)\n",
-           total_blocks, (unsigned)AX2_FILES);
+           total_blocks, (unsigned)AX2_FILES, (unsigned)AX3_FILES);
 
     geos_volume_free(&vol);
     free(slice);
