@@ -585,11 +585,17 @@ static inline int geos_unsummon(GeosVolume *v, const char *name) {
    field) so the placement never collides within the file, and reading
    back is lossless by construction. Key frame = a few bytes.
 
-   - enter anywhere: any seed works (the walk covers the whole field)
-   - scatter: stride 9/81 places blocks across the field, not linearly
-   - axis 0 (stride 1) degenerates to the linear GeoFS layout
-   - f(step): block b's address IS f(b) — deterministic, O(1)
-   ═══════════════════════════════════════════════════════════ */
+- enter anywhere: any seed works (the walk covers the whole field)
+    - scatter: stride 9/81 places blocks across the field, not linearly
+    - axis 0 (stride 1) degenerates to the linear GeoFS layout
+    - f(step): block b's address IS f(b) — deterministic, O(1)
+
+    Axis constraint (found on real GGUF data): axis-2 files (stride 81)
+    must stay small enough that seed+81·(n-1) < 20736 — a FULL-orbit
+    axis-2 walk always passes through its coset residue 0..80, which is
+    inside the volume header (blocks 0..255) and is therefore rejected.
+    Axis-1 files (stride 9) tolerate up to ~2300 blocks without wrap.
+    ═══════════════════════════════════════════════════════════ */
 
 /* address of block `b` in a hyper file — pure computation, no lookup */
 static inline uint32_t geos_hyper_address(GeosVolume *v, const char *name,

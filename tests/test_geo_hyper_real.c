@@ -37,6 +37,13 @@
 #define SLICE_BYTES        (1024u * 1024u)                 /* 1 MB slice */
 #define N_FILES            (SLICE_BYTES / HYPER_CHUNK_SZ)  /* 8 files */
 
+/* header-region phase: same axis-1 shape but GGUF header bytes */
+#define HDR_FILES          8u
+#define AX2_BLOCKS         16u     /* axis-2 (stride 81) files must not wrap */
+#define AX2_CHUNK_SZ       (AX2_BLOCKS * GEOS_BLOCK_SZ)     /* 1 KB  */
+#define AX2_FILES          64u
+#define AX2_BYTES          (AX2_FILES * AX2_CHUNK_SZ)       /* 64 KB */
+
 static int tests_passed = 0;
 static int tests_failed = 0;
 
@@ -98,10 +105,35 @@ static long read_real_slice(const char *path, uint8_t *buf) {
     return (long)got;
 }
 
+/* read SLICE_BYTES at an explicit offset (header region = offset 0) */
+static long read_real_slice_at(const char *path, uint8_t *buf, int64_t off) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    if (FS_FSEEK(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    int64_t sz = FS_FTELL(f);
+    if (sz < 64) { fclose(f); return -1; }
+    if (off < 0) off = 0;
+    if (off + SLICE_BYTES > sz) off = sz - SLICE_BYTES;
+    if (FS_FSEEK(f, off, SEEK_SET) != 0) { fclose(f); return -1; }
+    size_t got = fread(buf, 1, SLICE_BYTES, f);
+    fclose(f);
+    return (long)got;
+}
+
 /* seeds with pairwise-disjoint residues mod 9 → walks cannot collide */
 static int seed_ok(const uint8_t *map, uint32_t seed) {
     for (uint32_t b = 0; b < HYPER_BLOCKS; b++) {
         uint32_t addr = (seed + SPEC_STRIDE_AXIS1 * b) % SPEC_GEO_FULL;
+        if (addr < GEOS_VOL_DATA_START) return 0;
+        if (map[addr / 8] & (1u << (addr % 8))) return 0;
+    }
+    return 1;
+}
+
+/* axis-2 (stride 81) seed check: small files, no wrap into the header */
+static int seed_ok2(const uint8_t *map, uint32_t seed) {
+    for (uint32_t b = 0; b < AX2_BLOCKS; b++) {
+        uint32_t addr = (seed + 81u * b) % SPEC_GEO_FULL;
         if (addr < GEOS_VOL_DATA_START) return 0;
         if (map[addr / 8] & (1u << (addr % 8))) return 0;
     }
@@ -247,8 +279,98 @@ static int run(int argc, char **argv) {
     }
     PASS();
 
-    printf("\n  real-data verdict: lossless (%d blocks, %d files, scatter axis 1)\n",
-           total_blocks, n_files);
+    /* ── Phase B: GGUF HEADER region (magic + metadata), axis 1 ─────── */
+    uint8_t *hdr = (uint8_t *)malloc(SLICE_BYTES);
+    if (!hdr) { FAIL("malloc hdr"); goto out; }
+    long hgot = read_real_slice_at(path, hdr, 0);   /* first 1 MB */
+    if (hgot < (long)HYPER_CHUNK_SZ) {
+        FAIL("header slice read"); free(hdr); goto out;
+    }
+    if (geos_delete(&vol, "reuse.bin") != 0) { FAIL("delete reuse"); free(hdr); goto out; }
+
+    TEST("GGUF header region via unified geos_read (lossless)");
+    uint32_t hseeds[16]; char hnames[16][16];
+    static const uint32_t HSEED_BASE[8] = {1000,1100,1200,1300,1400,1500,1600,1700};
+    for (int k = 0; k < (int)HDR_FILES; k++) {
+        snprintf(hnames[k], sizeof(hnames[k]), "h%02d.bin", k);
+        uint32_t seed = HSEED_BASE[k];
+        while (!seed_ok(vol.block_map, seed)) seed++;
+        GeosInode *in = geos_hyper_place(&vol, hnames[k], HYPER_CHUNK_SZ,
+                                         hdr + (size_t)k * HYPER_CHUNK_SZ,
+                                         seed, 1);
+        if (!in) { FAIL("h place"); free(hdr); goto out; }
+        hseeds[k] = seed;
+    }
+    uint8_t *rbH = (uint8_t *)malloc(HYPER_CHUNK_SZ);
+    if (!rbH) { FAIL("malloc rbH"); free(hdr); goto out; }
+    for (int k = 0; k < (int)HDR_FILES; k++) {
+        for (uint32_t b = 0; b < HYPER_BLOCKS; b++) {
+            if (geos_hyper_address(&vol, hnames[k], b) !=
+                (hseeds[k] + SPEC_STRIDE_AXIS1 * b) % SPEC_GEO_FULL) {
+                FAIL("h address formula"); free(rbH); free(hdr); goto out;
+            }
+        }
+        if (geos_read(&vol, hnames[k], rbH, HYPER_CHUNK_SZ) != (int)HYPER_CHUNK_SZ) {
+            FAIL("unified read size"); free(rbH); free(hdr); goto out;
+        }
+        if (memcmp(hdr + (size_t)k * HYPER_CHUNK_SZ, rbH, HYPER_CHUNK_SZ) != 0) {
+            FAIL("header data mismatch"); free(rbH); free(hdr); goto out;
+        }
+    }
+    printf("(%u files, unified read)\n", HDR_FILES);
+    free(rbH);
+    PASS();
+
+    /* ── Phase C: GGUF header region, fine axis-2 scatter (1 KB) ────── */
+    TEST("Axis-2 fine scatter (stride 81, small files) lossless");
+    uint32_t a2seed[AX2_FILES]; char a2name[AX2_FILES][12];
+    for (int k = 0; k < (int)AX2_FILES; k++) {
+        snprintf(a2name[k], sizeof(a2name[k]), "a2%03d", k);
+        uint32_t seed = 300u + (uint32_t)k;
+        while (!seed_ok2(vol.block_map, seed)) seed++;
+        GeosInode *in = geos_hyper_place(&vol, a2name[k], AX2_CHUNK_SZ,
+                                         hdr + (size_t)k * AX2_CHUNK_SZ,
+                                         seed, 2);
+        if (!in) { FAIL("a2 place"); free(hdr); goto out; }
+        a2seed[k] = seed;
+    }
+    uint8_t *rb2c = (uint8_t *)malloc(AX2_CHUNK_SZ);
+    if (!rb2c) { FAIL("malloc rb2c"); free(hdr); goto out; }
+    for (int k = 0; k < (int)AX2_FILES; k++) {
+        for (uint32_t b = 0; b < AX2_BLOCKS; b++) {
+            if (geos_hyper_address(&vol, a2name[k], b) !=
+                (a2seed[k] + 81u * b) % SPEC_GEO_FULL) {
+                FAIL("a2 address formula"); free(rb2c); free(hdr); goto out;
+            }
+        }
+        geos_hyper_read(&vol, a2name[k], rb2c, AX2_CHUNK_SZ);
+        if (memcmp(hdr + (size_t)k * AX2_CHUNK_SZ, rb2c, AX2_CHUNK_SZ) != 0) {
+            FAIL("a2 data mismatch"); free(rb2c); free(hdr); goto out;
+        }
+        if (rdh_of(rb2c, AX2_CHUNK_SZ) !=
+            rdh_of(hdr + (size_t)k * AX2_CHUNK_SZ, AX2_CHUNK_SZ)) {
+            FAIL("a2 RDH mismatch"); free(rb2c); free(hdr); goto out;
+        }
+    }
+    printf("(%u files x 1 KB, RDH per file)\n", (unsigned)AX2_FILES);
+    free(rb2c);
+    PASS();
+
+    /* ── Phase D: unplace everything → free fully restored ──────────── */
+    TEST("Unplace header + axis-2 files → free restored");
+    for (int k = 0; k < (int)AX2_FILES; k++)
+        if (geos_delete(&vol, a2name[k]) != 0) { FAIL("a2 delete"); free(hdr); goto out; }
+    for (int k = 0; k < (int)HDR_FILES; k++)
+        if (geos_delete(&vol, hnames[k]) != 0) { FAIL("h delete"); free(hdr); goto out; }
+    if (vol.total_blocks_free != SPEC_FREE_INIT) {
+        FAIL("free not restored after header phase"); free(hdr); goto out;
+    }
+    free(hdr);
+    PASS();
+
+    printf("\n  real-data verdict: lossless (%d blocks + %u small a2 files, "
+           "weights + header regions)\n",
+           total_blocks, (unsigned)AX2_FILES);
 
     geos_volume_free(&vol);
     free(slice);
