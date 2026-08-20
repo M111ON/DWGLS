@@ -98,6 +98,8 @@ TIER1 := \
   test_tess_codec \
   test_fibo_checkpoint \
   test_fibo_walk \
+  test_fibo_dual_rail \
+  test_geo_hyperbolic \
   test_rdh_addr \
   test_tied_dedup \
   test_goldberg_decagram \

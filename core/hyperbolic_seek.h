@@ -1,11 +1,20 @@
 /*
- * hyperbolic_seek.h — KIS ↔ Hyperbolic Teleport Seek (3-Axis)
+ * hyperbolic_seek.h — DEPRECATED (2026-08-21) — superseded by
+ * geo_hyperbolic_walk.h + geo_hyperbolic_store.h
  *
- * Cayley transform maps KIS (unit disk) ↔ Hyperbolic (upper half-plane)
- * 3 axes: X (Hilbert), Y (Peano), Z (Metatron)
- * Each axis has its own infinity point and Cayley transform
+ * Legacy design: Cayley transform maps KIS (unit disk) ↔ Hyperbolic
+ * (upper half-plane); 3 axes X/Y/Z; float π/atan2/complex. Contradicts
+ * the 2026-08-14 rescope (int-only, base-2 scale, no float, no trig)
+ * and the hyperbolic redesign directive:
  *
- * BUILD: gcc -O2 -I. -o test_hyperbolic test_hyperbolic.c -lm
+ *   "hyperbolic สร้าง route ที่ deterministic → เก็บ key frame +
+ *    f(step) compute reconstruct กลับมาใหม่ได้"
+ *
+ * New concept: deterministic centroid walk (stride 1/9/81, int-only) +
+ * key frames (th_cell_anchor) + f(step) reconstruct — verified in
+ * tests/test_geo_hyperbolic.c (6/6) and test_dual_dodeca_probe (6/6).
+ *
+ * KEPT for reference only. Do NOT build new code on this header.
  */
 
 #ifndef HYPERBOLIC_SEEK_H
