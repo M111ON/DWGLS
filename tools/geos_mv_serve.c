@@ -136,8 +136,7 @@ int main(int argc, char **argv) {
     printf("  SEQ    full sweep %.0f ms → %.0f MB/s\n",
            best, (double)baked_bytes / 1e6 / (best / 1000.0));
 
-    /* ── 4. RAND — random whole-tensor pulls by name ─────────────────── */
-    const uint32_t N_PULLS = 500u;
+    /* ── 4. RAND — random whole-tensor pulls by name ─────────────────── */    const uint32_t N_PULLS = 500u;
     uint64_t rand_bytes = 0;
     double worst = 0.0, sum = 0.0;
     uint32_t st = 0x1234567u;
@@ -165,6 +164,57 @@ int main(int argc, char **argv) {
            " · %.0f MB/s\n",
            N_PULLS, (double)rand_bytes / 1e6, sum / N_PULLS, worst,
            (double)rand_bytes / 1e6 / (sum / 1000.0 + 1e-9));
+
+    /* ── 5. BASELINE — raw mmap memcpy, same access pattern, same hardware */
+    double bbest = 1e9;
+    for (int rep = 0; rep < 3; rep++) {
+        t0 = now_ms();
+        static uint8_t buf[PART_BYTES];
+        for (uint32_t i = 0; i < r.n_tensors; i++) {
+            uint32_t sz = r.sizes[i];
+            if (sz == 0) continue;
+            const uint8_t *src = r.base + r.data_offset + r.offsets[i];
+            uint32_t n_parts = (sz + PART_BYTES - 1) / PART_BYTES;
+            for (uint32_t p = 0; p < n_parts; p++) {
+                uint32_t off = p * PART_BYTES;
+                uint32_t len = sz - off; if (len > PART_BYTES) len = PART_BYTES;
+                memcpy(buf, src + off, len);
+            }
+        }
+        double t = now_ms() - t0;
+        if (t < bbest) bbest = t;
+    }
+    double mmap_seq = (double)baked_bytes / 1e6 / (bbest / 1000.0);
+    printf("  BASE   raw-mmap SEQ sweep %.0f ms → %.2f GB/s"
+           " · geos pull = %.0f%% of raw mmap\n",
+           bbest, mmap_seq / 1000.0,
+           ((double)baked_bytes / 1e6 / (best / 1000.0)) / mmap_seq * 100.0);
+
+    uint64_t b_bytes = 0;
+    st = 0x1234567u;                          /* same tensor sequence as RAND */
+    uint8_t **b_outs = (uint8_t **)malloc(N_PULLS * sizeof(void *));
+    const uint8_t **b_srcs = (const uint8_t **)malloc(N_PULLS * sizeof(void *));
+    uint32_t *b_szs = (uint32_t *)malloc(N_PULLS * sizeof(uint32_t));
+    for (uint32_t k = 0; k < N_PULLS; k++) {
+        uint32_t i = xs32(&st) % r.n_tensors;
+        uint32_t sz = r.sizes[i];
+        if (sz == 0) { b_szs[k] = 0; continue; }
+        b_srcs[k] = r.base + r.data_offset + r.offsets[i];
+        b_outs[k] = (uint8_t *)malloc(sz);
+        b_szs[k] = sz;
+        b_bytes += sz;
+    }
+    t0 = now_ms();
+    for (uint32_t k = 0; k < N_PULLS; k++)
+        if (b_szs[k]) memcpy(b_outs[k], b_srcs[k], b_szs[k]);
+    double btotal = now_ms() - t0;
+    printf("  BASE   raw-mmap RAND %u pulls · %.2f MB · avg %.3f ms · %.0f MB/s"
+           " · geos/mmap latency = %.1fx\n",
+           N_PULLS, (double)b_bytes / 1e6, btotal / N_PULLS,
+           (double)b_bytes / 1e6 / (btotal / 1000.0 + 1e-9),
+           (sum / N_PULLS) / (btotal / N_PULLS));
+    for (uint32_t k = 0; k < N_PULLS; k++) free(b_outs[k]);
+    free(b_outs); free(b_srcs); free(b_szs);
 
     printf("═══════════════════════════════════════\n");
     geos_mv_free(&mv);

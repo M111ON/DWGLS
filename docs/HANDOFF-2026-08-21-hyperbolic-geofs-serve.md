@@ -37,8 +37,12 @@ GeoFS bridge / DRamTile twin store. ปิดวันด้วย **TIER1 109/1
   bake ทุก tensor เป็น 128KB hyper parts ข้าม volumes ที่ auto-open,
   pull กลับด้วยชื่อ, verify, seq sweep + random whole-tensor pulls
 - **Qwen2.5-0.5B (675.7 MB, 291 tensors) → 5305 parts ใน 569 volumes —
-  VERIFY byte-identical 0 mismatches (lossless ทั้งโมเดล);
-  SEQ 2.4 GB/s · RAND avg 1.4 ms / 1.4 GB/s**
+  VERIFY byte-identical 0 mismatches (memcmp vs source GGUF = oracle อิสระ);
+  SEQ 2.4 GB/s · RAND avg 1.35 ms / 1.5 GB/s**
+- **Baseline raw-mmap memcpy (phase 5, hardware/pattern เดียวกัน)**:
+  SEQ 8.65 GB/s → geos = **28% ของ raw** (ช้า ~3.5×); RAND whole-tensor
+  0.90 ms → geos = **1.5× latency** (name resolve + stride walk overhead เล็ก)
+  → verdict: RAND pull path competitive, full-sweep seq ยังมีที่พัฒนา
 - fix: rename local `hyper` → `is_hyper` (ชนกับ Windows header symbol เมื่อ
   gguf_reader.h include ก่อน)
 
@@ -97,7 +101,8 @@ compression auto-select: <64B → RLE; else Diamond Shell
 ## ⏭️ ขั้นต่อไป (เปิดไว้)
 
 1. **ฝัง geos_mv_serve เข้า llama.cpp** — callback อ่าน weight จาก pull API
-   (แทน mmap gguf ตรงๆ) — ตัวเลข RAND 1.4ms บอกว่า competitive แล้ว
+   (แทน mmap gguf ตรงๆ) — RAND pull = 1.5× ของ raw memcpy (baseline phase 5),
+   SEQ sweep = 3.5× (28%) — hot path ผ่าน, seq stream เป็นเป้า optimize ต่อ
 2. **KV park/resume end-to-end บน inference จริง** — snapshot ระหว่าง generate →
    resume session ใหม่ผ่าน dramtile twin store
 3. **Rail SCAN threshold tuning** — layer-group scan vs flat range บน workload จริง
