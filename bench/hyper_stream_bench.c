@@ -79,16 +79,6 @@ static long read_slice_at(const char *path, uint8_t *buf, size_t want, int64_t o
     return (long)got;
 }
 
-/* seeds with pairwise-disjoint residues mod 9 → walks cannot collide */
-static int seed_ok(const uint8_t *map, uint32_t seed) {
-    for (uint32_t b = 0; b < FILE_BLOCKS; b++) {
-        uint32_t addr = (seed + SPEC_STRIDE_AXIS1 * b) % SPEC_GEO_FULL;
-        if (addr < GEOS_VOL_DATA_START) return 0;
-        if (map[addr / 8] & (1u << (addr % 8))) return 0;
-    }
-    return 1;
-}
-
 static uint32_t xs32(uint32_t *s) {
     *s ^= *s << 13; *s ^= *s >> 17; *s ^= *s << 5;
     return *s;
@@ -118,16 +108,16 @@ int main(int argc, char **argv) {
     uint32_t seeds[N_FILES];
 
     /* ── B1: hyper scatter place (seed search timed apart from writes) ─
-     * NOTE: search must be interleaved with placement — the HWRouter walk
-     * is not plain modular arithmetic, so orbits of pending seeds can
-     * collide; each seed is only valid against already-placed files. */
+     * geos_hyper_find_seed scans only the no-wrap window with early
+     * exit — the old full-orbit rescan per candidate is gone. */
     double t_seed = 0.0, t_place = 0.0, t0 = 0.0;
     for (uint32_t k = 0; k < N_FILES; k++) {
         snprintf(names[k], sizeof(names[k]), "w%02u.bin", k);
-        uint32_t seed = 300 + k * 1100u;
         double ts = now_ms();
-        while (!seed_ok(vol.block_map, seed)) seed++;
+        uint32_t seed = geos_hyper_find_seed(&vol, 300 + k * 1100u,
+                                             FILE_BLOCKS, SPEC_STRIDE_AXIS1);
         t_seed += now_ms() - ts;
+        if (seed == 0xFFFFFFFFu) { printf("FAIL: no free seed %u\n", k); return 1; }
         double tp = now_ms();
         GeosInode *in = geos_hyper_place(&vol, names[k], FILE_BYTES,
                                          slice + k * FILE_BYTES, seed, 1);
@@ -187,9 +177,8 @@ int main(int argc, char **argv) {
         xs32(&st);
         uint32_t k = ((uint64_t)st * N_FILES) >> 32;
         uint32_t b = xs32(&st) & (FILE_BLOCKS - 1);
-        HWRouter r; hw_init(&r, hins[k]->block_start, hins[k]->hyper_axis);
-        uint32_t addr = hw_at(&r, b);
-        sink += vol.data[addr * GEOS_BLOCK_SZ + (i & (GEOS_BLOCK_SZ - 1))];
+        const uint8_t *p = geos_hyper_project_block_inode(&vol, hins[k], b);
+        sink += p[(i + b) & (GEOS_BLOCK_SZ - 1)];
     }
     double t_rand_hoist = now_ms() - t0;
 
