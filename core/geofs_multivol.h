@@ -94,6 +94,18 @@ static inline int geos_mv_resolve(GeosMV *m, const char *name,
     return -1;
 }
 
+/* grow the name→volume directory (geometric growth, no hash) */
+static inline int geos_mv_dir_grow(GeosMV *m) {
+    uint32_t nc = m->dir_cap ? m->dir_cap * 2u : 64u;
+    GeosMvDirEntry *nd = (GeosMvDirEntry *)realloc(m->dir,
+                                                    nc * sizeof(*nd));
+    if (!nd) return -1;
+    memset(nd + m->dir_cap, 0, (nc - m->dir_cap) * sizeof(*nd));
+    m->dir = nd;
+    m->dir_cap = nc;
+    return 0;
+}
+
 /* place a whole file into ONE volume — tries volumes in order with
  * geos_hyper_find_seed, appends a fresh volume when none fits.
  * Returns 0 on success. */
@@ -113,7 +125,7 @@ static inline int geos_mv_place(GeosMV *m, const char *name,
                                              n_blocks, hw_stride(axis % HW_AXES));
         if (seed == 0xFFFFFFFFu) continue;
         if (!geos_hyper_place(v, name, size_bytes, data, seed, axis)) continue;
-        if (m->dir_n == m->dir_cap) return -3;           /* dir full */
+        if (m->dir_n == m->dir_cap && geos_mv_dir_grow(m) != 0) return -3;
         snprintf(m->dir[m->dir_n].name, GEOS_MAX_NAME, "%s", name);
         m->dir[m->dir_n].vol = i;
         m->dir_n++;
@@ -134,7 +146,7 @@ static inline int geos_mv_place(GeosMV *m, const char *name,
                                          n_blocks, hw_stride(axis % HW_AXES));
     if (seed == 0xFFFFFFFFu) return -5;   /* file larger than a volume */
     if (!geos_hyper_place(v, name, size_bytes, data, seed, axis)) return -5;
-    if (m->dir_n == m->dir_cap) return -3;
+    if (m->dir_n == m->dir_cap && geos_mv_dir_grow(m) != 0) return -3;
     snprintf(m->dir[m->dir_n].name, GEOS_MAX_NAME, "%s", name);
     m->dir[m->dir_n].vol = m->n_used - 1u;
     m->dir_n++;

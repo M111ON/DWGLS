@@ -972,10 +972,10 @@ static inline void geos_visualize(GeosVolume *v, const char *highlight_name) {
         GeosInode *inode = geos_find(v, highlight_name);
         if (inode) {
             char m = '@';
-            int hyper = (inode->flags & GEOS_FLAG_HYPER) != 0;
-            HWRouter hr; if (hyper) hw_init(&hr, inode->block_start, inode->hyper_axis);
+            int is_hyper = (inode->flags & GEOS_FLAG_HYPER) != 0;
+            HWRouter hr; if (is_hyper) hw_init(&hr, inode->block_start, inode->hyper_axis);
             for (uint16_t b = 0; b < inode->block_count; b++) {
-                uint32_t flat = hyper ? hw_at(&hr, b) : (inode->block_start + b);
+                uint32_t flat = is_hyper ? hw_at(&hr, b) : (inode->block_start + b);
                 uint32_t row = flat / 144, col = flat % 144;
                 grid[row][col] = m;
             }
@@ -1038,10 +1038,10 @@ static inline int geos_serialize(GeosVolume *v, const char *path) {
     /* Write data blocks (only used blocks, compressed) */
     for (uint16_t i = 0; i < v->inode_count; i++) {
         GeosInode *inode = &v->inodes[i];
-        int hyper = (inode->flags & GEOS_FLAG_HYPER) != 0;
-        HWRouter hr; if (hyper) hw_init(&hr, inode->block_start, inode->hyper_axis);
+        int is_hyper = (inode->flags & GEOS_FLAG_HYPER) != 0;
+        HWRouter hr; if (is_hyper) hw_init(&hr, inode->block_start, inode->hyper_axis);
         for (uint16_t b = 0; b < inode->block_count; b++) {
-            uint32_t flat = hyper ? hw_at(&hr, b) : (inode->block_start + b);
+            uint32_t flat = is_hyper ? hw_at(&hr, b) : (inode->block_start + b);
             uint32_t offset = flat * GEOS_BLOCK_SZ;
             fwrite(&v->data[offset], GEOS_BLOCK_SZ, 1, f);
         }
@@ -1097,10 +1097,10 @@ static inline int geos_deserialize(GeosVolume *v, const char *path) {
 
     for (uint16_t i = 0; i < v->inode_count; i++) {
         GeosInode *in = &v->inodes[i];
-        int hyper = (in->flags & GEOS_FLAG_HYPER) != 0;
-        HWRouter hr; if (hyper) hw_init(&hr, in->block_start, in->hyper_axis);
+        int is_hyper = (in->flags & GEOS_FLAG_HYPER) != 0;
+        HWRouter hr; if (is_hyper) hw_init(&hr, in->block_start, in->hyper_axis);
         for (uint16_t b = 0; b < in->block_count; b++) {
-            uint32_t flat = hyper ? hw_at(&hr, b) : (in->block_start + b);
+            uint32_t flat = is_hyper ? hw_at(&hr, b) : (in->block_start + b);
             v->block_map[flat / 8] |= (1u << (flat % 8));
             /* Read data block from file */
             uint32_t offset = flat * GEOS_BLOCK_SZ;
