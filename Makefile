@@ -546,6 +546,11 @@ kv-park-bench: tools/kv_park_bench.c core/kv_geofs_bridge.h core/kv_remap.h core
 	$(CC) $(CFLAGS) -o $(BUILD)/kv_park_bench tools/kv_park_bench.c $(LDFLAGS)
 	@echo "✅ kv-park-bench ready → ./$(BUILD)/kv_park_bench"
 
+kv-real-multiturn: tools/kv_real_multiturn_bench.c core/kv_dramtile_bridge.h core/kv_remap.h core/dramtile_store.h core/dramtile_store.c | $(BUILD)
+	@echo "▶ BUILD  kv_real_multiturn_bench"
+	$(CC) $(CFLAGS) -o $(BUILD)/kv_real_multiturn_bench tools/kv_real_multiturn_bench.c core/dramtile_store.c $(LDFLAGS)
+	@echo "✅ kv-real-multiturn ready → ./$(BUILD)/kv_real_multiturn_bench <kvslots dir>"
+
 ggf_ckpt: tools/ggf_checkpoint_replay.c core/geo_ggf_ckpt.h core/geo_ggf_walk.h core/geo_goldberg_file.h core/tied_dedup.h core/gguf_box.h | $(BUILD)
 	@echo "▶ BUILD  ggf_checkpoint_replay"
 	$(CC) $(CFLAGS) -o $(BUILD)/ggf_checkpoint_replay tools/ggf_checkpoint_replay.c $(LDFLAGS)

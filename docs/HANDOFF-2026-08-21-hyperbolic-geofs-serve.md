@@ -100,14 +100,40 @@ compression auto-select: <64B → RLE; else Diamond Shell
 
 ---
 
+## 🧪 Addendum — REAL multi-turn KV measurement (2026-08-22)
+
+สายใหม่: `tools/kv_dump_turns.c` (link ตรงกับ b9733 `llama.dll`, GTX 1050 Ti CPU path)
+→ dump **KV snapshot จริง 4 turn** จาก Qwen2.5-0.5B (29/33/33/41 tokens,
+0.34→1.60 MB, ~12 KB/token) แล้วผ่าน `tools/kv_real_multiturn_bench.c`
+(kv_remap + DRamTile twin store):
+
+| ผลลัพธ์ | ตัวเลข | verdict |
+|---|---|---|
+| Lossless park/resume บน KV จริง | memcmp ครบทุก turn **ALL OK** | ✅ capability ผ่าน |
+| Skeleton compression บน real KV | **4.09×** (random bench เคย = 1.0×) | ✅ real KV มีโครงสร้าง จับได้จริง |
+| Byte-level delta บน serialized state | delta/KV = **100–107%**, resume ช้ากว่า memcpy floor 20–45× | ❌ **NET LOSS** |
+
+**เหตุผล (วัดยืนยัน):** state file ของ `llama_state_seq_get_data` ไม่ใช่
+prefix-nested — turn1 vs turn2 ต่างกัน 98.8% ใน region เดิม (first diff @12)
+→ append-only property อยู่ที่ **live KV cache** ไม่ใช่ **serialized form**
+และ public API ไม่เปิด raw cache buffer
+
+**Verdict ตรงตัวเลข:** การประหยัดต่อ agent ตอนนี้ *พิสูจน์แล้ว* เฉพาะฝั่ง
+compression (4.09×); โครงเรื่อง "delta ∝ events" บน serialized interface
+**ยังไม่ผ่าน** — ต้อง hook คนละจุด (patch llama.cpp ให้ expose raw K/V
+per-layer pointer หรือรัน KV บน stack ของเราเอง) ก่อนถึงจะวัดได้จริง
+
 ## ⏭️ ขั้นต่อไป (เปิดไว้)
 
+0. **Expose raw K/V cache buffers** — patch llama.cpp (source ที่ I:\llama.cpp
+   build dir configure MinGW ไว้; gcc 8 เก่าเกิน ต้อง gcc ≥9) ให้เห็น pointer
+   ต่อ layer → วัด delta ที่ layer จริงซึ่ง append-only จริง
 1. **ฝัง geos_mv_serve เข้า llama.cpp** — callback อ่าน weight จาก pull API
    (แทน mmap gguf ตรงๆ) — pull ช้ากว่า raw mmap 3.5× (SEQ) / 1.5× (RAND)
    → ต้องให้ค่าที่ได้มาจาก capability (dedup/multi-view/replay) หรือ optimize
    walk path ให้แตะ parity ก่อน
 2. **KV park/resume end-to-end บน inference จริง** — snapshot ระหว่าง generate →
-   resume session ใหม่ผ่าน dramtile twin store
+   resume session ใหม่ผ่าน dramtile twin store (lossless ✅ แล้วบน state file)
 3. **Rail SCAN threshold tuning** — layer-group scan vs flat range บน workload จริง
 4. **18tes (GEO_COMPOUND_144)** — ยัง FUTURE (เดิม); 1tes fixed frame ใช้งานจริงแล้ว
 5. **Tied-embedding dedup wire-in** (จาก 08-17) — registry {id→home} ยังไม่ได้เชื่อม
