@@ -120,6 +120,11 @@ TIER1 := \
   test_ghost_direct \
   test_pair_table \
   test_hybrid_kv \
+  test_kv_remap \
+  test_kv_remap_diamond \
+  test_kv_geofs_bridge \
+  test_kv_rail_geofs \
+  test_kv_dramtile \
 
 # ── เทสต์ที่เหลือ (ไม่ได้อยู่ใน TIER1/TIER2) = legacy ประวัติการพัฒนา ──
 # เขียนก่อน rescope 2026-08-14 — เก็บไว้ย้อนดูเท่านั้น ไม่ใช้ยืนยันระบบปัจจุบัน
@@ -535,6 +540,11 @@ ggf_bench: tools/ggf_mmap_bench.c core/geo_goldberg_file.h core/geo_goldberg_sto
 	@echo "▶ BUILD  ggf_mmap_bench"
 	$(CC) $(CFLAGS) -o $(BUILD)/ggf_mmap_bench tools/ggf_mmap_bench.c $(LDFLAGS)
 	@echo "✅ ggf_bench ready → ./$(BUILD)/ggf_mmap_bench <file.ggf>"
+
+kv-park-bench: tools/kv_park_bench.c core/kv_geofs_bridge.h core/kv_remap.h core/kv_remap_rail.h core/geofs_core.h | $(BUILD)
+	@echo "▶ BUILD  kv_park_bench"
+	$(CC) $(CFLAGS) -o $(BUILD)/kv_park_bench tools/kv_park_bench.c $(LDFLAGS)
+	@echo "✅ kv-park-bench ready → ./$(BUILD)/kv_park_bench"
 
 ggf_ckpt: tools/ggf_checkpoint_replay.c core/geo_ggf_ckpt.h core/geo_ggf_walk.h core/geo_goldberg_file.h core/tied_dedup.h core/gguf_box.h | $(BUILD)
 	@echo "▶ BUILD  ggf_checkpoint_replay"
