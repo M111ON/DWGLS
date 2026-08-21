@@ -678,12 +678,21 @@ static inline int geos_hyper_read(GeosVolume *v, const char *name,
     if (!in || !buf || !(in->flags & GEOS_FLAG_HYPER)) return -1;
 
     uint32_t bytes = (buf_size < in->size_bytes) ? buf_size : in->size_bytes;
-    HWRouter r; hw_init(&r, in->block_start, in->hyper_axis);
+    /* incremental walk: addr_{b+1} = addr_b + stride (mod GEO_FULL) —
+     * mathematically identical to hw_at(&r, b) but with a conditional
+     * subtract instead of an integer division per block. hw_at stays
+     * the O(1) random-access oracle; sequential reads walk. */
+    uint32_t stride = hw_stride(in->hyper_axis);
+    uint32_t addr = in->block_start % GEO_FULL;
     for (uint32_t b = 0; b < in->block_count && b * GEOS_BLOCK_SZ < bytes; b++) {
-        uint32_t addr = hw_at(&r, b);
+        /* next walk address is known one step ahead → prefetch its line
+         * (stride·64B jumps defeat the hardware prefetcher) */
+        uint32_t nxt = addr + stride; if (nxt >= GEO_FULL) nxt -= GEO_FULL;
+        __builtin_prefetch(&v->data[nxt * GEOS_BLOCK_SZ], 0, 3);
         uint32_t off = b * GEOS_BLOCK_SZ;
         uint32_t n = bytes - off; if (n > GEOS_BLOCK_SZ) n = GEOS_BLOCK_SZ;
         memcpy(buf + off, &v->data[addr * GEOS_BLOCK_SZ], n);
+        addr = nxt;
     }
     return (int)bytes;
 }
