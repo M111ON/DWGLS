@@ -221,9 +221,10 @@ Session summary: vault `[[Memory/Sessions/2026-08-22_dwgls]]` (run `I:\tools\obs
 **KV/state DONE (2026-08-23):** `tools/kv_rid_serve.c` (`make kv-rid`) — llama STATE ⇄ RID slot region: checkpoint mid-generation (@token 100, 1.29MB = 10 parts) · readback byte-identical through pent/tri/snub views · restore in FRESH context → logits@restore BITWISE (maxdiff 0, 151936 dims) + 24 post tokens identical · damage drill localize+re-bake. Lesson: logits capture index is position-sensitive — off-by-one shows as maxdiff ~10, not noise.
 
 **4TH LANGUAGE DONE (2026-08-23):** golden-spiral (phyllotaxis/circle-packing) view — `tools/hosoya_view_probe.c` 11/11 oracle-pass (stride F(7)=13 mod 60: Euclid gcd + bijection + inverse 37≡13⁻¹ + Hosoya cell T(6,0) + φ-convergent 13/8 + mutation red stride-14) · wired as view "hosoya" in `gguf_roundtrip` → full GGUF 5156 parts lossless ×4 languages.
-**CHIRAL SWITCH DONE (2026-08-23):** mirror enantiomorph view "snubR" (complement all diagonal bits) — snubL≠snubR 30/30 squares, both lossless on full GGUF → `gguf_roundtrip` now serves **×5 languages: pent/tri/snubL/snubR/hosoya**.
+**CHIRAL SWITCH DONE (2026-08-23):** mirror enantiomorph view "snubR" (complement all diagonal bits) — snubL≠snubR 30/30 squares, both lossless on full GGUF.
+**ZECKENDORF DONE (2026-08-23):** `tools/zeckendorf_probe.c` 9/9 — existence+non-consecutive (1..4000) · uniqueness brute-force leaf-count oracle · reversed-code bijection on 60 slots · mutation red. View "zeck" wired → `gguf_roundtrip` serves **×6 languages: pent/tri/snubL/snubR/hosoya/zeck**, full GGUF lossless each. Open finding: circle-chain "13"="212212" digit-sum=10≠13 (palindrome ✓) — encoding needs source-image check.
 
-**Next:** soaked (3/3 pass all tools). Stocked branches remaining: Zeckendorf / circle-config catalog.
+**Next:** soaked (3/3 pass all tools). Stocked branches remaining: circle-config catalog (mapping study).
 
 ## 🔧 Build (manual)
 

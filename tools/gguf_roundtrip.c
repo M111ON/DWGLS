@@ -252,8 +252,8 @@ int main(int argc, char **argv) {
     printf("=== gguf_roundtrip — full file through RID slot region ===\n");
 
     /* ── RID geometry ────────────────────────────────────────────────── */
-    static uint8_t vw[5][60];
-    const char *lname[5] = { "pent", "tri", "snubL", "snubR", "hosoya" };
+    static uint8_t vw[6][60];
+    const char *lname[6] = { "pent", "tri", "snubL", "snubR", "hosoya", "zeck" };
     if (build_rid(vw) != 0) { printf("FAIL rid geometry\n"); return 1; }
     if (memcmp(vw[2], vw[3], 60) == 0) {
         printf("FAIL enantiomorphs identical\n"); return 1;
@@ -266,6 +266,33 @@ int main(int argc, char **argv) {
       for (uint32_t p = 0; p < 60; p++) {
           if (hit[vw[4][p]]) { printf("FAIL hosoya view not bijective\n"); return 1; }
           hit[vw[4][p]] = 1;
+      } }
+    /* 6th language: reversed-Zeckendorf order — slots sorted by their
+     * Fibonacci-base code read backward (proven tools/zeckendorf_probe.c:
+     * unique non-consecutive-Fib decomposition → reversal injective → bijection) */
+    { static const uint64_t ZF[12] =
+        { 0,1,1,2,3,5,8,13,21,34,55,89 };
+      uint32_t zkey[60], zord[60];
+      for (int n = 0; n < 60; n++) {
+          uint64_t rem = (uint64_t)(n + 1), mask = 0;
+          for (int i = 9; i >= 0; i--)
+              if (ZF[i + 2] <= rem) { mask |= 1ull << i; rem -= ZF[i + 2]; }
+          uint64_t rev = 0;
+          for (int b = 0; b < 10; b++)
+              if (mask & (1ull << b)) rev |= 1ull << (9 - b);
+          zkey[n] = (uint32_t)rev;
+          zord[n] = (uint32_t)n;
+      }
+      for (int i = 1; i < 60; i++) {
+          uint32_t v = zord[i]; int j = i - 1;
+          while (j >= 0 && zkey[zord[j]] > zkey[v]) { zord[j + 1] = zord[j]; j--; }
+          zord[j + 1] = v;
+      }
+      uint8_t hit[60]; memset(hit, 0, sizeof(hit));
+      for (uint32_t p = 0; p < 60; p++) {
+          if (hit[zord[p]]) { printf("FAIL zeck view not bijective\n"); return 1; }
+          hit[zord[p]] = 1;
+          vw[5][p] = (uint8_t)zord[p];
       } }
 
     /* ── read entire file ────────────────────────────────────────────── */
@@ -300,7 +327,7 @@ int main(int argc, char **argv) {
 
     int all_ok = 1;
 
-    for (int lang = 0; lang < 5; lang++) {
+    for (int lang = 0; lang < 6; lang++) {
         DtSlotRegion reg;
         remove(twin_path);
         if (dt_slot_init_twin(&reg, twin_path,
