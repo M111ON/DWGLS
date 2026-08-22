@@ -103,6 +103,7 @@ TIER1 := \
   test_geo_hyper_fs \
   test_geo_hyper_real \
   test_rdh_addr \
+  test_iso_rot90 \
   test_tied_dedup \
   test_goldberg_decagram \
   test_goldberg_store \
