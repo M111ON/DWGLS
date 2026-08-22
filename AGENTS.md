@@ -222,9 +222,10 @@ Session summary: vault `[[Memory/Sessions/2026-08-22_dwgls]]` (run `I:\tools\obs
 
 **4TH LANGUAGE DONE (2026-08-23):** golden-spiral (phyllotaxis/circle-packing) view — `tools/hosoya_view_probe.c` 11/11 oracle-pass (stride F(7)=13 mod 60: Euclid gcd + bijection + inverse 37≡13⁻¹ + Hosoya cell T(6,0) + φ-convergent 13/8 + mutation red stride-14) · wired as view "hosoya" in `gguf_roundtrip` → full GGUF 5156 parts lossless ×4 languages.
 **CHIRAL SWITCH DONE (2026-08-23):** mirror enantiomorph view "snubR" (complement all diagonal bits) — snubL≠snubR 30/30 squares, both lossless on full GGUF.
-**ZECKENDORF DONE (2026-08-23):** `tools/zeckendorf_probe.c` 9/9 — existence+non-consecutive (1..4000) · uniqueness brute-force leaf-count oracle · reversed-code bijection on 60 slots · mutation red. View "zeck" wired → `gguf_roundtrip` serves **×6 languages: pent/tri/snubL/snubR/hosoya/zeck**, full GGUF lossless each. Open finding: circle-chain "13"="212212" digit-sum=10≠13 (palindrome ✓) — encoding needs source-image check.
+**ZECKENDORF DONE (2026-08-23):** `tools/zeckendorf_probe.c` 9/9 — existence+non-consecutive (1..4000) · uniqueness brute-force leaf-count oracle · reversed-code bijection on 60 slots · mutation red. View "zeck" wired → `gguf_roundtrip` serves **×6 languages: pent/tri/snubL/snubR/hosoya/zeck**, full GGUF lossless each.
+**CIRCLE-CONFIG CATALOG DONE (2026-08-23):** `tools/circle_config_probe.c` 13/13 — contact-degree catalog: deg3=dodeca · deg4=RID(E=120) · deg5=snub(E=150, both enantiomorphs uniform) · deg6=hex packing; `geo_cell_classify` 8-parity bridge non-degenerate. Lesson: uffind return = ROOT not parity — bits must come from the out-param (root-as-bit → all-same diagonals → deg 4/6 alternating). Open finding: circle-chain "13"="212212" digit-sum ≤12 < 13 structurally impossible — needs source-image semantics check.
 
-**Next:** soaked (3/3 pass all tools). Stocked branches remaining: circle-config catalog (mapping study).
+**Next:** all stocked branches opened+passed (3/3). Remaining queue: interop bridge / 18tes upgrade / soak re-run after any core change.
 
 ## 🔧 Build (manual)
 

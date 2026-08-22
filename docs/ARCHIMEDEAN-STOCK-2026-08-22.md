@@ -49,7 +49,13 @@ damage: flip 1 byte → localize slot R(v,f)+layer (per-part XOR) → re-bake 1 
 | ~~ภาษาที่ 4: Fibonacci/circle view~~ | **OPENED+PASSED (2026-08-23)** — golden-spiral stride F(7)=13 mod 60 · probe 11/11 (`tools/hosoya_view_probe.c`: Euclid gcd oracle + inverse 37 + Hosoya cell T(6,0) + φ-convergent 13/8 + mutation red) · real-GGUF 5156 parts lossless via `gguf_roundtrip` view "hosoya" | เสร็จแล้ว |
 | ~~snub-mode switch~~ | **OPENED+PASSED (2026-08-23)** — mirror enantiomorph runtime toggle: complement ทุก diagonal bit → view "snubR" · snubL≠snubR 30/30 squares · full GGUF lossless ทั้งคู่ (gguf_roundtrip ×5 languages: pent/tri/snubL/snubR/hosoya) | เสร็จแล้ว |
 | ~~Zeckendorf decomposition~~ | **OPENED+PASSED (2026-08-23)** — `tools/zeckendorf_probe.c` 9/9 (existence+non-consecutive 1..4000 · uniqueness brute-force leaf-count · reversed-code bijection 60 slots · mutation red 3998/4000) · view "zeck" ใน gguf_roundtrip → full GGUF lossless (**×6 languages**) · **open finding**: chain "13"="212212" sum=10≠13 (palindrome ✓) — encoding ต้องเช็คกับรูปต้นฉบับ | เสร็จแล้ว |
-| circle-config catalog (degree 4/5/6) | classify table ↔ geo_cell_classify / tied_dedup | mapping study |
+| ~~circle-config catalog (degree 4/5/6)~~ | **OPENED+PASSED (2026-08-23)** — `tools/circle_config_probe.c` 13/13: contact-degree catalog ครบ — deg3=dodeca(3.3.3) · deg4=RID(3.4.5.4, E=120) · deg5=snub(3.3.3.3.5, E=150, enantiomorph 2 solutions ผ่าน variant table) · deg6=hex packing (kissing number oracle) · bridge `geo_cell_classify` 8 parity types non-degenerate + deterministic | เสร็จแล้ว |
+
+### Chain "13" encoding — impossibility result (2026-08-23)
+
+word "212212" ยาว 6 ตัว อักษร {1,2} → digit-sum ≤ 12 < 13 → **การอ่านแบบ digit-sum ให้ 13 ไม่ได้โดยโครงสร้าง**
+(even-length word จาก {1,2} sum เป็น ≤12 เสมอ) — palindrome ✓ แต่ label "13" ต้องใช้ semantics อื่น
+(เช่น curvature chain / tangency extent / word-as-code) — **ต้องเช็คกับรูปต้นฉบับ** ห้าม force-fit
 | blueprint-compression (7 centroids/block) | validated แต่ encode 60B/block แพ้ Q8_0 raw 34B/block — ใช้เป็น observation layer เท่านั้น | — |
 
 ## 5. ท่อตรง (MAINLINE) — GeoFS/llama graft
