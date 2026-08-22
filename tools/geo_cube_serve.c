@@ -21,6 +21,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#include <process.h>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -73,6 +74,39 @@ static uint64_t xor_padded_part(const uint8_t *src, uint32_t len) {
     return x;
 }
 
+/* ── parallel copy/memcmp workers (bake & verify are fault/copy bound) ── */
+#define N_THREADS 8
+
+typedef struct {
+    const uint8_t *src;      /* source bytes (gguf mmap) */
+    uint8_t       *dst;      /* window position          */
+    uint32_t       len;
+} CopyJob;
+
+typedef struct {
+    CopyJob *jobs;
+    uint32_t lo, hi;
+    volatile uint32_t bad;   /* verify: mismatch count */
+} WorkerArg;
+
+static void worker_copy(WorkerArg *a) {
+    for (uint32_t j = a->lo; j < a->hi; j++)
+        memcpy(a->jobs[j].dst, a->jobs[j].src, a->jobs[j].len);
+}
+
+static unsigned __stdcall worker_verify(void *p) {
+    WorkerArg *a = (WorkerArg *)p;
+    for (uint32_t j = a->lo; j < a->hi; j++)
+        if (memcmp(a->jobs[j].dst, a->jobs[j].src, a->jobs[j].len) != 0)
+            a->bad++;
+    return 0;
+}
+
+static unsigned __stdcall worker_copy_thunk(void *p) {
+    worker_copy((WorkerArg *)p);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *path = argc > 1 ? argv[1]
         : "I:\\model\\Qwen2.5-0.5B-Instruct-Q8_0.gguf";
@@ -97,43 +131,67 @@ int main(int argc, char **argv) {
         (size_t)MAX_PARTS * PART_BYTES, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!win) { printf("FAIL: VirtualAlloc\n"); return 1; }
 
-    /* ── BAKE ────────────────────────────────────────────────────────── */
-    double t0 = now_ms();
-    uint32_t f = 0;
-    for (uint32_t i = 0; i < r.n_tensors; i++) {
-        const uint8_t *src = r.base + r.data_offset + r.offsets[i];
-        uint32_t np = (r.sizes[i] + PART_BYTES - 1) / PART_BYTES;
-        for (uint32_t p = 0; p < np; p++, f++) {
-            uint32_t off = p * PART_BYTES;
-            uint32_t len = r.sizes[i] - off; if (len > PART_BYTES) len = PART_BYTES;
-            uint8_t *dst = win + part_offset(f);
-            memcpy(dst, src + off, len);
-            if (len < PART_BYTES) memset(dst + len, 0, PART_BYTES - len);
-        }
-    }
-    double bake_ms = now_ms() - t0;
-    printf("BAKE   %u parts · %.0f ms (%.2f GB/s scatter write)\n\n",
-           f, bake_ms, (double)total_bytes / 1e9 / (bake_ms / 1000.0));
-
-    /* ── VERIFY — pull every part back through fold, memcmp ──────────── */
-    t0 = now_ms();
+    /* ── BAKE (parallel): build jobs → threaded copy ─────────────────── */
     uint64_t verified = 0; uint32_t bad = 0;
+    CopyJob *jobs = (CopyJob *)malloc(sizeof(CopyJob) * total_parts);
+    if (!jobs) { printf("FAIL: jobs\n"); return 1; }
+    double t0 = now_ms();
     {
-        uint32_t fid = 0;
+        /* job table only — fresh VirtualAlloc pages are already zero, so
+           partial-tail padding comes for free; workers do all the copying */
+        uint32_t f = 0;
         for (uint32_t i = 0; i < r.n_tensors; i++) {
             const uint8_t *src = r.base + r.data_offset + r.offsets[i];
             uint32_t np = (r.sizes[i] + PART_BYTES - 1) / PART_BYTES;
-            for (uint32_t p = 0; p < np; p++, fid++) {
+            for (uint32_t p = 0; p < np; p++, f++) {
                 uint32_t off = p * PART_BYTES;
                 uint32_t len = r.sizes[i] - off; if (len > PART_BYTES) len = PART_BYTES;
-                if (memcmp(win + part_offset(fid), src + off, len) != 0) bad++;
-                else verified += len;
+                jobs[f].src = src + off;
+                jobs[f].dst = win + part_offset(f);
+                jobs[f].len = len;
             }
         }
+        verified = total_bytes;
+        HANDLE th[N_THREADS]; WorkerArg wa[N_THREADS];
+        uint32_t per = (total_parts + N_THREADS - 1) / N_THREADS;
+        for (uint32_t k = 0; k < N_THREADS; k++) {
+            wa[k].jobs = jobs;
+            wa[k].lo = k * per; wa[k].hi = (k + 1) * per;
+            if (wa[k].hi > total_parts) wa[k].hi = total_parts;
+            wa[k].bad = 0;
+            if (wa[k].lo < wa[k].hi)
+                th[k] = (HANDLE)_beginthreadex(NULL, 0, worker_copy_thunk, &wa[k], 0, NULL);
+            else th[k] = NULL;
+        }
+        for (uint32_t k = 0; k < N_THREADS; k++)
+            if (th[k]) { WaitForSingleObject(th[k], INFINITE); CloseHandle(th[k]); }
+    }
+    double bake_ms = now_ms() - t0;
+    printf("BAKE   %u parts · %.0f ms (%.2f GB/s scatter write, %d threads)\n\n",
+           total_parts, bake_ms, (double)total_bytes / 1e9 / (bake_ms / 1000.0), N_THREADS);
+
+    /* ── VERIFY (parallel memcmp vs source) ──────────────────────────── */
+    t0 = now_ms();
+    {
+        HANDLE th[N_THREADS]; WorkerArg wa[N_THREADS];
+        uint32_t per = (total_parts + N_THREADS - 1) / N_THREADS;
+        for (uint32_t k = 0; k < N_THREADS; k++) {
+            wa[k].jobs = jobs;
+            wa[k].lo = k * per; wa[k].hi = (k + 1) * per;
+            if (wa[k].hi > total_parts) wa[k].hi = total_parts;
+            wa[k].bad = 0;
+            if (wa[k].lo < wa[k].hi)
+                th[k] = (HANDLE)_beginthreadex(NULL, 0, worker_verify, &wa[k], 0, NULL);
+            else th[k] = NULL;
+        }
+        for (uint32_t k = 0; k < N_THREADS; k++)
+            if (th[k]) { WaitForSingleObject(th[k], INFINITE); CloseHandle(th[k]); }
+        for (uint32_t k = 0; k < N_THREADS; k++) bad += wa[k].bad;
     }
     double vf_ms = now_ms() - t0;
-    printf("VERIFY %.1f MB byte-identical · %u bad parts · %.0f ms (%s)\n\n",
+    printf("VERIFY %.1f MB byte-identical · %u bad parts · %.0f ms (%.2f GB/s, %s)\n\n",
            (double)verified / 1e6, bad, vf_ms,
+           (double)verified / 1e9 / (vf_ms / 1000.0),
            bad ? "LOSSLESS BROKEN" : "lossless");
     if (bad) { VirtualFree(win, 0, MEM_RELEASE); return 1; }
 
