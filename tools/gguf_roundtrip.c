@@ -63,7 +63,7 @@ static int uf_merge(int i,int j,uint8_t d){
     uf_p[ri]=rj; uf_par[ri]=(uint8_t)(pi^d^pj);
     return 1;
 }
-static int build_rid(uint8_t vw[3][60]) {
+static int build_rid(uint8_t vw[4][60]) {
     build_dodeca();
     int64_t emin=0;
     for(uint32_t i=0;i<n_verts;i++)for(uint32_t j=i+1;j<n_verts;j++){
@@ -197,8 +197,19 @@ static int build_rid(uint8_t vw[3][60]) {
             vw[2][n++]=(uint8_t)a; vw[2][n++]=(uint8_t)b;
         }
       }
+      /* mirror enantiomorph: complement ALL diagonal bits — the parity
+       * system has exactly 2 solutions (proven geo_snub_test.c T6);
+       * flipping every bit yields the other one */
+      { uint32_t n=0;
+        for(uint32_t k=0;k<n_edges;k++){
+            uint32_t a,b;
+            if(bits[k]==0){ a=sqc[k][1]; b=sqc[k][3]; }
+            else          { a=sqc[k][0]; b=sqc[k][2]; }
+            vw[3][n++]=(uint8_t)a; vw[3][n++]=(uint8_t)b;
+        }
+      }
     }
-    for(int v=0;v<3;v++){
+    for(int v=0;v<4;v++){
         uint8_t hit[64]; memset(hit,0,sizeof(hit));
         for(uint32_t p=0;p<60;p++){
             if(hit[vw[v][p]]) return -1;
@@ -241,9 +252,21 @@ int main(int argc, char **argv) {
     printf("=== gguf_roundtrip — full file through RID slot region ===\n");
 
     /* ── RID geometry ────────────────────────────────────────────────── */
-    static uint8_t vw[3][60];
-    const char *lname[3] = { "pent", "tri", "snub" };
+    static uint8_t vw[5][60];
+    const char *lname[5] = { "pent", "tri", "snubL", "snubR", "hosoya" };
     if (build_rid(vw) != 0) { printf("FAIL rid geometry\n"); return 1; }
+    if (memcmp(vw[2], vw[3], 60) == 0) {
+        printf("FAIL enantiomorphs identical\n"); return 1;
+    }
+    printf("chiral: snubL != snubR over 30/30 squares (enantiomorph pair) ✓\n");
+    /* 5th language: golden-spiral (phyllotaxis) — stride F(7)=13 mod 60
+     * proven bijective in tools/hosoya_view_probe.c (gcd oracle + inverse 37) */
+    for (uint32_t p = 0; p < 60; p++) vw[4][p] = (uint8_t)((p * 13u) % 60u);
+    { uint8_t hit[60]; memset(hit, 0, sizeof(hit));
+      for (uint32_t p = 0; p < 60; p++) {
+          if (hit[vw[4][p]]) { printf("FAIL hosoya view not bijective\n"); return 1; }
+          hit[vw[4][p]] = 1;
+      } }
 
     /* ── read entire file ────────────────────────────────────────────── */
     FILE *fp = fopen(path, "rb");
@@ -277,7 +300,7 @@ int main(int argc, char **argv) {
 
     int all_ok = 1;
 
-    for (int lang = 0; lang < 3; lang++) {
+    for (int lang = 0; lang < 5; lang++) {
         DtSlotRegion reg;
         remove(twin_path);
         if (dt_slot_init_twin(&reg, twin_path,

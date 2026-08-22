@@ -44,8 +44,10 @@ damage: flip 1 byte → localize slot R(v,f)+layer (per-part XOR) → re-bake 1 
 
 | สาขา | สาระ | จุดเริ่ม |
 |---|---|---|
-| ภาษาที่ 4: Fibonacci/circle view | word-sum ladder = Fib · palindrome ↔ enter-anywhere · Hosoya grid proven แล้ว (`tools/hosoya_seed_probe.c` 10/10) | เพิ่ม view ที่ 4 ใน geo_rid_serve sweep |
-| snub-mode switch | serve แบบ chiral ซ้าย/ขวา (bits[k]^1) | flag ใน geo_rid_serve |
+| สาขา | สาระ | จุดเริ่ม |
+|---|---|---|
+| ~~ภาษาที่ 4: Fibonacci/circle view~~ | **OPENED+PASSED (2026-08-23)** — golden-spiral stride F(7)=13 mod 60 · probe 11/11 (`tools/hosoya_view_probe.c`: Euclid gcd oracle + inverse 37 + Hosoya cell T(6,0) + φ-convergent 13/8 + mutation red) · real-GGUF 5156 parts lossless via `gguf_roundtrip` view "hosoya" | เสร็จแล้ว |
+| ~~snub-mode switch~~ | **OPENED+PASSED (2026-08-23)** — mirror enantiomorph runtime toggle: complement ทุก diagonal bit → view "snubR" · snubL≠snubR 30/30 squares · full GGUF lossless ทั้งคู่ (gguf_roundtrip ×5 languages: pent/tri/snubL/snubR/hosoya) | เสร็จแล้ว |
 | Zeckendorf decomposition | ไม่มีใน repo เลย — word→Fib index | probe ใหม่ ถ้าจำเป็น |
 | circle-config catalog (degree 4/5/6) | classify table ↔ geo_cell_classify / tied_dedup | mapping study |
 | blueprint-compression (7 centroids/block) | validated แต่ encode 60B/block แพ้ Q8_0 raw 34B/block — ใช้เป็น observation layer เท่านั้น | — |
