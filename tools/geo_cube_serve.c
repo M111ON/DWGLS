@@ -209,17 +209,21 @@ int main(int argc, char **argv) {
 
     printf("%6s %10s %12s %10s\n", "view", "sweep_ms", "GB/s", "xor_match");
     int views_ok = 1;
-    for (uint32_t v = 0; v < KIS_VIEWS; v++) {
-        t0 = now_ms();
-        uint64_t xo = 0;
-        for (uint32_t k = 0; k < N_CUBES; k++) {
+    /* parallel sweep: one worker per cube-group, XOR is associative */
+    typedef struct {
+        uint8_t *win; uint32_t total_parts, v, k_lo, k_hi; uint64_t xo;
+    } SweepArg;
+    unsigned __stdcall sweep_worker(void *p) {
+        SweepArg *a = (SweepArg *)p;
+        uint64_t x = 0;
+        for (uint32_t k = a->k_lo; k < a->k_hi; k++) {
             for (uint32_t rr = 0; rr < KIS_CUBE; rr++) {
-                uint32_t rp = kis_view6_slot(v, rr);
+                uint32_t rp = kis_view6_slot(a->v, rr);
                 uint32_t g  = k * (uint32_t)KIS_CUBE + rp;
-                if (g >= total_parts) continue;
-                const uint8_t *chunk = win + part_offset(g);
+                if (g >= a->total_parts) continue;
+                const uint8_t *chunk = a->win + part_offset(g);
                 for (uint32_t b = 0; b < PART_BYTES; b += 64)
-                    xo ^= *(const uint64_t *)(chunk + b)
+                    x ^= *(const uint64_t *)(chunk + b)
                        ^  *(const uint64_t *)(chunk + b + 8)
                        ^  *(const uint64_t *)(chunk + b + 16)
                        ^  *(const uint64_t *)(chunk + b + 24)
@@ -229,6 +233,25 @@ int main(int argc, char **argv) {
                        ^  *(const uint64_t *)(chunk + b + 56);
             }
         }
+        a->xo = x;
+        return 0;
+    }
+    for (uint32_t v = 0; v < KIS_VIEWS; v++) {
+        t0 = now_ms();
+        SweepArg sa[N_THREADS];
+        HANDLE th2[N_THREADS];
+        uint32_t per = N_CUBES / N_THREADS ? N_CUBES / N_THREADS : 1;
+        for (uint32_t k = 0; k < N_THREADS; k++) {
+            sa[k].win = win; sa[k].total_parts = total_parts; sa[k].v = v;
+            sa[k].k_lo = k * per; sa[k].k_hi = (k + 1) * per;
+            if (k == N_THREADS - 1 || sa[k].k_hi > N_CUBES) sa[k].k_hi = N_CUBES;
+            sa[k].xo = 0;
+            th2[k] = (HANDLE)_beginthreadex(NULL, 0, sweep_worker, &sa[k], 0, NULL);
+        }
+        for (uint32_t k = 0; k < N_THREADS; k++)
+            { WaitForSingleObject(th2[k], INFINITE); CloseHandle(th2[k]); }
+        uint64_t xo = 0;
+        for (uint32_t k = 0; k < N_THREADS; k++) xo ^= sa[k].xo;
         double ms = now_ms() - t0;
         int ok = (xo == src_xor);
         if (!ok) views_ok = 0;
