@@ -123,6 +123,21 @@ compression (4.09×); โครงเรื่อง "delta ∝ events" บน s
 **ยังไม่ผ่าน** — ต้อง hook คนละจุด (patch llama.cpp ให้ expose raw K/V
 per-layer pointer หรือรัน KV บน stack ของเราเอง) ก่อนถึงจะวัดได้จริง
 
+## 🧊 Addendum 2 — Cube-view serving on real GGUF (2026-08-22)
+
+`tools/geo_cube_serve.c`: bake Qwen2.5-0.5B parts (128KB × 5305) into the
+geometry window ผ่าน `iso_fold` (tes/cell/slot → anchor/hilbert/layer) แล้ว
+stream กลับมาใน **ทั้ง 6 cube views** (S₃ axis permutations):
+
+| ผลลัพธ์ | ตัวเลข |
+|---|---|
+| VERIFY lossless | byte-identical 0 bad ✓ |
+| 6-view sweep XOR | **ทุก view ตรง source** ✓ |
+| Sweep throughput | **8.1–8.5 GB/s ≈ 95% ของ raw memcpy** (เทียบ name-based SEQ 2.4 GB/s = 28%) |
+
+**ความหมาย:** baked copy เดียว เดินได้ 6 ลำดับ (6 face-views) โดยไม่ copy
+— addressing เป็น closed-form math ไม่มี directory → overhead แทบหาย
+
 ## ⏭️ ขั้นต่อไป (เปิดไว้)
 
 0. **Expose raw K/V cache buffers** — patch llama.cpp (source ที่ I:\llama.cpp
