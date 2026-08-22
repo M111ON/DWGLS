@@ -138,6 +138,25 @@ stream กลับมาใน **ทั้ง 6 cube views** (S₃ axis permuta
 **ความหมาย:** baked copy เดียว เดินได้ 6 ลำดับ (6 face-views) โดยไม่ copy
 — addressing เป็น closed-form math ไม่มี directory → overhead แทบหาย
 
+## 🫁 Addendum 3 — Breathing PROVEN on real weights (2026-08-22)
+
+`tools/geo_breathing_test.c`: ปิด gap สำคัญของ Read–Write Identity —
+**scale≠1 บน weights จริง พิสูจน์แล้ว** (ก่อนหน้านี้ ratio=1 เท่านั้น):
+
+```
+bake Qwen2.5 @scale1 → breathe in {expand×2, shuffle S₃}
+                     → breathe out {unshuffle, collapse} → home
+ทุก state: memcmp 5305/5305 ✓ · holes clean ✓ · bijection ✓
+whole-window XOR MATCH · DIAG 0/20736 slots differ ✅
+carried state = 4 events / 32 bytes
+```
+
+**บทเรียนที่ encode ลงในเทส (แต่ละอันคือ failure จริงก่อนหน้า):**
+1. v1 tautology (`L/R==fid`) — verify ต้องมี transform ที่มีผลจริง
+2. breathe in = **relocate bytes จริง** ไม่ใช่แค่ re-label
+3. event log unwind **LIFO** — collapse หลัง shuffle ไม่ matched = invalid
+4. vacated set = origins ∖ destinations (empty ใน bijection แท้, ไม่ว่างหลัง expand)
+
 ## ⏭️ ขั้นต่อไป (เปิดไว้)
 
 0. **Expose raw K/V cache buffers** — patch llama.cpp (source ที่ I:\llama.cpp
