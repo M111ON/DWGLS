@@ -78,17 +78,34 @@ WRITE@p → SCALE ×k (bytes นิ่ง) → READ ×(scale_now/scale_then):
 ratio=1 → อ่านจุดเดิม lossless ทันที · ratio≠1 → replay log → lossless —
 **ทั้งสอง path ผ่านการทดลองบนข้อมูลจริงแล้ว** (3.2 + 3.3)
 
+### 3.8 Worktree discoveries (2026-08-22, รายละเอียดใน WORKTREE-EXPERIMENTS-2026-08-22.md)
+- **Zero-copy relabel breathing**: consumer แบบ coordinate-addressed หายใจได้โดย
+  **0 copies** (log replay ล้วน) — memcpy counter = 0 ระหว่าง breathe · lossless
+  ทุก state บน Qwen weights จริง (`exp/alt-scale-semantics` `929122c`)
+- **Single sparse backing**: bake GGUF ลง 1 NTFS sparse file — logical 2.72GB,
+  **on-disk 0.68GB (75% holes)** · VERIFY byte-identical · warm sweep
+  11.4–11.6 GB/s ≥ RAM window mode (`exp/sparse-backing` `5fbd2f0`)
+- **Negative port**: LFM2.5-2.6B 22,014 parts > window 20,736 → in-field +
+  residual spill + bond registry (20KB) — memcmp lossless ทั้งสอง tier,
+  'FAIL exceeds window' เดิมถูกกำจัด (`exp/negative-port` `cdece7a`)
+- **Universe seed**: SmolLM2 + smolVLM อยู่ window เดียว lossless ไม่ชน,
+  1 ไฟล์ (`a9208f8`)
+- **Chunk-level dup scan**: Qwen2.5 มี duplicate chunks 1,104 ก้อน =
+  **144.6MB = 21.6% payload** (memcmp-confirm; auto-detect tied structure
+  โดยไม่รู้ architecture) · Qwen3/SmolLM/Kokoro = 0% → duplication เป็น
+  per-model structure (`8ee6aac`)
+
 ---
 
 ## 4. สิ่งที่ยังไม่พิสูจน์ / ยังไม่ทำ ❌⚠️ (โปร่งใสเต็มที่)
 
 | รายการ | สถานะจริง |
 |---|---|
-| **delta ∝ events บน inference จริง** | ❌ NET LOSS — byte-delta บน llama serialized state = 100–107% (state format ไม่ prefix-nested, วัดยืนยัน 98.8% bytes เปลี่ยน) · resume ช้ากว่า memcpy floor 20–45× · ต้อง hook raw K/V buffers ซึ่ง public API ไม่เปิด |
-| **multi-model universe (20 โมเดลชี้ข้าม)** | ❌ ยังไม่มี model-slot allocator — เป็น vision ที่ประกอบจากชิ้นที่พิสูจน์แล้ว แต่ยังไม่ได้ build |
-| **negative port (window overflow)** | ❌ LFM2.5-2.6B (22,014 parts > 20,736 slots) **FAIL ตรงๆ** — overflow handler ยังไม่มี |
-| **sparse backing file** | ⚠️ ตัดสินใจแล้ว (แทน 569 volume files) แต่ยังไม่ implement — วันนี้ใช้ VirtualAlloc RAM window |
-| **llama.cpp integration** | ⚠️ วิเคราะห์ bandwidth แล้ว (CPU tg ไม่ตก) แต่ pull API ยังไม่ได้ wire เข้า llama.cpp จริง; build ติด gcc ≥9 |
+| **delta ∝ events บน inference จริง** | ❌ NET LOSS — byte-delta บน llama serialized state = 100–107% (state format ไม่ prefix-nested, วัดยืนยัน 98.8% bytes เปลี่ยน) · resume ช้ากว่า memcpy floor 20–45× · ต้อง hook raw K/V buffers ซึ่ง public API ไม่เปิด (ต้อง gcc ≥9 + patch llama.cpp) |
+| **multi-model universe (ฉบับเต็ม)** | ⚠️ **seed proven**: 2 โมเดล coexist lossless ใน window เดียวแล้ว (3.8) — model-slot allocator ทั่วไป + jump API ยังไม่ build |
+| **negative port** | ✅ **proven** (3.8) — LFM2.5 serve ผ่าน residual bond แล้ว; ยังไม่ wire เข้า geofs_multivol production path |
+| **sparse backing file** | ✅ **proven** (3.8) — 1 file, holes 75%, perf ≥ RAM window; ยังไม่ replace geofs_multivol ใน production path |
+| **llama.cpp integration** | ⚠️ วิเคราะห์ bandwidth แล้ว (CPU tg ไม่ตก) แต่ pull API ยังไม่ได้ wire เข้า llama.cpp จริง; build ติด gcc ≥9 (Phase 0 ของ ACTION-PLAN) |
 | **GPU path** | ⚠️ VRAM-resident เท่านั้น — geometry เป็น source tier ต้นทาง ไม่สามารถ feed GPU สดระหว่าง generate (52 GB/s เกิน RAM bus) |
 
 ---
@@ -120,8 +137,10 @@ ratio=1 → อ่านจุดเดิม lossless ทันที · ratio�
 
 > ระบบพิสูจน์แล้วว่า: **container uniform + address=f(data) + index=cycle +
 > storage=seed/frame/codec** ทำงาน lossless ได้จริงบนข้อมูลจริงทั้ง ratio=1 และ
-> ratio≠1 โดยแบก state ข้าม scale เพียง 32 bytes
+> ratio≠1 (relocate + relabel สอง mode) · single sparse backing (holes 75%) ·
+> negative port สำหรับโมเดลเกิน window · universe seed สองโมเดลไฟล์เดียว —
+> แบก state ข้าม scale เพียง ~32 bytes/event
 >
-> ระบบยังไม่พิสูจน์: cross-model universe, overflow port, และ KV delta
-> บน interface ที่เราไม่ได้เป็นเจ้าของ — ทั้งหมดอยู่ใน next steps
+> ระบบยังไม่พิสูจน์: KV delta ∝ events บน interface ที่เราไม่ได้เป็นเจ้าของ
+> (ต้อง raw K/V hook), llama.cpp wire-in, GPU feed — ทั้งหมดอยู่ใน ACTION-PLAN
 > พร้อม root cause ที่วัดได้ทุกข้อ
