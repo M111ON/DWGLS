@@ -200,6 +200,20 @@ DWGLS/
 2. Check `core/kis_codec_v4.h` — baseline codec state
 3. Run `make test` (if Makefile exists) or compile tests manually
 
+## 🧵 Latest State (2026-08-22) — READ THIS FIRST
+
+Session summary: vault `[[Memory/Sessions/2026-08-22_dwgls]]` (run `I:\tools\obsidian-memory\obsidian_mem.cmd newsession` or query it).
+
+**Proven this session (all oracle-pass):**
+- `tools/geo_archimedean_test.c` — RID from int-dodeca via **R(u,F)=(vertex,face)** labeling (NOT directed edges!): V=60 · E=120 (=GEO_COMP_SPIKE_120) · faces 20△+30□+12⬠ · degree 4 · Euler 2. RID = 3-language interchange hub.
+- `core/iso_rot90.h` tri↔square bridge on 144 · `core/kis_cube_views.h` S₃ views · `tools/geo_cube_serve.c` real-GGUF bake all 6 views XOR match
+- `tools/geo_pentagrid_test.c` Elser-Sloane quasi-crystal: order-5 int rotation impossible, band 47.9%, mod-11 cycle
+- `tools/geo_invert_compound_test.c` dodeca 2-invert compound T1-T6
+
+**KV finding:** llama state files NOT prefix-nested (98.8% bytes shift) → delta net loss; link b9733 llama.dll directly (llama-server slot-save broken).
+
+**Next:** snub dodeca (F=92=GEO_GOLDBERG_92, chiral) → then `geo_rid_serve.c` data-plane with real GGUF.
+
 ## 🔧 Build (manual)
 
 ```bash
