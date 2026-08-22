@@ -206,13 +206,21 @@ Session summary: vault `[[Memory/Sessions/2026-08-22_dwgls]]` (run `I:\tools\obs
 
 **Proven this session (all oracle-pass):**
 - `tools/geo_archimedean_test.c` — RID from int-dodeca via **R(u,F)=(vertex,face)** labeling (NOT directed edges!): V=60 · E=120 (=GEO_COMP_SPIKE_120) · faces 20△+30□+12⬠ · degree 4 · Euler 2. RID = 3-language interchange hub.
+- `tools/geo_snub_test.c` — snub dodeca = chiral diagonal split of RID squares: V=60 · E=150 · F=92 (=GEO_GOLDBERG_92) · figure 3.3.3.3.5. Parity constraint solve → EXACTLY 2 solutions (bitwise complements) = enantiomorph pair. Lesson: naive local rule FAILS on odd cycles — solve globally.
+- `tools/geo_rid_serve.c` — data-plane PASSED on real GGUF (Qwen2.5-0.5B, 675.7MB): bake via RID slots (part f → layer f/60, slot f%60), lossless verify, 3 language views (pent/tri/snub-diag) each structural bijection over 60 slots with identical XOR == source; damage drill: localize slot + re-bake restores.
 - `core/iso_rot90.h` tri↔square bridge on 144 · `core/kis_cube_views.h` S₃ views · `tools/geo_cube_serve.c` real-GGUF bake all 6 views XOR match
 - `tools/geo_pentagrid_test.c` Elser-Sloane quasi-crystal: order-5 int rotation impossible, band 47.9%, mod-11 cycle
 - `tools/geo_invert_compound_test.c` dodeca 2-invert compound T1-T6
 
 **KV finding:** llama state files NOT prefix-nested (98.8% bytes shift) → delta net loss; link b9733 llama.dll directly (llama-server slot-save broken).
 
-**Next:** snub dodeca (F=92=GEO_GOLDBERG_92, chiral) → then `geo_rid_serve.c` data-plane with real GGUF.
+**Branches STOCKED (ห้ามเปิดก่อน mainline เสร็จ):** docs/ARCHIMEDEAN-STOCK-2026-08-22.md — ภาษาที่ 4 Hosoya/circle view · snub chiral switch · Zeckendorf · circle-config catalog.
+
+**MAINLINE DONE (2026-08-22):** `tools/geo_rid_graft.c` (`make rid-graft`) — RID slots → DtSlotRegion (twin mmap) → llama.cpp: A bake lossless (3 languages) · B unfold byte-identical (3 languages) · C real b9733 inference tokens identical + logits@0 BITWISE (151936 dims) · D damage drill localize+restore. llama reads weight storage addressed by RID language views.
+**GEOfs DONE (2026-08-23):** `tools/geofs_rid.c` (`make geofs-rid`) — GeosVolume ⇄ RID slot region: G1 summon real files readback identical · G2 persist blob→parts→DtSlotRegion twin (3 languages) · G3 reload fresh volume all files byte-identical vs ORIGINAL sources · G4 damage flip→localize→re-bake. Twin mmap persists across destroy (7.9MB file). GeoFS = persistent slot region as filesystem layer.
+**KV/state DONE (2026-08-23):** `tools/kv_rid_serve.c` (`make kv-rid`) — llama STATE ⇄ RID slot region: checkpoint mid-generation (@token 100, 1.29MB = 10 parts) · readback byte-identical through pent/tri/snub views · restore in FRESH context → logits@restore BITWISE (maxdiff 0, 151936 dims) + 24 post tokens identical · damage drill localize+re-bake. Lesson: logits capture index is position-sensitive — off-by-one shows as maxdiff ~10, not noise.
+
+**Next:** soaked (3/3 pass all tools). Stocked branches (Hosoya view / chiral switch / Zeckendorf) ready to open.
 
 ## 🔧 Build (manual)
 

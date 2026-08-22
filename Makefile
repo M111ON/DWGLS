@@ -410,6 +410,44 @@ graft-hybrid: | $(BUILD)
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
 	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_graft_hybrid $(LLAMA_GGUF) "The capital of France is" 40
 
+# ── RID graft (MAINLINE): RID slots -> DtSlotRegion -> llama.cpp ──
+# Model bytes baked into a twin slot region through 3 language views
+# (pent/tri/snub), unfolded back byte-identical, then real llama b9733
+# generation proves tokens identical + logits bitwise. Damage drill included.
+rid-graft: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/geo_rid_graft tools/geo_rid_graft.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
+	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/geo_rid_graft $(LLAMA_GGUF) "The capital of France is" 40
+
+# ── GeoFS on RID slot region: persistent FS layer ──
+geofs-rid: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare \
+	    -I core -o $(BUILD)/geofs_rid tools/geofs_rid.c -lm
+	./$(BUILD)/geofs_rid
+
+# ── llama KV/state ⇄ RID slot region ──
+kv-rid: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/kv_rid_serve tools/kv_rid_serve.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
+	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/kv_rid_serve $(LLAMA_GGUF) "The capital of France is" 24
+
+# ── Full GGUF file roundtrip through RID slot region ──
+# Pure file roundtrip (no inference): entire GGUF → slot region → readback
+# byte-identical + full rebuild via 3 language views + damage drill.
+gguf-roundtrip: | $(BUILD)
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare \
+	    -I core -o $(BUILD)/gguf_roundtrip tools/gguf_roundtrip.c -lm
+	./$(BUILD)/gguf_roundtrip $(LLAMA_GGUF)
+
 # ── Output on the +37 belt: model's token+logits stream → field ──
 # Step ⑤: real generation through the field-built graft, then embed the
 # captured output (tokens + full per-step logits) into the field in +37 belt
