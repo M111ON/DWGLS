@@ -105,6 +105,7 @@ TIER1 := \
   test_rdh_addr \
   test_iso_rot90 \
   test_iso_fold \
+  test_kis_cube_views \
   test_tied_dedup \
   test_goldberg_decagram \
   test_goldberg_store \
