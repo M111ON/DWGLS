@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -25,7 +26,9 @@ static double now_ms(void){
     QueryPerformanceCounter(&t);
     return (double)t.QuadPart*1000.0/(double)f.QuadPart;
 #else
-    return 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC,&ts);
+    return ts.tv_sec*1e3 + ts.tv_nsec/1e6;
 #endif
 }
 

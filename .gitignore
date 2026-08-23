@@ -57,3 +57,16 @@ tests/test_verify.c
 cloud-memory/.api_key
 cloud-memory/.wrangler/
 cloud-memory/**/__pycache__/
+
+# Colab binaries & debug logs (regenerable)
+colab-pack/circle_config_probe
+colab-pack/hexagram_cubes_probe
+colab-pack/hosoya_view_probe
+colab-pack/layer_manifest_probe
+colab-pack/p2_view_perf
+colab-pack/p3_view_roundtrip
+colab-pack/pascal_zigzag_probe
+colab-pack/rid_graft_linux
+colab-pack/zeckendorf_probe
+err_*.txt
+geo-views-package.zip
