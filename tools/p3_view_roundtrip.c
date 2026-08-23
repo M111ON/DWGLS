@@ -3,7 +3,7 @@
  * subcommands:
  *   p3 bake   <model> <twin> <viewidx>          file -> slot region
  *   p3 unfold <twin> <out> <viewidx> <nparts>   region -> file
- * views: pent/tri/snubL/snubR/hosoya/zeck
+ * views: pent/tri/snubL/snubR/hosoya/zeck/pascal/hexagram (8)
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -181,7 +181,7 @@ int main(int argc,char**argv){
                       argv[0],argv[0]);return 2;}
     static uint8_t vw[4][60];
     if(build_rid(vw)!=0){printf("FAIL rid\n");return 1;}
-    uint8_t vws[6][60];
+    uint8_t vws[8][60];
     for(int i=0;i<4;i++)memcpy(vws[i],vw[i],60);
     for(uint32_t p=0;p<60;p++)vws[4][p]=(uint8_t)((p*13u)%60u);
     {static const uint64_t ZF[12]={0,1,1,2,3,5,8,13,21,34,55,89};
@@ -197,10 +197,57 @@ int main(int argc,char**argv){
          while(j>=0&&key[ord[j]]>key[v]){ord[j+1]=ord[j];j--;}
          ord[j+1]=v;}
      for(int i=0;i<60;i++)vws[5][i]=(uint8_t)ord[i];}
+    { /* pascal: A(n)=sum (-1)^k C(n-k,k) period-6, sort by (A,n) */
+        int32_t A[60];
+        for(int n=0;n<60;n++){
+            int64_t s=0;
+            for(int k=0;k<=n/2;k++){
+                int NK=n-k, K=k;
+                if(K>NK-K) K=NK-K;
+                int64_t c=1;
+                for(int i=0;i<K;i++) c=c*(NK-i)/(i+1);
+                if(k&1) s-=c; else s+=c;
+            }
+            A[n]=(int32_t)s;
+        }
+        uint32_t ord[60]; for(int i=0;i<60;i++) ord[i]=(uint32_t)i;
+        for(int i=1;i<60;i++){uint32_t v=ord[i];int j=i-1;
+            while(j>=0 && (A[ord[j]]>A[v] || (A[ord[j]]==A[v] && (int)ord[j]>(int)v))){
+                ord[j+1]=ord[j];j--;
+            }
+            ord[j+1]=v;
+        }
+        for(int i=0;i<60;i++) vws[6][i]=(uint8_t)ord[i];
+    }
+    { /* hexagram: rectangular scan -> hex distance rank */
+        int32_t dist[60], q0a[60], r0a[60];
+        for(int i=0;i<60;i++){
+            int q=(i%10)-5, r=(i/10)-2;
+            q0a[i]=q; r0a[i]=r;
+            int aq=q<0?-q:q, ar=r<0?-r:r, as=(q+r)<0?-(q+r):(q+r);
+            dist[i]=(aq+ar+as)/2;
+        }
+        uint32_t ord[60]; for(int i=0;i<60;i++) ord[i]=(uint32_t)i;
+        for(int i=1;i<60;i++){uint32_t v=ord[i];int j=i-1;
+            while(j>=0 && (dist[ord[j]]>dist[v] ||
+                   (dist[ord[j]]==dist[v] && q0a[ord[j]]>q0a[v]) ||
+                   (dist[ord[j]]==dist[v] && q0a[ord[j]]==q0a[v] && r0a[ord[j]]>r0a[v]))){
+                ord[j+1]=ord[j];j--;
+            }
+            ord[j+1]=v;
+        }
+        for(int i=0;i<60;i++) vws[7][i]=(uint8_t)ord[i];
+    }
+    /* verify all 8 views bijective */
+    for(int v=0;v<8;v++){
+        uint8_t hit[60]={0};
+        for(int p=0;p<60;p++){ uint8_t s=vws[v][p]; if(hit[s]){printf("FAIL dup view %d\n",v);return 1;} hit[s]=1; }
+    }
 
     if(strcmp(argv[1],"bake")==0){
         const char*model=argv[2];const char*twin=argv[3];
         int v=atoi(argv[4]);
+        if(v<0||v>=8){printf("FAIL view 0..7\n");return 1;}
         FILE*fp=fopen(model,"rb");
         if(!fp){printf("FAIL open model\n");return 1;}
         fseek(fp,0,SEEK_END);long fsz=ftell(fp);fseek(fp,0,SEEK_SET);
@@ -226,6 +273,7 @@ int main(int argc,char**argv){
     if(strcmp(argv[1],"unfold")==0){
         const char*twin=argv[2];const char*out=argv[3];
         int v=atoi(argv[4]);
+        if(v<0||v>=8){printf("FAIL view 0..7\n");return 1;}
         uint32_t total=(uint32_t)atoi(argv[5]);
         long fsz=(argc>6)?atol(argv[6]):-1L;
         uint32_t nslots=((total+59)/60)*60;   /* round up to layer */

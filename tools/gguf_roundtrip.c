@@ -252,8 +252,8 @@ int main(int argc, char **argv) {
     printf("=== gguf_roundtrip — full file through RID slot region ===\n");
 
     /* ── RID geometry ────────────────────────────────────────────────── */
-    static uint8_t vw[6][60];
-    const char *lname[6] = { "pent", "tri", "snubL", "snubR", "hosoya", "zeck" };
+    static uint8_t vw[8][60];
+    const char *lname[8] = { "pent", "tri", "snubL", "snubR", "hosoya", "zeck", "pascal", "hexagram" };
     if (build_rid(vw) != 0) { printf("FAIL rid geometry\n"); return 1; }
     if (memcmp(vw[2], vw[3], 60) == 0) {
         printf("FAIL enantiomorphs identical\n"); return 1;
@@ -288,12 +288,57 @@ int main(int argc, char **argv) {
           while (j >= 0 && zkey[zord[j]] > zkey[v]) { zord[j + 1] = zord[j]; j--; }
           zord[j + 1] = v;
       }
-      uint8_t hit[60]; memset(hit, 0, sizeof(hit));
-      for (uint32_t p = 0; p < 60; p++) {
-          if (hit[zord[p]]) { printf("FAIL zeck view not bijective\n"); return 1; }
-          hit[zord[p]] = 1;
-          vw[5][p] = (uint8_t)zord[p];
-      } }
+       uint8_t hit[60]; memset(hit, 0, sizeof(hit));
+       for (uint32_t p = 0; p < 60; p++) {
+           if (hit[zord[p]]) { printf("FAIL zeck view not bijective\n"); return 1; }
+           hit[zord[p]] = 1;
+           vw[5][p] = (uint8_t)zord[p];
+       } }
+    { /* 7th language: Pascal — A(n)=sum (-1)^k C(n-k,k) period-6, sort by (A,n) */
+        int32_t A[60];
+        for(int n=0;n<60;n++){
+            int64_t s=0;
+            for(int k=0;k<=n/2;k++){
+                int NK=n-k, K=k;
+                if(K>NK-K) K=NK-K;
+                int64_t c=1;
+                for(int i=0;i<K;i++) c=c*(NK-i)/(i+1);
+                if(k&1) s-=c; else s+=c;
+            }
+            A[n]=(int32_t)s;
+        }
+        uint32_t ord[60]; for(int i=0;i<60;i++) ord[i]=(uint32_t)i;
+        for(int i=1;i<60;i++){uint32_t v=ord[i];int j=i-1;
+            while(j>=0 && (A[ord[j]]>A[v] || (A[ord[j]]==A[v] && (int)ord[j]>(int)v))){
+                ord[j+1]=ord[j];j--;
+            }
+            ord[j+1]=v;
+        }
+        uint8_t hit[60]; memset(hit,0,sizeof(hit));
+        for(int i=0;i<60;i++){ if(hit[ord[i]]){printf("FAIL pascal\n");return 1;} hit[ord[i]]=1; }
+        for(int i=0;i<60;i++) vw[6][i]=(uint8_t)ord[i];
+    }
+    { /* 8th language: hexagram — rectangular scan -> hex distance rank */
+        int32_t dist[60], q0a[60], r0a[60];
+        for(int i=0;i<60;i++){
+            int q=(i%10)-5, r=(i/10)-2;
+            q0a[i]=q; r0a[i]=r;
+            int aq=q<0?-q:q, ar=r<0?-r:r, as=(q+r)<0?-(q+r):(q+r);
+            dist[i]=(aq+ar+as)/2;
+        }
+        uint32_t ord[60]; for(int i=0;i<60;i++) ord[i]=(uint32_t)i;
+        for(int i=1;i<60;i++){uint32_t v=ord[i];int j=i-1;
+            while(j>=0 && (dist[ord[j]]>dist[v] ||
+                   (dist[ord[j]]==dist[v] && q0a[ord[j]]>q0a[v]) ||
+                   (dist[ord[j]]==dist[v] && q0a[ord[j]]==q0a[v] && r0a[ord[j]]>r0a[v]))){
+                ord[j+1]=ord[j];j--;
+            }
+            ord[j+1]=v;
+        }
+        uint8_t hit[60]; memset(hit,0,sizeof(hit));
+        for(int i=0;i<60;i++){ if(hit[ord[i]]){printf("FAIL hexagram\n");return 1;} hit[ord[i]]=1; }
+        for(int i=0;i<60;i++) vw[7][i]=(uint8_t)ord[i];
+    }
 
     /* ── read entire file ────────────────────────────────────────────── */
     FILE *fp = fopen(path, "rb");
@@ -327,7 +372,7 @@ int main(int argc, char **argv) {
 
     int all_ok = 1;
 
-    for (int lang = 0; lang < 6; lang++) {
+    for (int lang = 0; lang < 8; lang++) {
         DtSlotRegion reg;
         remove(twin_path);
         if (dt_slot_init_twin(&reg, twin_path,
