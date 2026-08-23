@@ -317,7 +317,7 @@ int main(int argc, char **argv) {
         : "I:\\model\\Qwen2.5-0.5B-Instruct-Q8_0.gguf";
     const char *prompt = argc > 2 ? argv[2] : "The capital of France is";
     int n_gen = argc > 3 ? atoi(argv[3]) : 40;
-    const char *twin_path = argc > 4 ? argv[4] : "build\\rid_slot.twin";
+    const char *twin_path = argc > 4 ? argv[4] : "build/rid_slot.twin";
 
     printf("=== geo_rid_graft — RID slots -> DtSlotRegion -> llama ===\n");
 
@@ -405,14 +405,18 @@ int main(int argc, char **argv) {
 
         /* C. INFERENCE — once (bytes identical ⇒ equivalent, prove once end-to-end) */
         if (!ran_inference) {
-            const char *graft = "build\\rid_graft.gguf";
+            const char *graft = "build/rid_graft.gguf";
             FILE *fp = fopen(graft, "wb");
             fwrite(out, 1, r.base_sz, fp);
             fclose(fp);
             llama_backend_init();
             llama_log_set(quiet_log, NULL);
             /* backends live beside the llama DLLs — load explicitly */
+            #ifdef _WIN32
             ggml_backend_load_all_from_path("I:/llama/llama-b9733-bin-win-vulkan-x64");
+#else
+            ggml_backend_load_all();   /* static CPU backend compiled in */
+#endif
             int na = 0, nb = 0, nv = 0;
             llama_token *ga = generate(graft, prompt, n_gen, &na, lg_a, 160000, &nv);
             llama_token *gb = generate(path,   prompt, n_gen, &nb, lg_b, 160000, &nv);

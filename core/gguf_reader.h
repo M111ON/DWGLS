@@ -211,7 +211,10 @@ static inline int gguf_open(const char *path, GgufReader *r) {
     };
 
     for (uint64_t i = 0; i < n_tensors; i++) {
-        uint64_t nlen;
+        uint64_t nlen = 0;
+        uint32_t n_dims = 0, dtype = 0;
+        uint64_t data_off = 0;
+        size_t tsize = 0;
         if (gbuf_u64(&b, &nlen) != 0) goto fail;
         if (nlen == 0 || nlen > 1024) goto fail;
         char *name = (char *)malloc((size_t)nlen + 1);
@@ -220,7 +223,6 @@ static inline int gguf_open(const char *path, GgufReader *r) {
         name[nlen] = '\0';
         r->names[i] = name;
 
-        uint32_t n_dims;
         if (gbuf_u32(&b, &n_dims) != 0) goto fail;
         if (n_dims > 4) goto fail;
         r->n_dims[i] = (uint8_t)n_dims;
@@ -233,13 +235,10 @@ static inline int gguf_open(const char *path, GgufReader *r) {
             r->dims[(size_t)i * 4 + d] = (uint64_t)v;
         }
 
-        uint32_t dtype;
         if (gbuf_u32(&b, &dtype) != 0) goto fail;
 
-        uint64_t data_off;
         if (gbuf_u64(&b, &data_off) != 0) goto fail;
 
-        size_t tsize = 0;
         if (dtype < 31 && tinfo[dtype].tsz > 0 && tinfo[dtype].blck > 0) {
             size_t n_elems = 1;
             for (uint32_t d = 0; d < n_dims; d++) n_elems *= (size_t)dims[d];
@@ -252,9 +251,11 @@ static inline int gguf_open(const char *path, GgufReader *r) {
     }
 
     /* data section aligned to 32 */
-    size_t pos = (size_t)(b.p - r->base);
-    uint32_t pad = (uint32_t)((GGUF_ALIGN - (pos % GGUF_ALIGN)) % GGUF_ALIGN);
-    r->data_offset = (uint64_t)pos + pad;
+    {
+        size_t pos = (size_t)(b.p - r->base);
+        uint32_t pad = (uint32_t)((GGUF_ALIGN - (pos % GGUF_ALIGN)) % GGUF_ALIGN);
+        r->data_offset = (uint64_t)pos + pad;
+    }
     return 0;
 
 fail:
