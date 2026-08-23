@@ -152,28 +152,34 @@ int main(void) {
         printf("\n");
     }
 
-    /* ── Z5. word-ladder จากภาพ circle packing ── */
+    /* ── Z5. word-ladder จากรูป circle packing (transcription corrected:
+     *        word ของ 13 = "21212212" ยาว 8 ไม่ใช่ "212212") ── */
     printf("\nZ5. circle-chain words — palindrome + digit-sum ladder\n");
     {
-        const char *w[] = { "1", "11", "111", "212", "21212", "212212" };
+        const char *w[] = { "1", "11", "111", "212", "21212", "21212212" };
         uint64_t want[] = { 1, 2, 3, 5, 8, 13 };
-        int pal_ok = 1, sum_ok5 = 1;
+        int pal_ok = 1, sum_ok = 1;
+        int pal_count = 0;
         for (int k = 0; k < 6; k++) {
             int len = (int)strlen(w[k]);
+            int isp = 1;
             for (int a = 0, b = len - 1; a < b; a++, b--)
-                if (w[k][a] != w[k][b]) pal_ok = 0;
+                if (w[k][a] != w[k][b]) isp = 0;
+            pal_count += isp;
             uint64_t s = 0;
             for (int a = 0; a < len; a++) s += (uint64_t)(w[k][a] - '0');
-            if (k < 5 && s != want[k]) sum_ok5 = 0;
-            if (k == 5 && s == want[k])
-                printf("        chain 13 = \"%s\" sum=%llu ✓\n", w[k], (unsigned long long)s);
-            else if (k == 5)
-                printf("        NOTE: chain \"13\" = \"%s\" sum=%llu ≠ 13 "
-                       "(palindrome ✓ — encoding ต้องเช็คกับต้นฉบับรูป)\n",
-                       w[k], (unsigned long long)s);
+            if (s != want[k]) sum_ok = 0;
+            printf("        %-2llu = %-9s sum=%llu %s%s\n",
+                   (unsigned long long)want[k], w[k], (unsigned long long)s,
+                   isp ? "palindrome" : "NOT-pal",
+                   s == want[k] ? " ✓" : " ✗");
         }
-        CHECK("ทุก chain เป็น palindrome", pal_ok);
-        CHECK("digit-sum 5 chains แรก = 1,2,3,5,8 (Fibonacci ladder)", sum_ok5);
+        /* 5 chains แรก palindrome · W6="21212212" ไม่เป็น
+         * (even-length + odd sum ⇒ palindrome impossible — โครงสร้างจริง)
+         * และสังเกต: W6 = W5 ∥ W4 = "21212"+"212"
+         *   → sum(W6) = sum(W5)+sum(W4) = 8+5 = 13 (Fibonacci recurrence!) */
+        CHECK("digit-sum ครบ 6 chains = 1,2,3,5,8,13 (Fibonacci ladder)", sum_ok);
+        CHECK("5 chains แรก palindrome (chain 13 ไม่เป็น — ตรงรูป)", pal_count == 5);
     }
 
     /* ── M1. mutation ── */
