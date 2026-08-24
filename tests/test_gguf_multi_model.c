@@ -13,8 +13,10 @@
  * โมเดล (ทุกตัว optional — ไม่เจอ = skip, TIER1 ยังเขียว):
  *   SmolLM2-360M-Instruct.Q8_0  (Llama-style ขนาดเล็ก)
  *   Qwen3-0.6B-Q8_0             (Qwen3 arch)
- *   LFM2.5-2.6B-Q8_0            (ขยายสเกล — tax ควรลดลง)
  *   Qwen2.5-0.5B-Instruct-Q8_0  (baseline จาก §15.11 — ต้องได้ 7/128×/1.95×)
+ *
+ *   (LFM2.5-2.6B ถูกถอดจาก roster Aug 24 — ไม่ใช้แล้ว; X3 ที่เทียบ
+ *    โมเดลใหญ่↔เล็ก จะ SKIP จนกว่าจะมีโมเดล ≥1.5G elements กลับเข้ามา)
  *
  * BUILD: gcc -O2 -Wall -Icore -o build/test_gguf_multi_model \
  *        tests/test_gguf_multi_model.c -lm
@@ -163,23 +165,22 @@ int main(int argc, char **argv) {
     printf("GGUF multi-model gate — base/knee/registry-tax ตามสถาปัตยกรรม\n");
     printf("═══════════════════════════════════════════════════════════════\n");
 
-    Model models[4];
+    Model models[3];
     models[0] = (Model){ "SmolLM2-360M", "I:/model/SmolLM2-360M-Instruct.Q8_0.gguf", 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
     models[1] = (Model){ "Qwen3-0.6B",   "I:/model/Qwen3-0.6B-Q8_0.gguf",           0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
-    models[2] = (Model){ "LFM2.5-2.6B",  "I:/model/LFM2.5-2.6B-Q8_0.gguf",          0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
-    models[3] = (Model){ "Qwen2.5-0.5B", "I:/model/Qwen2.5-0.5B-Instruct-Q8_0.gguf",0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
+    models[2] = (Model){ "Qwen2.5-0.5B", "I:/model/Qwen2.5-0.5B-Instruct-Q8_0.gguf",0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
     if (argc > 1) models[0].path = argv[1];
     if (argc > 2) models[1].path = argv[2];
 
     uint32_t n_present = 0;
-    for (uint32_t i = 0; i < 4; i++) run_model(&models[i]);
+    for (uint32_t i = 0; i < 3; i++) run_model(&models[i]);
 
     /* ── cross-model table ── */
     printf("\n═══════════════════════════════════════════════════════════════\n");
     printf("═ สรุป — base/knee/tax ต่อสถาปัตยกรรม ═\n");
     printf("  %-14s %5s %12s %5s %7s %6s %8s %8s %7s %7s\n",
            "model", "N", "E(elem)", "base", "win@b", "comp×", "spansR", "spansU", "taxR", "taxU");
-    for (uint32_t i = 0; i < 4; i++) {
+    for (uint32_t i = 0; i < 3; i++) {
         Model *m = &models[i];
         if (!m->present) { printf("  %-14s   (ไม่เจอไฟล์ — skip)\n", m->label); continue; }
         n_present++;
@@ -194,35 +195,37 @@ int main(int argc, char **argv) {
     /* X1: ทุกโมเดลที่เจอผ่าน gate ไปที่ knee ใกล้เคียงกัน (base 3..9) */
     {
         int ok = 1;
-        for (uint32_t i = 0; i < 4; i++)
+        for (uint32_t i = 0; i < 3; i++)
             if (models[i].present && (models[i].base < 3 || models[i].base > 9)) ok = 0;
         CHECK("X1: ทุกโมเดล knee อยู่ในช่วง 3..9 (gate ทำงานข้ามสถาปัตยกรรม)", ok);
     }
     /* X2: compression ทุกตัว ≥ 64× (วางลึก = 128×, อนุญาต edge 1 ก้าว) */
     {
         int ok = 1;
-        for (uint32_t i = 0; i < 4; i++)
+        for (uint32_t i = 0; i < 3; i++)
             if (models[i].present && models[i].comp < 64.0) ok = 0;
         CHECK("X2: ทุกโมเดล compression ≥ 64× (base ลึก = 128×±1 ก้าว)", ok);
     }
-    /* X3: โมเดลใหญ่ → tax น้อยกว่า (tensor ใหญ่ → แตกน้อย) ถ้ามี 2.6B กับ 0.5B */
+    /* X3: โมเดลใหญ่ → tax น้อยกว่า (tensor ใหญ่ → แตกน้อย)
+       LFM2.5-2.6B ถอดจาก roster แล้ว — ถ้าไม่มีโมเดล ≥1.5G elements = SKIP
+       (นับ skip แยกจาก pass — ไม่โกหกว่าผ่าน, ไม่แดงโดยไม่มีความผิดจริง) */
     {
         const Model *big = NULL, *sm = NULL;
-        for (uint32_t i = 0; i < 4; i++) {
+        for (uint32_t i = 0; i < 3; i++) {
             if (!models[i].present) continue;
-            if (models[i].E > 1500000000ull) big = &models[i];   /* ≥ 1.5G = 2.6B */
-            if (models[i].E <  800000000ull) sm  = &models[i];   /* ≤ 800M = 0.5B  */
+            if (models[i].E > 1500000000ull) big = &models[i];   /* ≥ 1.5G elements */
+            if (models[i].E <  800000000ull) sm  = &models[i];   /* ≤ 800M elements */
         }
         if (big && sm)
             CHECK("X3: โมเดลใหญ่ tax ≤ โมเดลเล็ก (tensor ใหญ่แตกน้อยกว่า)",
                   big->tax_real <= sm->tax_real + 0.05);
         else
-            CHECK("X3: (มีทั้ง 2.6B และ ≤0.8B — ตรวจเทียบ scale)", big && sm);
+            printf("  T: SKIP — X3 (ต้องการโมเดลใหญ่ ≥1.5G elem; LFM2.5-2.6B ถอดจาก roster แล้ว)\n");
     }
     /* X4: determinism — รัน gate อีกครั้ง (ผ่าน path) ให้ base เดิม */
     {
         int ok = 1;
-        for (uint32_t i = 0; i < 4; i++) {
+        for (uint32_t i = 0; i < 3; i++) {
             if (!models[i].present) continue;
             GGUFBox box;
             if (gguf_box_open(&box, models[i].path) != 0) { ok = 0; continue; }
@@ -240,13 +243,13 @@ int main(int argc, char **argv) {
         CHECK("X4: gate sweep รอบสอง → base เดิมทุกโมเดล (deterministic)", ok);
     }
     /* X5: Qwen2.5-0.5B baseline ตรงกับ §15.11 (base 7, tax 1.95×) */
-    if (models[3].present)
+    if (models[2].present)
         CHECK("X5: baseline Qwen2.5-0.5B → base 7 + tax 1.95× (ตรง §15.11)",
-              models[3].base == 7 &&
-              models[3].tax_real > 1.90 && models[3].tax_real < 2.00);
+              models[2].base == 7 &&
+              models[2].tax_real > 1.90 && models[2].tax_real < 2.00);
 
     printf("═══════════════════════════════════════════════════════════════\n");
-    printf("models present: %u/4 — RESULTS: %d/%d PASS\n",
+    printf("models present: %u/3 — RESULTS: %d/%d PASS\n",
            n_present, pass_count, pass_count + fail_count);
     return fail_count ? 1 : 0;
 }
