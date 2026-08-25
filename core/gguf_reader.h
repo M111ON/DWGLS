@@ -243,9 +243,11 @@ static inline int gguf_open(const char *path, GgufReader *r) {
     }
 
     /* data section aligned to 32 */
-    size_t pos = (size_t)(b.p - r->base);
-    uint32_t pad = (uint32_t)((GGUF_ALIGN - (pos % GGUF_ALIGN)) % GGUF_ALIGN);
-    r->data_offset = (uint64_t)pos + pad;
+    {
+        size_t pos = (size_t)(b.p - r->base);
+        uint32_t pad = (uint32_t)((GGUF_ALIGN - (pos % GGUF_ALIGN)) % GGUF_ALIGN);
+        r->data_offset = (uint64_t)pos + pad;
+    }
     return 0;
 
 fail:
