@@ -252,8 +252,8 @@ int main(int argc, char **argv) {
     printf("=== gguf_roundtrip — full file through RID slot region ===\n");
 
     /* ── RID geometry ────────────────────────────────────────────────── */
-    static uint8_t vw[8][60];
-    const char *lname[8] = { "pent", "tri", "snubL", "snubR", "hosoya", "zeck", "pascal", "hexagram" };
+    static uint8_t vw[9][60];
+    const char *lname[9] = { "pent", "tri", "snubL", "snubR", "hosoya", "zeck", "pascal", "hexagram", "limacon" };
     if (build_rid(vw) != 0) { printf("FAIL rid geometry\n"); return 1; }
     if (memcmp(vw[2], vw[3], 60) == 0) {
         printf("FAIL enantiomorphs identical\n"); return 1;
@@ -339,6 +339,20 @@ int main(int argc, char **argv) {
         for(int i=0;i<60;i++){ if(hit[ord[i]]){printf("FAIL hexagram\n");return 1;} hit[ord[i]]=1; }
         for(int i=0;i<60;i++) vw[7][i]=(uint8_t)ord[i];
     }
+    { /* 9th language: limacon — radial ascent from cardioid cusp,
+       * mirrored across symmetry axis (proven tools/limacon_view_probe.c:
+       * bijection + inverse + int-only + mirror-pair oracle + mutation red).
+       * view_lim = [30,31,29,32,28,...,59,1,0] */
+        for (int p = 0; p < 60; p++) {
+            int w;
+            if (p == 0) w = 30;
+            else if (p == 59) w = 0;
+            else w = (p & 1) ? 30 + (p + 1) / 2 : 30 - p / 2;
+            vw[8][p] = (uint8_t)w;
+        }
+        uint8_t hit[60]; memset(hit,0,sizeof(hit));
+        for(int i=0;i<60;i++){ if(hit[vw[8][i]]){printf("FAIL limacon\n");return 1;} hit[vw[8][i]]=1; }
+    }
 
     /* ── read entire file ────────────────────────────────────────────── */
     FILE *fp = fopen(path, "rb");
@@ -372,7 +386,7 @@ int main(int argc, char **argv) {
 
     int all_ok = 1;
 
-    for (int lang = 0; lang < 8; lang++) {
+    for (int lang = 0; lang < 9; lang++) {
         DtSlotRegion reg;
         remove(twin_path);
         if (dt_slot_init_twin(&reg, twin_path,

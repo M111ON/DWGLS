@@ -1,4 +1,4 @@
-# LANGUAGES — 8 ภาษาบน Carrier เดียว
+# LANGUAGES — 9 ภาษาบน Carrier เดียว
 ## 2026-08-24 · branch feat/geo-native-fs
 
 > **นิยาม:** ภาษา = **provable bijection + grammar + oracle** บน carrier เดียวกัน
@@ -23,6 +23,7 @@
 | 6 | **zeck** | Zeckendorf code reversed-bits ordering | existence+non-consec 1..4000 · uniqueness brute-force · mutation red 3998/4000 | `zeckendorf_probe.c` |
 | 7 | **pascal** | zig-zag diagonal stream → `A(n)=Σ(−1)^k C(n−k,k)` period-6 | Fibonacci identity · period-6 {1,1,0,−1,−1,0} | `pascal_zigzag_probe.c` |
 | 8 | **hexagram** | hex-distance rank (axial coords, x+y+z=0) | hexagon ≡ cube-in-2D · MacMahon count 20 | `hexagram_cubes_probe.c` |
+| 9 | **limacon** | radial ascent from cardioid cusp, mirror pairs {30−k,30+k} share radius (`view=[30,31,29,…,59,1,0]`) | int cos-LUT monotone · bijection+inverse · mutation red · GGUF 5156 parts R1/R2 lossless | `limacon_view_probe.c` (+`limacon_seek_probe.c`, `invert_bridge_probe.c`) |
 
 ทุกภาษา = structural bijection บน slot เดียวกัน → **XOR ทุก view ต้องเท่ากับ source**
 (verify แล้วบน GGUF 675.7MB · 5156 parts · commit `76aee0c`, Colab T4 `99109c4`)
@@ -34,6 +35,12 @@
 **1. Multi-view summon (จุดเชื่อมหลายมุมมอง)**
 ข้อมูลผ่าน address เดียวแต่ summon ได้หลายภาษา — consumer ต่างกันอ่านต่าง pattern
 โดยไม่ copy (llama sequential / microscope square-tile / router stride)
+**พิสูจน์แล้วจริง `tools/view_bridge.c` (B1–B5): bake ONCE ผ่าน pent → cross-read
+8 ภาษาที่เหลือ lossless 5156/5156 parts ด้วย address translation
+σ_L = vw0∘vwL⁻¹ (permutation 60 ช่อง) — ไม่ re-bake, ไม่ copy, XOR-consensus
+ครบทุก view; damage flip 1 byte → ทุกภาษา localize part เดียวกัน → restore ครั้งเดียว;
+cycle census σ_L: tri=3cyc/1fixed · snubL=4/0 · snubR=6/2 · hosoya=24/12 ·
+zeck=3/0 · pascal=6/1 · hexagram=5/2 · limacon=5/1**
 
 **2. Verify = consensus**
 views ต้องเห็นพ้อง: XOR(pent)=XOR(tri)=...=source — ถ้า view ไหนไม่ match

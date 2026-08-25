@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>24-gon — fan aa=3</title>
+<style>
+  html,body{margin:0;background:#fff;font-family:'Segoe UI',system-ui,sans-serif;}
+  #bar{position:fixed;top:18px;left:24px;display:flex;align-items:center;gap:10px;}
+  #bar b{font-size:22px;font-weight:600;}
+  input[type=range]{width:300px;accent-color:#555;}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+<div id="bar"><b id="lbl">aa = 3</b><input id="aa" type="range" min="3" max="24" value="3"></div>
+<script>
+p5.disableFriendlyErrors = true;
+const N=24, TAU=Math.PI*2;
+let W=1746, H=888, CX=900, CY=490, R=380;
+let aa=3, hub=15;   // hub 15 = มุมบนซ้าย (225°)
+
+function V(k){ const a=k*TAU/N; return {x:CX+R*Math.cos(a), y:CY+R*Math.sin(a)}; }
+
+// regular aa-gon วางบนด้าน A->B (ทวนเข็มบนจอ), pickSide: +1/-1 เลือกฝั่ง
+function ngon(A,B,n,side){
+  const e=[B.x-A.x, B.y-A.y], L=Math.hypot(e[0],e[1]);
+  let u=[e[0]/L, e[1]/L], ea=TAU/n;
+  const pts=[{x:A.x,y:A.y}]; let cur={x:A.x,y:A.y};
+  for(let i=0;i<n-1;i++){
+    cur={x:cur.x+u[0]*L, y:cur.y+u[1]*L};
+    pts.push({...cur});
+    const th=-ea*side;                       // y จอชี้ลง → ทวนเข็ม = ลบ
+    u=[u[0]*Math.cos(th)-u[1]*Math.sin(th), u[0]*Math.sin(th)+u[1]*Math.cos(th)];
+  }
+  return pts;
+}
+function centroid(pts){ let x=0,y=0; for(const p of pts){x+=p.x;y+=p.y;} return {x:x/pts.length, y:y/pts.length}; }
+function d2(p,q){ return (p.x-q.x)**2+(p.y-q.y)**2; }
+
+function shape(A,B){
+  const c={x:CX,y:CY};
+  const s1=ngon(A,B,aa,1), s2=ngon(A,B,aa,-1);
+  const o1=d2(centroid(s1),c)>d2(centroid(s2),c) ? s1 : s2;   // ฝั่งออกนอก
+  const i1=(o1===s1)?s2:s1;                                    // ฝั่งเข้าใน
+  return i1; // เลือกที่ draw() ตาม step
+}
+
+function setup(){
+  createCanvas(W,H); noLoop();
+  document.getElementById('aa').oninput=e=>{aa=+e.target.value; document.getElementById('lbl').textContent='aa = '+aa; redraw();};
+}
+
+function draw(){
+  background(255);
+  const A=V(hub);
+
+  // 23 shapes: step s=1..12 ออกนอก, 13..23 เข้าใน (กฎจาก aa=3 ที่พิสูจน์แล้ว)
+  for(let s=1;s<N;s++){
+    const B=V((hub+s)%N);
+    const o=ngon(A,B,aa,1), i=ngon(A,B,aa,-1);
+    const out = d2(centroid(o),{x:CX,y:CY}) > d2(centroid(i),{x:CX,y:CY});
+    const P = (s<=12) ? (out?o:i) : (out?i:o);
+    // fill จาง + เส้นประเทา
+    fill(160,130,190,28); noStroke();
+    beginShape(); for(const p of P) vertex(p.x,p.y); endShape(CLOSE);
+    noFill(); stroke(120,120,130); strokeWeight(1);
+    drawingContext.setLineDash([6,6]);
+    beginShape(); for(const p of P) vertex(p.x,p.y); endShape(CLOSE);
+    drawingContext.setLineDash([]);
+    // จุดยอด shape (นอกจาก A,B)
+    fill(120,110,130); noStroke();
+    for(let j=1;j<P.length-1;j++) circle(P[j].x,P[j].y,7);
+  }
+
+  // 24-gon ชมพู
+  fill(255,170,212); stroke(230,25,140); strokeWeight(3);
+  beginShape(); for(let k=0;k<N;k++) vertex(V(k).x,V(k).y); endShape(CLOSE);
+
+  // จุด vertex
+  for(let k=0;k<N;k++){ const p=V(k); fill(110,109,115); stroke(60); strokeWeight(1); circle(p.x,p.y,10); }
+}
+</script>
+</body>
+</html>

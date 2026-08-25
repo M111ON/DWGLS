@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>24-gon — fan equilateral +1 vertex จนครบรอบ</title>
+<style>
+  html,body{margin:0;padding:0;background:#fff;font-family:'Segoe UI',system-ui,sans-serif;}
+  #wrap{width:1400px;margin:0 auto;}
+  #bar{display:flex;align-items:center;gap:14px;padding:10px 18px;border-top:1px solid #ddd;background:#fafafa;}
+  button{font-size:15px;padding:6px 14px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer;}
+  button:hover{background:#eef;}
+  input[type=range]{width:220px;}
+  .lbl{font-size:14px;color:#333;}
+  .val{font-size:15px;font-weight:600;color:#111;min-width:70px;display:inline-block;}
+  #note{font-size:14px;color:#a06;min-width:340px;}
+  .sw{display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:4px;vertical-align:-1px;}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+<div id="wrap">
+  <div id="cv"></div>
+  <div id="bar">
+    <button id="bPlay">⏸ พัก</button>
+    <button id="bNext">ก้าวถัดไป ▶</button>
+    <button id="bPrev">◀ ถอย</button>
+    <button id="bReset">เริ่มใหม่</button>
+    <span class="lbl"><span class="sw" style="background:rgb(21,101,192)"></span>นอก 1–12</span>
+    <span class="lbl"><span class="sw" style="background:rgb(56,140,131)"></span>ใน 13–23</span>
+    <span class="lbl">aa (hub) =</span><input id="hub" type="range" min="0" max="23" value="15"><span class="val" id="hubV">15</span>
+    <span class="lbl">tri =</span><span class="val" id="cnt">0 / 23</span>
+    <span id="note"></span>
+  </div>
+</div>
+<script>
+p5.disableFriendlyErrors = true;
+const N = 24, TAU = Math.PI*2;
+const COL_RING='rgb(244,0,153)', COL_OUT='rgb(21,101,192)', COL_IN='rgb(56,140,131)', COL_DOT='rgb(110,109,115)';
+let W=1400, H=930, CX=700, CY=465, R=390;
+let hub=15, step=0, playing=true, lastTick=0;
+let tris=[];   // precomputed for current hub
+
+function vpos(i){ const a=i*TAU/N; return {x:CX+R*Math.cos(a), y:CY+R*Math.sin(a)}; }
+function d2(a,b){ return (a.x-b.x)**2+(a.y-b.y)**2; }
+
+// build the 23 equilateral triangles on chords hub->t (+1 vertex each)
+function buildFan(){
+  tris=[];
+  const A=vpos(hub);
+  let prevApex=null;
+  for(let s=1;s<N;s++){
+    const t=(hub+s)%N, B=vpos(t);
+    const M={x:(A.x+B.x)/2, y:(A.y+B.y)/2};
+    const dx=(B.x-A.x)/2, dy=(B.y-A.y)/2;
+    const h=Math.sqrt(3);
+    const c1={x:M.x - dy*h, y:M.y + dx*h};   // two equilateral apex candidates
+    const c2={x:M.x + dy*h, y:M.y - dx*h};
+    let apex;
+    const dd = d2(c1,{x:CX,y:CY}) - d2(c2,{x:CX,y:CY});
+    if(Math.abs(dd) < 1){                    // tie (diameter / on-ring cases): continuity with previous apex
+      if(prevApex && d2(c1,prevApex) > d2(c2,prevApex)) apex=c2; else apex=c1;
+    }else{
+      const outward = dd>0 ? c1 : c2;
+      apex = (s<=12) ? outward : (dd>0 ? c2 : c1);   // steps 1-12 apex ออกนอก, 13-23 กลับเข้าใน
+    }
+    const chord=Math.sqrt(d2(A,B));
+    tris.push({s,t,A,B,apex,chord});
+    prevApex=apex;
+  }
+}
+function rebuild(){ buildFan(); if(step>0) step=Math.min(step,tris.length); document.getElementById('hubV').textContent=hub; }
+
+function setup(){
+  const c=createCanvas(W,H); c.parent('cv');
+  rebuild(); step=0;
+  document.getElementById('bPlay').onclick=()=>{playing=!playing; document.getElementById('bPlay').textContent=playing?'⏸ พัก':'▶ เล่น';};
+  document.getElementById('bNext').onclick=()=>{playing=false;document.getElementById('bPlay').textContent='▶ เล่น'; step=Math.min(step+1,N-1);};
+  document.getElementById('bPrev').onclick=()=>{playing=false;document.getElementById('bPlay').textContent='▶ เล่น'; step=Math.max(step-1,0);};
+  document.getElementById('bReset').onclick=()=>{step=0;playing=true;document.getElementById('bPlay').textContent='⏸ พัก';};
+  document.getElementById('hub').oninput=e=>{hub=+e.target.value; rebuild(); step=0; playing=false; document.getElementById('bPlay').textContent='▶ เล่น';};
+}
+function keyPressed(){
+  if(keyCode===RIGHT_ARROW){step=Math.min(step+1,N-1);playing=false;document.getElementById('bPlay').textContent='▶ เล่น';}
+  if(keyCode===LEFT_ARROW){step=Math.max(step-1,0);playing=false;document.getElementById('bPlay').textContent='▶ เล่น';}
+  if(key===' '){document.getElementById('bPlay').click();return false;}
+}
+function mousePressed(){
+  if(mouseX<0||mouseX>W||mouseY<0||mouseY>H) return;
+  for(let i=0;i<N;i++){const p=vpos(i); if(dist(mouseX,mouseY,p.x,p.y)<14){hub=i;rebuild();step=0;document.getElementById('hub').value=i;playing=false;document.getElementById('bPlay').textContent='▶ เล่น';return;}}
+}
+function draw(){
+  background(255);
+  if(playing && millis()-lastTick>420){ step=Math.min(step+1,N-1); lastTick=millis(); if(step===N-1) playing=false, document.getElementById('bPlay').textContent='▶ เล่น'; }
+
+  // gray dashed chords hub->t (spine layer)
+  stroke(150); strokeWeight(1); drawingContext.setLineDash([5,6]);
+  for(const tr of tris){ line(tr.A.x,tr.A.y,tr.B.x,tr.B.y); }
+  drawingContext.setLineDash([]);
+
+  // ring
+  noFill(); stroke(COL_RING); strokeWeight(2.5);
+  stroke(COL_RING+' '+Math.round(0.7*255));
+  beginShape(); for(let i=0;i<N;i++){const p=vpos(i); vertex(p.x,p.y);} endShape(CLOSE);
+
+  // triangles up to `step`
+  const A=vpos(hub);
+  for(let k=0;k<step;k++){
+    const tr=tris[k], col = tr.s<=12 ? COL_OUT : COL_IN;
+    fill(col+' '+Math.round(0.1*255)); noStroke();
+    triangle(tr.A.x,tr.A.y,tr.B.x,tr.B.y,tr.apex.x,tr.apex.y);
+    noFill(); stroke(col); strokeWeight(1.4);
+    drawingContext.setLineDash([9.5,8]);
+    line(tr.A.x,tr.A.y,tr.apex.x,tr.apex.y); line(tr.apex.x,tr.apex.y,tr.B.x,tr.B.y);
+    drawingContext.setLineDash([]);
+    strokeWeight(1.6); line(tr.A.x,tr.A.y,tr.B.x,tr.B.y);   // solid chord
+  }
+
+  // hub marker + vertex dots
+  fill(30); noStroke(); circle(A.x,A.y,11);
+  for(let i=0;i<N;i++){const p=vpos(i); fill(COL_DOT); stroke(60); strokeWeight(1); circle(p.x,p.y,9);}
+
+  // labels
+  noStroke(); fill(20); textSize(15); textStyle(NORMAL);
+  text('aa = '+hub, 24, 34);
+  textSize(13); fill(90);
+  text('คลิก vertex = เปลี่ยน hub · ←/→ = ก้าว · space = เล่น/พัก', 24, 56);
+
+  // latest triangle note
+  let note='';
+  if(step>0){
+    const tr=tris[step-1], ratio=tr.chord/R;
+    const r2=Math.round(ratio*100)/100;
+    if(Math.abs(ratio-2)<0.01) note=`step ${tr.s}: chord = 2R (เส้นผ่านศูนย์กลาง) — apex สูงสุด √3·R`;
+    else if(Math.abs(ratio-Math.sqrt(3))<0.01) note=`step ${tr.s}: chord = √3·R — apex โดน ring พอดี (inscribed)`;
+    else if(Math.abs(ratio-1)<0.01) note=`step ${tr.s}: chord = R — apex ร่วงที่จุดศูนย์กลาง`;
+    else note=`step ${tr.s}: target vertex ${tr.t} · equilateral ทุกตัว (side = chord)`;
+  }
+  document.getElementById('cnt').textContent = step+' / 23';
+  document.getElementById('note').textContent = note;
+}
+</script>
+</body>
+</html>
