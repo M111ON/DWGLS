@@ -66,13 +66,17 @@ event = { q:3b, dc:3b, dx:2b }  =  8 บิต/event
 
 | ไฟล์ | บทบาท |
 |---|---|
-| **`core/fan24_gear.h`** | ★ WIRED (2026-08-26) — event format เป็น core header: `fg_crt` (closed form), `fg_enc/fg_dec`, `FGLog` + FREE/RIM mode, `fg_reconstruct` backward walk |
+| **`core/fan24_gear.h`** | ★ WIRED (2026-08-26) — event format เป็น core header: `fg_crt` (closed form), `fg_enc/fg_dec`, `FGLog` + FREE/RIM mode, `fg_reconstruct` backward walk · ★ FULL FIELD (2026-08-26): `fgx_enc/fgx_dec` + `FGXLog` + `fgx_reconstruct` บน [0,20736) — ฟันเดิม q ขยาย 6b→10b |
 | `tests/test_tess_scale_log_gear.c` | TIER1 — rerun T3–T8 บน gear format (19/19) + oracle อิสระ O1–O6, mutation-red ยืนยันแล้ว |
+| `tests/test_tess_gear_full.c` | TIER1 — full field [0,20736): X1a/X1b roundtrip (tooth-exhaustive + 200k random) · X2 hand event q=863,dc=7,dx=2 · X3 translation-invariance · X4 bridge bijection · X5 RIM replay · X8 mutation drill same-length swap+restore-proof (10/10) |
+| `tools/gear_microscope.c` | ★ MICROSCOPE end-state B (2026-08-26): observation on the gear skeleton — zoom-out EVENT→TOOTH→RIM→FIELD, wheel census + entropy + RIM share; M1–M6 oracle (uniform = exact residue expectations 4σ; rim drift = entropy 0 vs uniform 4.583); จับ LCG low-bit bias ได้ตั้งแต่รันแรก |
+| `core/geo_ghost_gear_adapter.h` | ★ SWAP (2026-08-26): gear wire ลง core จริง — `ghost_gear_lift/expire` พัน `ghost_lift/ghost_expire`, flag bit 0x08 + wire side-table, replay block-scoped จาก Δ-wire, serialize ต่อท้าย GHST (backward compatible) |
+| `tests/test_ghost_gear_adapter.c` | TIER1 — A1 lift==core bond_key · A2 hand event · A3 wire-only replay · A4 bond/Delta-only · A5 seal · A6 persist+mismatch −2 · A7 GHST prefix (12/12) |
 | `docs/fan24_start.html` | visualizer — ขยับ start + aa อิสระ (census label s=4/8/12, tie-break s=12 deterministic) |
 | `tools/fan24_probe.c` | Construction C: vertex-fan กฎ F1–F9 (census/equilateral/choice/chord/apex/slot/stroke/fence/mutation) |
 | `tools/fan24_gear_probe.c` | Construction G: mesh identity G1–G7 |
 | `tools/fan24_gear_sync_probe.c` | Construction GS: gear delta-log vs baseline M1–M7 |
-| `tools/ghost_gear_probe.c` | ★ consumer จริง (2026-08-26): route ของ GhostLog (`geo_ghost_lift.h`) ผ่าน gear wire — 7/7 + mutation-red · `{from,to}`=2B → **1B/event** (50%) · bond (block,from) ไม่ถูกแตะ (P4: wire อยู่บน Δ ล้วน) |
+| `tools/ghost_gear_probe.c` | consumer probe (2026-08-26): route ของ GhostLog (`geo_ghost_lift.h`) ผ่าน gear wire — 7/7 + mutation-red · `{from,to}`=2B → **1B/event** (50%) · bond (block,from) ไม่ถูกแตะ (P4: wire อยู่บน Δ ล้วน) — ตอนนี้ SWAP แล้วผ่าน adapter จริงใน test_ghost_gear_adapter |
 
 ## 4. กฎที่ล็อกแล้ว
 
@@ -90,7 +94,19 @@ event = { q:3b, dc:3b, dx:2b }  =  8 บิต/event
   - **ENTER ANYWHERE จริง**: log เก็บ Δ ล้วน ไม่มี absolute w แม้แต่ seed — reader ถือ current_w ตัวเองแล้ว `fg_reconstruct` เดินย้อนหา append scale เอง (T7b + neg-ctrl + T7c late-joiner)
   - home tooth Δ=0 ไม่ถูก push ลง log (encoder skip)
   - mutation drill: พัง fg_crt → 7 checks RED (O1,O2,T6,T7,T7b,T7c,T8e)
-- rim 24 ฟันครอบ window [0,144); การขยายเต็ม 20736 ยังไม่ได้เขียน
+- ✅ **Full field (2026-08-26):** rim เต็ม [0,20736) — `test_tess_gear_full` 10/10
+  - W ≡ q·24 + s · q ∈ [0,864) (10b) · FREE 15b vs baseline 28b (53.6%) · RIM 10b (35.7%)
+  - bridge `fg_to_full(frame,local)` bijection 144×144 → bitmap-proven
+  - events TRANSLATION-INVARIANT: wire = f(Δ) เท่านั้น, position อยู่ที่ reader
+- ✅ **Microscope end-state B (2026-08-26):** `gear_microscope` 6/6
+  - zoom-out EVENT→TOOTH→RIM→FIELD บน skeleton เดียวกับ wire
+  - uniform noise: entropy 4.583/4.585 bits; rim drift: 0.000 bits + RIM 100%
+  - จับ LCG low-bit bias จริง (ฟันเดียว 19200/19200) → แก้ RNG mix high-bits
+- ✅ **SWAP adapter (2026-08-26):** `geo_ghost_gear_adapter.h` + `test_ghost_gear_adapter` 12/12
+  - ghost_lift/expire ถูก wrap ด้วย gear wire append/seal จริง
+  - replay block-scoped จาก Δ-wire · serialize ต่อท้าย GHST (reader เก่าใช้ได้)
+  - corruption → −2 loud; bond identity ไม่ถูกแตะ (A4)
+- rim local [0,144) ↔ full [0,20736): bridge frame-invariant (144 ≡ 0 mod 24)
 
 ---
 *Proven 2026-08-26 · feat/geo-native-fs · oracle อิสระทุกข้อ (brute force / number theory) ไม่มี expected จาก implementation*

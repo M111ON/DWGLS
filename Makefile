@@ -43,6 +43,8 @@ TIER1 := \
   test_tess_frame_seek \
   test_tess_scale_dedup \
   test_tess_scale_log_gear \
+  test_tess_gear_full \
+  test_ghost_gear_adapter \
   test_tess_magnify \
   test_tess_hex_delta \
   test_tess_sacred \
@@ -565,6 +567,14 @@ ghost_delta_measure: tools/ghost_delta_measure.c core/ghost_delta.h core/geo_gho
 	@echo "▶ BUILD  ghost_delta_measure"
 	$(CC) $(CFLAGS) -o $(BUILD)/ghost_delta_measure tools/ghost_delta_measure.c $(LDFLAGS)
 	@echo "✅ ghost_delta_measure ready → ./$(BUILD)/ghost_delta_measure --file <path> | --syn <kind> <n> | --gguf <model> <idx>"
+
+# ── GEAR microscope (end-state B): observation on the gear skeleton —
+# route log ผ่านภาษาเฟือง {q,dc,dx}: wheel census + entropy + RIM share +
+# zoom-out EVENT→TOOTH→RIM→FIELD · oracle M1-M6 (manual) ──
+gear-microscope: tools/gear_microscope.c core/fan24_gear.h | $(BUILD)
+	@echo "▶ BUILD  gear_microscope"
+	$(CC) $(CFLAGS) -o $(BUILD)/gear_microscope tools/gear_microscope.c $(LDFLAGS)
+	@echo "✅ gear_microscope ready → ./$(BUILD)/gear_microscope [--demo | --file <entry-dump>]"
 
 # ── §15.75/§15.77 tied-embedding dedup + walk-based access: registry {id→home} —
 # byte-identical tensors freeze ครั้งเดียว · walk นาฬิกาหา route ที่ live เหนือ dedup field ──

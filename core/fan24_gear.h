@@ -35,6 +35,7 @@
 
 /* ── Constants ─────────────────────────────────────────────────────────── */
 #define FG_MAGIC      0x46474E32u   /* "FGN2" FanGear v2 */
+#define FG_MAGIC_FULL 0x46474632u   /* "FGF2" FanGear-Full (20736) v2 */
 #define FG_VERSION    1u
 #define FG_RING       24u           /* teeth: 8 cubes × 3 axes            */
 #define FG_WHEEL_KIS  8u            /* KIS cube wheel                     */
@@ -43,7 +44,8 @@
 
 /* ── Gear event ────────────────────────────────────────────────────────── */
 typedef struct {
-    uint8_t q;    /* Δ / 24        : full turns of the rim     (3 bits) */
+    uint16_t q;   /* Δ / 24        : full turns of the rim     (3 bits local,
+                     10 bits full-field — see FG_FULL section below)      */
     uint8_t dc;   /* (Δ%24) % 8    : KIS cube-wheel tooth      (3 bits) */
     uint8_t dx;   /* (Δ%24) % 3    : hyper axis-wheel tooth    (2 bits) */
 } FGGearEv;
@@ -142,6 +144,99 @@ static inline uint32_t fg_reconstruct(const FGLog *g, uint32_t cur_w,
                      fg_crt(g->ev[i - 1].dc, g->ev[i - 1].dx)) % FG_LOCAL) % FG_LOCAL;
     memcpy(out_w, w, (g->hdr.n + 1u) * sizeof(uint32_t));
     return g->hdr.n + 1u;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * FULL FIELD — rim เต็ม 20736 = 144²  (2026-08-26)
+ * ════════════════════════════════════════════════════════════════════════
+ *
+ * Window [0,144) → [0,20736):  W ≡ q·24 + s,   s ∈ [0,24)  (tooth, CRT),
+ * q ∈ [0,864)  (full turns of the 24-tooth rim; 20736/24 = 864).
+ *
+ * โครงเดิมคงเดิมทุกอย่าง — ฟันเฟือง {dc mod 8, dx mod 3} ไม่เปลี่ยน
+ * สิ่งเดียวที่ขยายคือ q: 6 บิต → 10 บิต. FREE event = {q:10b|dc:3b|dx:2b}
+ * = 15 บิต/event vs baseline {from:14b,to:14b} = 28 บิต → 53.6%.
+ * RIM event = {q:10b} = 10 บิต/event (35.7%).
+ *
+ * ที่มาของ 144²: window เดิม [0,144) = ระนาบ single-frame;
+ * 20736 = 144·144 = 18tes field เต็ม (protagonist GEO_COMPOUND_144).
+ * W_full = frame·144 + w_local — frame เก่ากลายเป็น q สูงสุด 6 บิต,
+ * แถวใหม่อีก 143 frames วางต่อใน q ที่เหลือ (q < 864).
+ *
+ * HOME tooth Δ=0 ยังถูกปฏิเสธเหมือนเดิม (encoder emits nothing).
+ */
+#define FG_FULL        20736u       /* full field: 144 × 144              */
+#define FG_FULL_TURNS  864u         /* full turns of the rim (20736/24)   */
+#define FG_FULL_QBITS  10u          /* q needs 10 bits (864 ≤ 2¹⁰=1024)   */
+
+/* ── Full-field encode/decode (mirror ของ fg_enc/fg_dec บน [0,20736)) ──── */
+static inline FGGearEv fgx_enc(uint32_t from, uint32_t to) {
+    uint32_t d = (to + FG_FULL - from) % FG_FULL;     /* 0..20735        */
+    FGGearEv e;
+    e.q  = (uint16_t)(d / FG_RING);                   /* 0..863          */
+    e.dc = (uint8_t)((d % FG_RING) % FG_WHEEL_KIS);
+    e.dx = (uint8_t)((d % FG_RING) % FG_WHEEL_HYP);
+    return e;
+}
+
+static inline uint32_t fgx_dec(uint32_t from, FGGearEv e) {
+    return (from + (uint32_t)e.q * FG_RING + fg_crt(e.dc, e.dx)) % FG_FULL;
+}
+
+/* Full-field log — packed wire: FREE 15b/event (2 B + 7 spare bits),
+ * RIM 10b/event. Same header layout as FGLog, magic distinguishes. */
+typedef struct {
+    FGLogHeader hdr;                  /* magic = FG_MAGIC_FULL           */
+    FGGearEv    ev[FG_LOG_CAP];
+} FGXLog;
+
+static inline void fgx_log_init(FGXLog *g) {
+    memset(g, 0, sizeof(*g));
+    g->hdr.magic   = FG_MAGIC_FULL;
+    g->hdr.version = FG_VERSION;
+}
+
+/* returns 0 ok, -1 overflow, -2 home tooth */
+static inline int fgx_log_push(FGXLog *g, uint32_t from, uint32_t to) {
+    if (from % FG_FULL == to % FG_FULL) return -2;
+    if (g->hdr.n >= FG_LOG_CAP) return -1;
+    g->ev[g->hdr.n++] = fgx_enc(from, to);
+    return 0;
+}
+
+static inline int fgx_log_is_rim(const FGXLog *g) {
+    for (uint16_t i = 0; i < g->hdr.n; i++)
+        if (!(g->ev[i].dc == 0 && g->ev[i].dx == 0)) return 0;
+    return 1;
+}
+
+/* Backward walk on the full field — ENTER ANYWHERE unchanged semantics. */
+static inline uint32_t fgx_reconstruct(const FGXLog *g, uint32_t cur_w,
+                                       uint32_t *out_w, uint32_t cap) {
+    if (g->hdr.n == 0 || cap < g->hdr.n + 1u) return 0;
+    uint32_t w[FG_LOG_CAP + 1];
+    w[g->hdr.n] = cur_w % FG_FULL;
+    for (uint16_t i = g->hdr.n; i > 0; i--)
+        w[i - 1] = (w[i] + FG_FULL -
+                    ((uint32_t)g->ev[i - 1].q * FG_RING +
+                     fg_crt(g->ev[i - 1].dc, g->ev[i - 1].dx)) % FG_FULL) % FG_FULL;
+    memcpy(out_w, w, (g->hdr.n + 1u) * sizeof(uint32_t));
+    return g->hdr.n + 1u;
+}
+
+/* ── Bridge: local [0,144) ↔ full [0,20736) ──────────────────────────────
+ * W_full = frame·144 + w_local · frame = W_full / 144 · local = W_full % 144.
+ * Gear identity is FRAME-INVARIANT: tooth s depends only on D%24, and
+ * 144 ≡ 0 (mod 24) → moving a whole frame turns the rim exactly 6 times,
+ * teeth unchanged. Proven in test_tess_gear_full X4. */
+static inline uint32_t fg_to_full(uint32_t frame, uint32_t w_local) {
+    return (frame % (FG_FULL / FG_LOCAL)) * FG_LOCAL + (w_local % FG_LOCAL);
+}
+static inline uint32_t fg_from_full_frame(uint32_t w_full) {
+    return (w_full % FG_FULL) / FG_LOCAL;
+}
+static inline uint32_t fg_from_full_local(uint32_t w_full) {
+    return (w_full % FG_FULL) % FG_LOCAL;
 }
 
 #endif /* FAN24_GEAR_H */
