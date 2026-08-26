@@ -66,6 +66,8 @@ event = { q:3b, dc:3b, dx:2b }  =  8 บิต/event
 
 | ไฟล์ | บทบาท |
 |---|---|
+| **`core/fan24_gear.h`** | ★ WIRED (2026-08-26) — event format เป็น core header: `fg_crt` (closed form), `fg_enc/fg_dec`, `FGLog` + FREE/RIM mode, `fg_reconstruct` backward walk |
+| `tests/test_tess_scale_log_gear.c` | TIER1 — rerun T3–T8 บน gear format (19/19) + oracle อิสระ O1–O6, mutation-red ยืนยันแล้ว |
 | `docs/fan24_start.html` | visualizer — ขยับ start + aa อิสระ (census label s=4/8/12, tie-break s=12 deterministic) |
 | `tools/fan24_probe.c` | Construction C: vertex-fan กฎ F1–F9 (census/equilateral/choice/chord/apex/slot/stroke/fence/mutation) |
 | `tools/fan24_gear_probe.c` | Construction G: mesh identity G1–G7 |
@@ -80,9 +82,14 @@ event = { q:3b, dc:3b, dx:2b }  =  8 บิต/event
 
 ## 5. ขอบเขต / งานต่อ
 
-- ยัง**ไม่ได้ wire** เข้า `core/hyper_delta.h` จริง — probe พิสูจน์ identity + อัตรากำไรก่อน
+- ✅ **Wired (2026-08-26):** `core/fan24_gear.h` + `test_tess_scale_log_gear.c` (19/19)
+  - rerun T3–T8 บน format ใหม่ → lossless เท่าเดิมทุกข้อ
+  - FREE = {q:3b,dc:3b,dx:2b} = ครึ่งของ baseline (16b→8b/event)
+  - RIM = 3b/event; wire bytes (header 12B รวม): n=68 → 38B (27% ของ baseline), n=1000 → 19% (amortize → floor 18.75%)
+  - **ENTER ANYWHERE จริง**: log เก็บ Δ ล้วน ไม่มี absolute w แม้แต่ seed — reader ถือ current_w ตัวเองแล้ว `fg_reconstruct` เดินย้อนหา append scale เอง (T7b + neg-ctrl + T7c late-joiner)
+  - home tooth Δ=0 ไม่ถูก push ลง log (encoder skip)
+  - mutation drill: พัง fg_crt → 7 checks RED (O1,O2,T6,T7,T7b,T7c,T8e)
 - rim 24 ฟันครอบ window [0,144); การขยายเต็ม 20736 ยังไม่ได้เขียน
-- ก้าวถัดไปเมื่อ wire: swap event format ใน scale-log path → rerun T3–T8 บน format ใหม่ → lossless ต้องเท่าเดิม, log ลดครึ่ง (RIM path ลด >5x)
 
 ---
 *Proven 2026-08-26 · feat/geo-native-fs · oracle อิสระทุกข้อ (brute force / number theory) ไม่มี expected จาก implementation*

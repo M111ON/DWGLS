@@ -42,6 +42,7 @@ TIER1 := \
   test_tess_scale_log \
   test_tess_frame_seek \
   test_tess_scale_dedup \
+  test_tess_scale_log_gear \
   test_tess_magnify \
   test_tess_hex_delta \
   test_tess_sacred \
