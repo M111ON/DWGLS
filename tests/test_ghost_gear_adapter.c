@@ -157,13 +157,29 @@ int main(void) {
         int rc_old = ghost_log_load(&old_reader, blob, need);
         CHECK(rc_old == 0 && old_reader.count == log_a.count,
               "A6b old reader (GHST only) loads unchanged");
-        /* new reader gets log+wire                                       */
+        /* new reader gets log+wire (canonical reorder on disk)            */
         static GhostLog log_c;
         static GhostGearWire gw_c;
         int rc = ghost_gear_load(&log_c, &gw_c, blob, need);
-        CHECK(rc == 0 && gw_c.n == gw_a.n &&
-              memcmp(gw_c.wire, gw_a.wire, gw_a.n) == 0,
-              "A6c new reader recovers wire byte-identical");
+        CHECK(rc == 0 && gw_c.n == gw_a.n,
+              "A6c new reader loads wire (canonical reorder — byte order differs)");
+        /* semantic check: per-block replay results match original          */
+        {
+            int sem_ok = 1;
+            uint16_t blkids[] = {9, 12};
+            uint8_t births[] = {5, 60};
+            for (int bi = 0; bi < 2 && sem_ok; bi++) {
+                uint8_t r_orig[16], r_load[16];
+                uint32_t h1 = ghost_gear_replay(&log_a, &gw_a, blkids[bi],
+                                                births[bi], r_orig, 16);
+                uint32_t h2 = ghost_gear_replay(&log_c, &gw_c, blkids[bi],
+                                                births[bi], r_load, 16);
+                if (h1 != h2) { sem_ok = 0; break; }
+                for (uint32_t i = 0; i < h1; i++)
+                    if (r_orig[i] != r_load[i]) { sem_ok = 0; break; }
+            }
+            CHECK(sem_ok, "A6c2 loaded wire replay == original per block");
+        }
         /* corrupt: flip one geared flag off -> wired-bytes no longer
            match geared count (+1 seal) -> -2 loud
            (entry0 flags live at blob offset 12+4: blk u16 + from + to)   */
@@ -181,6 +197,90 @@ int main(void) {
         uint64_t n2 = ghost_gear_serialize(&log_a, &gw_a, b2, sizeof(b2));
         CHECK(n1 > 0 && n2 > n1 && memcmp(b1, b2, (size_t)n1) == 0,
               "A7 GHST prefix identical with/without wire riding");
+    }
+
+    /* ── A8: no-seal container (regression: old loader rejected -2) ── */
+    {
+        static ResidualSpace rs_fresh;
+        static GhostLog log_fresh;
+        static GhostGearWire gw_fresh;
+        rs_init(&rs_fresh, 64);
+        ghost_log_init(&log_fresh);
+        memset(&gw_fresh, 0, sizeof(gw_fresh));
+        uint8_t data[32]; memset(data, 0xCD, sizeof(data));
+        ghost_gear_lift(&log_fresh, &rs_fresh, &gw_fresh, 3, 0, 48, data, 32);
+        ghost_gear_lift(&log_fresh, &rs_fresh, &gw_fresh, 3, 48, 12, data, 32);
+        /* NO expire → no seal */
+        static uint8_t blob_ns[4096];
+        uint64_t need = ghost_gear_serialize(&log_fresh, &gw_fresh,
+                                             blob_ns, sizeof(blob_ns));
+        static GhostLog log_ns;
+        static GhostGearWire gw_ns;
+        int rc = ghost_gear_load(&log_ns, &gw_ns, blob_ns, need);
+        CHECK(rc == 0, "A8 no-seal container loads (was -2 before fix)");
+        /* also verify replay is semantically correct */
+        {
+            uint8_t got[16];
+            uint32_t hops = ghost_gear_replay(&log_ns, &gw_ns, 3, 0, got, 16);
+            CHECK(hops == 2 && got[0] == 48 && got[1] == 12,
+                  "A8b no-seal replay matches original hops");
+        }
+    }
+
+    /* ── A9: out-of-order block lifts (regression: call vs sorted order) */
+    {
+        static ResidualSpace rs_oo;
+        static GhostLog log_oo;
+        static GhostGearWire gw_oo;
+        rs_init(&rs_oo, 64);
+        ghost_log_init(&log_oo);
+        memset(&gw_oo, 0, sizeof(gw_oo));
+        uint8_t data[32]; memset(data, 0xEF, sizeof(data));
+        /* lift block 9 first, THEN block 3 — out of sorted order */
+        ghost_gear_lift(&log_oo, &rs_oo, &gw_oo, 9, 10, 60, data, 32);
+        ghost_gear_lift(&log_oo, &rs_oo, &gw_oo, 3, 5, 70, data, 32);
+        ghost_gear_lift(&log_oo, &rs_oo, &gw_oo, 9, 60, 110, data, 32);
+        /* block 9 chain: 10→60→110 should be correct even though
+           block 3 was interleaved between block 9's lifts */
+        uint8_t got[16];
+        uint32_t hops = ghost_gear_replay(&log_oo, &gw_oo, 9, 10, got, 16);
+        CHECK(hops == 2 && got[0] == 60 && got[1] == 110,
+              "A9 out-of-order lifts: block 9 chain correct");
+        hops = ghost_gear_replay(&log_oo, &gw_oo, 3, 5, got, 16);
+        CHECK(hops == 1 && got[0] == 70,
+              "A9b out-of-order lifts: block 3 chain correct");
+    }
+
+    /* ── A10: multi-expire container (two seals, 0..k seals OK) ────── */
+    {
+        static ResidualSpace rs_me;
+        static GhostLog log_me;
+        static GhostGearWire gw_me;
+        rs_init(&rs_me, 64);
+        ghost_log_init(&log_me);
+        memset(&gw_me, 0, sizeof(gw_me));
+        uint8_t data[32]; memset(data, 0xAA, sizeof(data));
+        ghost_gear_lift(&log_me, &rs_me, &gw_me, 5, 0, 24, data, 32);
+        ghost_gear_lift(&log_me, &rs_me, &gw_me, 5, 24, 48, data, 32);
+        ghost_gear_lift(&log_me, &rs_me, &gw_me, 7, 10, 50, data, 32);
+        /* expire both piles — two seals */
+        ghost_gear_expire(&log_me, &rs_me, &gw_me, 5, 0);
+        ghost_gear_expire(&log_me, &rs_me, &gw_me, 7, 10);
+        static uint8_t blob_me[4096];
+        uint64_t need = ghost_gear_serialize(&log_me, &gw_me,
+                                             blob_me, sizeof(blob_me));
+        static GhostLog log_me2;
+        static GhostGearWire gw_me2;
+        int rc = ghost_gear_load(&log_me2, &gw_me2, blob_me, need);
+        CHECK(rc == 0, "A10 multi-expire (2 seals) loads ok");
+        CHECK(gw_me2.n == gw_me.n, "A10b wire byte count preserved");
+        /* replay stops at correct seals per block */
+        {
+            uint8_t got[16];
+            uint32_t h = ghost_gear_replay(&log_me2, &gw_me2, 5, 0, got, 16);
+            CHECK(h == 2 && got[0] == 24 && got[1] == 48,
+                  "A10c block 5 chain: 2 hops (block-level seal stops chain)");
+        }
     }
 
     printf("\nRESULTS: %s (%d/%d pass)\n",

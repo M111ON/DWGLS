@@ -131,6 +131,7 @@ TIER1 := \
   test_kv_geofs_bridge \
   test_kv_rail_geofs \
   test_kv_dramtile \
+  test_gear_wire_bridge \
 
 # ── เทสต์ที่เหลือ (ไม่ได้อยู่ใน TIER1/TIER2) = legacy ประวัติการพัฒนา ──
 # เขียนก่อน rescope 2026-08-14 — เก็บไว้ย้อนดูเท่านั้น ไม่ใช้ยืนยันระบบปัจจุบัน
@@ -571,10 +572,15 @@ ghost_delta_measure: tools/ghost_delta_measure.c core/ghost_delta.h core/geo_gho
 # ── GEAR microscope (end-state B): observation on the gear skeleton —
 # route log ผ่านภาษาเฟือง {q,dc,dx}: wheel census + entropy + RIM share +
 # zoom-out EVENT→TOOTH→RIM→FIELD · oracle M1-M6 (manual) ──
+gear-dump: tools/gear_wire_dump.c core/gear_wire_bridge.h | $(BUILD)
+	@echo "▶ BUILD  gear_wire_dump"
+	$(CC) $(CFLAGS) -o $(BUILD)/gear_wire_dump tools/gear_wire_dump.c $(LDFLAGS)
+	@echo "✅ gear-dump ready → ./$(BUILD)/gear_wire_dump <container> [--json]"
+
 gear-microscope: tools/gear_microscope.c core/fan24_gear.h | $(BUILD)
 	@echo "▶ BUILD  gear_microscope"
 	$(CC) $(CFLAGS) -o $(BUILD)/gear_microscope tools/gear_microscope.c $(LDFLAGS)
-	@echo "✅ gear_microscope ready → ./$(BUILD)/gear_microscope [--demo | --file <entry-dump>]"
+	@echo "✅ gear_microscope ready → ./$(BUILD)/gear_microscope [--demo | --file <entry-dump> | --filex <full-field-dump>]"
 
 # ── §15.75/§15.77 tied-embedding dedup + walk-based access: registry {id→home} —
 # byte-identical tensors freeze ครั้งเดียว · walk นาฬิกาหา route ที่ live เหนือ dedup field ──

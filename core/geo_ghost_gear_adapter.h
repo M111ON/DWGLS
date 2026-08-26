@@ -13,16 +13,22 @@
  * การผูก:
  *   • bond (block_id, from_scale) ไม่ถูกแตะ — birth identity/RDH address
  *     ยังอยู่ใน entry fields เดิม (P4 ของ probe: wire พึ่ง Delta เท่านั้น)
- *   • per-block chain: entries ของ block เดียว sorted by from (b-bond
- *     principle ของ log) → chain f0→f1→...→fk deterministic
+ *   • CANONICAL WIRE ORDER (interop v1, 2026-08-26): RAM-side wire เก็บ
+ *     call order + owner array; serialize เรียง canonical = block id ขึ้น,
+ *     ใน block เดียวคือ append order → disk layout deterministic ทุกลำดับ
+ *     lift (ก่อนหน้านี้ replay map sorted-position ↔ call-order byte —
+ *     lift คนละ block ไม่เรียง = อ่าน Δ ของ block อื่น แก้แล้ว)
  *   • wire = {q:3b|dc:3b|dx:2b} 1 B FREE (fg_crt bijection, home tooth
  *     Δ=0 ถูกปฏิเสธที่ encoder)
  *   • flag GHOST_FLAG_GEAR (0x08, บิตว่างของ entry) ประกาศ "entry นี้
- *     มี wire byte" — side table จับคู่ sorted-order ↔ wire index
+ *     มี wire byte"
+ *   • SEAL invariant (interop v1): non-seal wire bytes == geared entries
+ *     (0..k seals ถูกต้องทั้งหมด — เดิมบังคับ geared+1 เฉพาะ expire เดียว,
+ *      container ไม่เคย expire โหลดไม่ได้ = bug ที่ suite หลุด)
  *
- * SERIALIZATION: wire bytes วางต่อท้าย GHST blob เดิม — reader เก่า
- * อ่าน header+entries ได้เหมือนเดิม (backward compatible), reader ใหม่
- * ใช้ count เป็น offset หา wire ได้ทันที (derived layout — ไม่มี TOC).
+ * SERIALIZATION: [GHST blob][canonical wire] — reader เก่าอ่าน GHST part
+ * ได้เหมือนเดิม (backward compatible), reader ใหม่ใช้ count เป็น offset
+ * หา wire (derived layout — ไม่มี TOC).
  *
  * DEPENDS: fan24_gear.h (fg_enc/fg_dec/FGGearEv), geo_ghost_lift.h
  */
@@ -42,9 +48,15 @@
  * dx<<6 max 10 → bit7 always 0) → free as an explicit chain terminator */
 #define GHOST_GEAR_SEAL 0xFFu
 
+/* seal "from" sentinel in owner keys: greater than any real from_scale
+ * (u8) so a block's seals canonically sort after its events */
+#define GHOST_GEAR_SEAL_FROM 256u
+
 /* ── Gear side-table: wire bytes for a log ─────────────────────────────── */
 typedef struct {
     uint8_t  wire[GHOST_LOG_MAX];   /* 1 B per geared entry + seals       */
+    uint32_t owner[GHOST_LOG_MAX];  /* per byte: (block<<16)|from;
+                                       seals: (block<<16)|SEAL_FROM       */
     uint16_t n;                     /* wired entries (+ seals)            */
 } GhostGearWire;
 
@@ -76,9 +88,11 @@ static inline uint64_t ghost_gear_lift(GhostLog *log, ResidualSpace *rs,
 
     /* 3) wire append — Δ-only event (home tooth impossible: core dedups
      *    same-(block,from,to); from==to would have found it)           */
-    gw->wire[gw->n++] = (uint8_t)(fg_enc(from_scale, to_scale).q |
-                                  ((fg_enc(from_scale, to_scale).dc) << 3) |
-                                  ((fg_enc(from_scale, to_scale).dx) << 6));
+    FGGearEv e = fg_enc(from_scale, to_scale);
+    gw->wire[gw->n] = (uint8_t)(e.q | ((uint8_t)(e.dc) << 3) |
+                                     ((uint8_t)(e.dx) << 6));
+    gw->owner[gw->n] = ((uint32_t)block_id << 16) | (uint32_t)from_scale;
+    gw->n++;
     return bk;
 }
 
@@ -90,8 +104,11 @@ static inline uint32_t ghost_gear_expire(GhostLog *log, ResidualSpace *rs,
                                          uint16_t block_id, uint8_t from_scale) {
     if (!log || !rs || !gw) return 0;
     uint32_t expired = ghost_expire(log, rs, block_id, from_scale);
-    if (expired && gw->n < GHOST_LOG_MAX)
-        gw->wire[gw->n++] = GHOST_GEAR_SEAL;
+    if (expired && gw->n < GHOST_LOG_MAX) {
+        gw->wire[gw->n] = GHOST_GEAR_SEAL;
+        gw->owner[gw->n] = ((uint32_t)block_id << 16) | GHOST_GEAR_SEAL_FROM;
+        gw->n++;
+    }
     return expired;
 }
 
@@ -112,22 +129,14 @@ static inline uint32_t ghost_gear_replay(const GhostLog *log,
                                          const GhostGearWire *gw,
                                          uint16_t block_id, uint8_t birth,
                                          uint8_t *out_to, uint32_t cap) {
-    if (!log || !gw || !out_to || cap == 0) return (uint32_t)-1;
-    /* wire index of this block's first geared entry = #geared entries
-       strictly BEFORE the pile in sorted order (derived, value-free)    */
-    int lo = _ghost_pile_lo(log, block_id, 0);
-    uint32_t wire_lo = 0;
-    for (int i = 0; i < lo; i++)
-        if (log->entries[i].flags & GHOST_FLAG_GEAR) wire_lo++;
-    /* span length = geared entries of THIS pile                        */
-    uint32_t span = 0;
-    for (int i = lo; i < (int)log->count; i++) {
-        if (log->entries[i].block_id != block_id) break;
-        if (log->entries[i].flags & GHOST_FLAG_GEAR) span++;
-    }
+    (void)log;   /* values come from the wire alone — log not read */
+    if (!gw || !out_to || cap == 0) return (uint32_t)-1;
+    /* owner-tracked: this block's bytes in call order (index ascending).
+     * Order-safe for ANY lift interleaving — no sorted-position mapping. */
     uint32_t w = birth, hops = 0;
-    for (uint32_t k = 0; k < span && hops < cap; k++) {
-        uint8_t b = gw->wire[wire_lo + k];
+    for (uint16_t k = 0; k < gw->n && hops < cap; k++) {
+        if ((gw->owner[k] >> 16) != (uint32_t)block_id) continue;
+        uint8_t b = gw->wire[k];
         if (b == GHOST_GEAR_SEAL) break;
         FGGearEv e;
         e.q  = (uint8_t)(b & 7u);
@@ -155,7 +164,22 @@ static inline uint64_t ghost_gear_serialize(const GhostLog *log,
     if (cap < need) return 0;
     uint64_t wrote = ghost_log_serialize(log, buf, base);
     if (wrote != base) return 0;
-    memcpy((uint8_t *)buf + base, gw->wire, gw->n);
+    /* CANONICAL ORDER: blocks ascending by id, each block's bytes in
+     * append (call) order. Insertion sort of indices — n ≤ 4096, persist
+     * is rare; allocation-free and deterministic. */
+    uint16_t idx[GHOST_LOG_MAX];
+    for (uint16_t k = 0; k < gw->n; k++) idx[k] = k;
+    for (uint16_t i = 1; i < gw->n; i++) {
+        uint16_t x = idx[i];
+        uint32_t kb = gw->owner[x] >> 16;
+        uint16_t j = i;
+        while (j > 0 && (gw->owner[idx[j - 1]] >> 16) > kb) {
+            idx[j] = idx[j - 1]; j--;
+        }
+        idx[j] = x;
+    }
+    uint8_t *out = (uint8_t *)buf + base;
+    for (uint16_t k = 0; k < gw->n; k++) out[k] = gw->wire[idx[k]];
     return need;
 }
 
@@ -175,15 +199,36 @@ static inline int ghost_gear_load(GhostLog *log, GhostGearWire *gw,
     memset(gw, 0, sizeof(*gw));
     uint64_t wlen = size - base;
     if (wlen > GHOST_LOG_MAX) wlen = GHOST_LOG_MAX;
-    memcpy(gw->wire, (const uint8_t *)buf + base, (size_t)wlen);
+    const uint8_t *wb = (const uint8_t *)buf + base;
+    memcpy(gw->wire, wb, (size_t)wlen);
     gw->n = (uint16_t)wlen;
-    /* geared entries must match wired bytes exactly (seals included).
-     * EXPIRED entries KEEP their gear flag (audit trail) — they still
-     * own a wire byte, so count flags, not live routes.                  */
-    uint32_t geared = 0;
+    /* SEAL invariant (interop v1): non-seal bytes == geared-flagged
+     * entries (EXPIRED keep their flag — audit trail owns its byte).
+     * 0..k seals all valid; geared+1-only was the old off-by-one that
+     * rejected never-expired containers. Mismatch → loud corrupt.       */
+    uint32_t geared = 0, evs = 0;
     for (uint32_t i = 0; i < log->count; i++)
         if (log->entries[i].flags & GHOST_FLAG_GEAR) geared++;
-    if ((uint32_t)gw->n != geared + 1u) return -2;  /* +1 = trailing seal */
+    for (uint64_t k = 0; k < wlen; k++)
+        if (wb[k] != GHOST_GEAR_SEAL) evs++;
+    if (evs != geared) return -2;
+    /* reconstruct owners from the canonical layout: k-th event byte ↔
+     * k-th geared entry (sorted); seal inherits the preceding event's
+     * block as tail (SEAL_FROM ranks it after that block's events).      */
+    uint32_t g = 0, last_block = 0;
+    for (uint64_t k = 0; k < wlen; k++) {
+        if (wb[k] == GHOST_GEAR_SEAL) {
+            gw->owner[k] = (last_block << 16) | GHOST_GEAR_SEAL_FROM;
+            continue;
+        }
+        while (g < log->count &&
+               !(log->entries[g].flags & GHOST_FLAG_GEAR)) g++;
+        if (g >= log->count) return -2;         /* more events than flags */
+        last_block = log->entries[g].block_id;
+        gw->owner[k] = ((uint32_t)last_block << 16) |
+                       log->entries[g].from_scale;
+        g++;
+    }
     return 0;
 }
 
