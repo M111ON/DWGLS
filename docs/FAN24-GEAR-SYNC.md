@@ -72,6 +72,7 @@ event = { q:3b, dc:3b, dx:2b }  =  8 บิต/event
 | `tools/fan24_probe.c` | Construction C: vertex-fan กฎ F1–F9 (census/equilateral/choice/chord/apex/slot/stroke/fence/mutation) |
 | `tools/fan24_gear_probe.c` | Construction G: mesh identity G1–G7 |
 | `tools/fan24_gear_sync_probe.c` | Construction GS: gear delta-log vs baseline M1–M7 |
+| `tools/ghost_gear_probe.c` | ★ consumer จริง (2026-08-26): route ของ GhostLog (`geo_ghost_lift.h`) ผ่าน gear wire — 7/7 + mutation-red · `{from,to}`=2B → **1B/event** (50%) · bond (block,from) ไม่ถูกแตะ (P4: wire อยู่บน Δ ล้วน) |
 
 ## 4. กฎที่ล็อกแล้ว
 
