@@ -2,17 +2,29 @@
 <html lang="th">
 <head>
 <meta charset="utf-8">
-<title>24-gon — fan aa=3</title>
+<title>24-gon — fan aa + movable hub</title>
 <style>
   html,body{margin:0;background:#fff;font-family:'Segoe UI',system-ui,sans-serif;}
   #bar{position:fixed;top:18px;left:24px;display:flex;align-items:center;gap:10px;}
   #bar b{font-size:22px;font-weight:600;}
   input[type=range]{width:300px;accent-color:#555;}
+  #hub{width:180px;}
+  .lbl{font-size:14px;color:#333;}
+  .sep{width:1px;height:26px;background:#ccc;}
+  #census{font-size:14px;color:#a06;max-width:560px;line-height:1.35;}
+  .hint{font-size:13px;color:#888;}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
 </head>
 <body>
-<div id="bar"><b id="lbl">aa = 3</b><input id="aa" type="range" min="3" max="24" value="3"></div>
+<div id="bar">
+  <b id="lbl">aa = 3</b><input id="aa" type="range" min="3" max="24" value="3">
+  <span class="sep"></span>
+  <span class="lbl">start aa =</span><input id="hub" type="range" min="0" max="23" value="15"><b id="hubV">15</b>
+  <span class="sep"></span>
+  <span id="census"></span>
+</div>
+<div class="hint" style="position:fixed;bottom:12px;left:24px;">คลิก vertex = เปลี่ยน start · ←/→ = ขยับ start · ↑/↓ = เพิ่ม/ลด aa</div>
 <script>
 p5.disableFriendlyErrors = true;
 const N=24, TAU=Math.PI*2;
@@ -47,7 +59,23 @@ function shape(A,B){
 
 function setup(){
   createCanvas(W,H); noLoop();
-  document.getElementById('aa').oninput=e=>{aa=+e.target.value; document.getElementById('lbl').textContent='aa = '+aa; redraw();};
+  document.getElementById('aa').oninput=e=>{aa=+e.target.value; sync(); redraw();};
+  document.getElementById('hub').oninput=e=>{hub=+e.target.value; sync(); redraw();};
+  sync();
+}
+function sync(){
+  document.getElementById('lbl').textContent='aa = '+aa;
+  document.getElementById('hub').value=hub;
+  document.getElementById('hubV').textContent=hub;
+  // census: chord hub->t = 2R·sin(sπ/24) — special cases เหมือน tri (s=12 diameter, s=8 √3·R inscribed, s=4 R)
+  const specials={12:'diameter',8:'√3·R',4:'R'};
+  let hits=[];
+  for(let s=1;s<N;s++){ if(specials[s]) hits.push('aa→'+((hub+s)%N)+' (s='+s+' '+specials[s]+')'); }
+  let txt='chord พิเศษ: '+(hits.length?hits.join(' · '):'—');
+  if(aa===6) txt+=' · hexagon: apex ร่วงใน ring';
+  else if(aa===4) txt+=' · square: apex บนวงกลม circumcircle';
+  else if(aa===24) txt+=' · aa=24 ≡ host ring';
+  document.getElementById('census').textContent=txt;
 }
 
 function draw(){
@@ -58,8 +86,10 @@ function draw(){
   for(let s=1;s<N;s++){
     const B=V((hub+s)%N);
     const o=ngon(A,B,aa,1), i=ngon(A,B,aa,-1);
-    const out = d2(centroid(o),{x:CX,y:CY}) > d2(centroid(i),{x:CX,y:CY});
-    const P = (s<=12) ? (out?o:i) : (out?i:o);
+    const dd = d2(centroid(o),{x:CX,y:CY}) - d2(centroid(i),{x:CX,y:CY});
+    // s=12 (diameter): apex สองฝั่งห่างศูนย์กลางเท่ากัน → tie; เลือกด้วยทิศ chord A->B เสมอ
+    // (deterministic + หมุนตาม fan พอดี — ไม่ใช้ FP noise ตัดสิน)
+    const P = Math.abs(dd)<1e-6 ? o : (((s<=12)===(dd>0)) ? o : i);
     // fill จาง + เส้นประเทา
     fill(160,130,190,28); noStroke();
     beginShape(); for(const p of P) vertex(p.x,p.y); endShape(CLOSE);
@@ -78,6 +108,28 @@ function draw(){
 
   // จุด vertex
   for(let k=0;k<N;k++){ const p=V(k); fill(110,109,115); stroke(60); strokeWeight(1); circle(p.x,p.y,10); }
+
+  // จุด start (hub) เน้นดำ
+  fill(30); noStroke(); circle(A.x,A.y,13);
+
+  // ป้าย aa ที่ target vertex ของ chord พิเศษ (s=4,8,12) — census บนจอ
+  noStroke(); fill(150,20,90); textSize(12); textAlign(CENTER,CENTER);
+  for(const s of [4,8,12]){
+    const p=V((hub+s)%N);
+    text('aa→'+((hub+s)%N)+' s='+s, p.x, p.y-18);
+  }
+  textAlign(LEFT,BASELINE);
+}
+
+function keyPressed(){
+  if(keyCode===RIGHT_ARROW){hub=(hub+1)%N; sync(); redraw(); return false;}
+  if(keyCode===LEFT_ARROW){hub=(hub+23)%N; sync(); redraw(); return false;}
+  if(keyCode===UP_ARROW){aa=Math.min(24,aa+1); sync(); redraw(); return false;}
+  if(keyCode===DOWN_ARROW){aa=Math.max(3,aa-1); sync(); redraw(); return false;}
+}
+function mousePressed(){
+  if(mouseX<0||mouseX>W||mouseY<0||mouseY>H) return;
+  for(let i=0;i<N;i++){const p=V(i); if(dist(mouseX,mouseY,p.x,p.y)<16){hub=i; sync(); redraw(); return;}}
 }
 </script>
 </body>
