@@ -619,3 +619,19 @@ ggf_fs: tools/ggf_fs_probe.c core/geo_ggf_fs.h core/geo_ggf_ckpt.h core/geo_ggf_
 	$(CC) $(CFLAGS) -o $(BUILD)/ggf_fs_probe tools/ggf_fs_probe.c $(LDFLAGS)
 	@echo "✅ ggf_fs ready → ./$(BUILD)/ggf_fs_probe --mount <ckpt-dir> [--sweep r1 t1 r2 t2]"
 
+# ── Phase 3: Raw K/V Hook (new llama.cpp C API) ──
+kv-raw-hook: tools/kv_raw_hook.c | $(BUILD)
+	@echo "▶ BUILD  kv_raw_hook"
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/kv_raw_hook tools/kv_raw_hook.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
+	./$(BUILD)/kv_raw_hook.exe $(LLAMA_GGUF) "The capital of France is" 24
+
+kv-minimal-test: tools/kv_minimal_test.c | $(BUILD)
+	@echo "▶ BUILD  kv_minimal_test"
+	$(CC) -O2 -Wall -I $(LLAMA_INC) -o $(BUILD)/kv_minimal_test tools/kv_minimal_test.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
+	./$(BUILD)/kv_minimal_test.exe
+

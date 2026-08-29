@@ -247,13 +247,37 @@ int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     const char *path = argc > 1 ? argv[1]
         : "I:\\model\\Qwen2.5-0.5B-Instruct-Q8_0.gguf";
-    const char *twin_path = argc > 2 ? argv[2] : "build\\gguf_roundtrip.twin";
+    const char *twin_path = "build\\gguf_roundtrip.twin";
+    int view_mask = 0x1FF; /* all 9 views by default */
+    static const char *lname[] = {"pent","tri","snubL","snubR","hosoya","zeck","pascal","hexagram","limacon"};
+
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--views") == 0 && i+1 < argc) {
+            view_mask = 0;
+            const char *p = argv[++i];
+            while (*p) {
+                if (strncmp(p, "pent", 4) == 0) { view_mask |= 1; p += 4; }
+                else if (strncmp(p, "tri", 3) == 0) { view_mask |= 2; p += 3; }
+                else if (strncmp(p, "snubL", 5) == 0) { view_mask |= 4; p += 5; }
+                else if (strncmp(p, "snubR", 5) == 0) { view_mask |= 8; p += 5; }
+                else if (strncmp(p, "hosoya", 6) == 0) { view_mask |= 16; p += 6; }
+                else if (strncmp(p, "zeck", 4) == 0) { view_mask |= 32; p += 4; }
+                else if (strncmp(p, "pascal", 6) == 0) { view_mask |= 64; p += 6; }
+                else if (strncmp(p, "hexagram", 8) == 0) { view_mask |= 128; p += 8; }
+                else if (strncmp(p, "limacon", 7) == 0) { view_mask |= 256; p += 7; }
+                else if (strncmp(p, "all", 3) == 0) { view_mask = 0x1FF; p += 3; }
+                else { p++; }
+                while (*p == ',' || *p == ' ') p++;
+            }
+        } else {
+            twin_path = argv[i];
+        }
+    }
 
     printf("=== gguf_roundtrip — full file through RID slot region ===\n");
 
     /* ── RID geometry ────────────────────────────────────────────────── */
     static uint8_t vw[9][60];
-    const char *lname[9] = { "pent", "tri", "snubL", "snubR", "hosoya", "zeck", "pascal", "hexagram", "limacon" };
     if (build_rid(vw) != 0) { printf("FAIL rid geometry\n"); return 1; }
     if (memcmp(vw[2], vw[3], 60) == 0) {
         printf("FAIL enantiomorphs identical\n"); return 1;
@@ -357,13 +381,13 @@ int main(int argc, char **argv) {
     /* ── read entire file ────────────────────────────────────────────── */
     FILE *fp = fopen(path, "rb");
     if (!fp) { printf("FAIL open %s\n", path); return 1; }
-    fseek(fp, 0, SEEK_END);
-    long file_sz = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
+    _fseeki64(fp, 0, SEEK_END);
+    int64_t file_sz = _ftelli64(fp);
+    _fseeki64(fp, 0, SEEK_SET);
     uint8_t *src = (uint8_t *)malloc((size_t)file_sz);
     size_t nr = fread(src, 1, (size_t)file_sz, fp);
     fclose(fp);
-    if ((long)nr != file_sz) { printf("FAIL read %ld\n", file_sz); return 1; }
+    if ((int64_t)nr != file_sz) { printf("FAIL read %lld\n", (long long)file_sz); return 1; }
 
     uint32_t total_parts = (uint32_t)(((size_t)file_sz + PART_BYTES - 1) / PART_BYTES);
     uint32_t layers = (total_parts + RID_SLOTS - 1) / RID_SLOTS;
@@ -387,6 +411,7 @@ int main(int argc, char **argv) {
     int all_ok = 1;
 
     for (int lang = 0; lang < 9; lang++) {
+        if (!(view_mask & (1 << lang))) continue;
         DtSlotRegion reg;
         remove(twin_path);
         if (dt_slot_init_twin(&reg, twin_path,
@@ -460,10 +485,10 @@ int main(int argc, char **argv) {
     FILE *tf = fopen(twin_path, "rb");
     int persist_ok = 0;
     if (tf) {
-        fseek(tf, 0, SEEK_END);
-        long tsz = ftell(tf);
+        _fseeki64(tf, 0, SEEK_END);
+        int64_t tsz = _ftelli64(tf);
         fclose(tf);
-        persist_ok = (tsz == (long)((size_t)layers * RID_SLOTS * PART_BYTES));
+        persist_ok = (tsz == (int64_t)((size_t)layers * RID_SLOTS * PART_BYTES));
     }
     printf("R4 PERSIST    twin file: %s (%.1f MB)\n",
            persist_ok ? "YES" : "NO",

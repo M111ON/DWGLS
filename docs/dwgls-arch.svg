@@ -1,0 +1,320 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1069.8020000000001 1973.5" width="1069.8020000000001" height="1973.5" style="--bg:#1a1b26;--fg:#a9b1d6;--line:#3d59a1;--accent:#7aa2f7;--muted:#565f89;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 85%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="arrowhead" markerWidth="8" markerHeight="5" refX="7" refY="2.5" orient="auto">
+    <polygon points="0 0, 8 2.5, 0 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+  <marker id="arrowhead-start" markerWidth="8" markerHeight="5" refX="1" refY="2.5" orient="auto-start-reverse">
+    <polygon points="8 0, 0 2.5, 8 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+</defs>
+<g class="subgraph" data-id="L7" data-label="LAYER 7 — PERSISTENCE">
+  <rect x="160.35399999999998" y="40" width="749.094" height="147.60000000000002" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="160.35399999999998" y="40" width="749.094" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="172.35399999999998" y="54" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">LAYER 7 — PERSISTENCE</text>
+</g>
+<g class="subgraph" data-id="L6" data-label="LAYER 6 — SERVING">
+  <rect x="40" y="303.90000000000003" width="989.802" height="113.80000000000001" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="40" y="303.90000000000003" width="989.802" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="52" y="317.90000000000003" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">LAYER 6 — SERVING</text>
+</g>
+<g class="subgraph" data-id="L5" data-label="LAYER 5 — GHOST + GEAR WIRE">
+  <rect x="234.58200000000005" y="534" width="600.6379999999999" height="147.60000000000002" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="234.58200000000005" y="534" width="600.6379999999999" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="246.58200000000005" y="548" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">LAYER 5 — GHOST + GEAR WIRE</text>
+</g>
+<g class="subgraph" data-id="L4" data-label="LAYER 4 — REGISTRY (identity)">
+  <rect x="131.0845" y="797.9000000000001" width="807.633" height="130.7" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="131.0845" y="797.9000000000001" width="807.633" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="143.0845" y="811.9000000000001" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">LAYER 4 — REGISTRY (identity)</text>
+</g>
+<g class="subgraph" data-id="L3" data-label="LAYER 3 — PATH (navigation)">
+  <rect x="277.9305" y="1044.9" width="513.941" height="130.7" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="277.9305" y="1044.9" width="513.941" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="289.9305" y="1058.9" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">LAYER 3 — PATH (navigation)</text>
+</g>
+<g class="subgraph" data-id="L2" data-label="LAYER 2 — VIEWS">
+  <rect x="144.19" y="1291.9" width="781.422" height="147.60000000000002" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="144.19" y="1291.9" width="781.422" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="156.19" y="1305.9" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">LAYER 2 — VIEWS</text>
+</g>
+<g class="subgraph" data-id="L1" data-label="LAYER 1 — ADDRESSING">
+  <rect x="237.91649999999998" y="1555.8" width="593.969" height="130.7" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="237.91649999999998" y="1555.8" width="593.969" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="249.91649999999998" y="1569.8" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">LAYER 1 — ADDRESSING</text>
+</g>
+<g class="subgraph" data-id="L0" data-label="LAYER 0 — CONTAINER">
+  <rect x="270.5205" y="1802.8" width="528.761" height="130.7" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="270.5205" y="1802.8" width="528.761" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="282.5205" y="1816.8" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">LAYER 0 — CONTAINER</text>
+</g>
+<polyline class="edge" data-from="L7" data-to="L6" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="mmap on demand" points="534.9010000000001,187.60000000000002 534.9010000000001,303.90000000000003" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="L6" data-to="L5" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="Δ-chain replay" points="534.9010000000001,417.70000000000005 534.9010000000001,534" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="L5" data-to="L4" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="reroute links" points="534.9010000000001,681.6000000000001 534.9010000000001,797.9000000000001" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="L4" data-to="L3" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="frame_seek / path" points="534.9010000000001,928.6000000000001 534.9010000000001,1044.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="L3" data-to="L2" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="6 views / RID" points="534.9010000000001,1175.6000000000001 534.9010000000001,1291.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="L2" data-to="L1" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="modular arithmetic" points="534.9010000000001,1439.5 534.9010000000001,1555.8" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="L1" data-to="L0" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="uniform slots" points="534.9010000000001,1686.5 534.9010000000001,1802.8" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="L0" data-to="L0" data-style="dotted" data-arrow-start="false" data-arrow-end="true" data-label="LOSSLESS GUARANTEE:
+memcmp every byte
+XOR verify" points="270.5205,1846.3666666666666 260.5205,1846.3666666666666 260.5205,1889.9333333333334 270.5205,1889.9333333333334" fill="none" stroke="var(--_line)" stroke-width="1" stroke-dasharray="4 4" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="GGUF" data-to="TWIN" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="write once" points="300.555,127.80000000000001 454.319,127.80000000000001" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="TWIN" data-to="SPARSE" data-style="solid" data-arrow-start="false" data-arrow-end="true" data-label="mmap on demand" points="581.484,127.80000000000001 765.5420000000001,127.80000000000001" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="CUBE" data-to="GEOFS" data-style="solid" data-arrow-start="false" data-arrow-end="false" data-label="5 models
+lossless" points="200.208,374.80000000000007 346.844,374.80000000000007" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="GEOFS" data-to="KVRID" data-style="solid" data-arrow-start="false" data-arrow-end="false" data-label="persist blob
+byte-identical" points="445.11,374.80000000000007 613.13,374.80000000000007" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="KVRID" data-to="RT" data-style="solid" data-arrow-start="false" data-arrow-end="false" data-label="logits
+BITWISE" points="736.59,374.80000000000007 884.414,374.80000000000007" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="GHOST" data-to="WIRE" data-style="solid" data-arrow-start="false" data-arrow-end="false" points="396.27200000000005,621.8 444.27200000000005,621.8" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="WIRE" data-to="ADAPTER" data-style="solid" data-arrow-start="false" data-arrow-end="false" points="589.962,621.8 637.962,621.8" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="TIED" data-to="RESIDUAL" data-style="solid" data-arrow-start="false" data-arrow-end="false" data-label="2 B/item
+∝ COUNT" points="295.7385,873.0250000000001 444.7505,873.0250000000001" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="RESIDUAL" data-to="CAPGATE" data-style="solid" data-arrow-start="false" data-arrow-end="false" data-label="pillar principle
+data never moves" points="585.2535,881.4750000000001 774.0635,881.4750000000001" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="FSEEK" data-to="TELE" data-style="solid" data-arrow-start="false" data-arrow-end="false" points="405.5345,1124.25 453.5345,1124.25" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="TELE" data-to="COMP" data-style="solid" data-arrow-start="false" data-arrow-end="false" points="596.2605,1124.25 644.2605,1124.25" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="S3" data-to="ISO" data-style="solid" data-arrow-start="false" data-arrow-end="false" data-label="exhaustive proof" points="294.765,1375.475 479.41700000000003,1375.475" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="ISO" data-to="RIDVIEWS" data-style="solid" data-arrow-start="false" data-arrow-end="false" data-label="all bijections" points="595.4670000000001,1383.925 758.7350000000001,1383.925" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="MOD" data-to="COPRIME" data-style="solid" data-arrow-start="false" data-arrow-end="false" points="412.94449999999995,1635.1499999999999 460.94449999999995,1635.1499999999999" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="COPRIME" data-to="SCALE" data-style="solid" data-arrow-start="false" data-arrow-end="false" points="611.0805,1635.1499999999999 659.0805,1635.1499999999999" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="SLOT" data-to="TESS" data-style="solid" data-arrow-start="false" data-arrow-end="false" points="398.86550000000005,1882.1499999999999 446.86550000000005,1882.1499999999999" fill="none" stroke="var(--_line)" stroke-width="1" />
+<polyline class="edge" data-from="TESS" data-to="INDEX" data-style="solid" data-arrow-start="false" data-arrow-end="false" points="574.7715000000001,1882.1499999999999 622.7715000000001,1882.1499999999999" fill="none" stroke="var(--_line)" stroke-width="1" />
+<g class="edge-label" data-from="L7" data-to="L6" data-label="mmap on demand">
+  <rect x="486.40100000000007" y="230.60000000000002" width="96.058" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="534.4300000000001" y="245.75000000000003" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">mmap on demand</text>
+</g>
+<g class="edge-label" data-from="L6" data-to="L5" data-label="Δ-chain replay">
+  <rect x="491.90100000000007" y="460.70000000000005" width="85.36600000000001" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="534.5840000000001" y="475.85" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">Δ-chain replay</text>
+</g>
+<g class="edge-label" data-from="L5" data-to="L4" data-label="reroute links">
+  <rect x="495.90099999999995" y="724.6000000000001" width="77.644" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="534.723" y="739.7500000000001" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">reroute links</text>
+</g>
+<g class="edge-label" data-from="L4" data-to="L3" data-label="frame_seek / path">
+  <rect x="484.401" y="971.6000000000001" width="100.21600000000004" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="534.509" y="986.7500000000001" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">frame_seek / path</text>
+</g>
+<g class="edge-label" data-from="L3" data-to="L2" data-label="6 views / RID">
+  <rect x="496.901" y="1218.6000000000001" width="75.862" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="534.832" y="1233.7500000000002" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">6 views / RID</text>
+</g>
+<g class="edge-label" data-from="L2" data-to="L1" data-label="modular arithmetic">
+  <rect x="483.401" y="1482.5" width="102.59200000000001" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="534.697" y="1497.65" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">modular arithmetic</text>
+</g>
+<g class="edge-label" data-from="L1" data-to="L0" data-label="uniform slots">
+  <rect x="496.401" y="1729.5" width="76.456" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="534.629" y="1744.65" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">uniform slots</text>
+</g>
+<g class="edge-label" data-from="L0" data-to="L0" data-label="LOSSLESS GUARANTEE:
+memcmp every byte
+XOR verify">
+  <rect x="119.53650000000005" y="1838.7" width="142.98399999999998" height="58.900000000000006" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="191.02850000000004" y="1868.15" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)"><tspan x="191.02850000000004" dy="-10.450000000000001">LOSSLESS GUARANTEE:</tspan><tspan x="191.02850000000004" dy="14.3">memcmp every byte</tspan><tspan x="191.02850000000004" dy="14.3">XOR verify</tspan></text>
+</g>
+<g class="edge-label" data-from="GGUF" data-to="TWIN" data-label="write once">
+  <rect x="344.555" y="111.80000000000001" width="65.764" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="377.437" y="126.95000000000002" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">write once</text>
+</g>
+<g class="edge-label" data-from="TWIN" data-to="SPARSE" data-label="mmap on demand">
+  <rect x="625.4840000000002" y="111.80000000000001" width="96.058" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="673.5130000000001" y="126.95000000000002" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">mmap on demand</text>
+</g>
+<g class="edge-label" data-from="CUBE" data-to="GEOFS" data-label="5 models
+lossless">
+  <rect x="244.208" y="351.8" width="58.636" height="44.6" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="273.526" y="374.1" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)"><tspan x="273.526" dy="-3.3000000000000007">5 models</tspan><tspan x="273.526" dy="14.3">lossless</tspan></text>
+</g>
+<g class="edge-label" data-from="GEOFS" data-to="KVRID" data-label="persist blob
+byte-identical">
+  <rect x="489.11" y="351.8" width="80.02000000000001" height="44.6" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="529.12" y="374.1" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)"><tspan x="529.12" dy="-3.3000000000000007">persist blob</tspan><tspan x="529.12" dy="14.3">byte-identical</tspan></text>
+</g>
+<g class="edge-label" data-from="KVRID" data-to="RT" data-label="logits
+BITWISE">
+  <rect x="780.59" y="351.8" width="59.824000000000005" height="44.6" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="810.5020000000001" y="374.1" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)"><tspan x="810.5020000000001" dy="-3.3000000000000007">logits</tspan><tspan x="810.5020000000001" dy="14.3">BITWISE</tspan></text>
+</g>
+<g class="edge-label" data-from="TIED" data-to="RESIDUAL" data-label="2 B/item
+∝ COUNT">
+  <rect x="339.7385" y="854.2500000000001" width="61.01200000000001" height="44.6" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="370.2445" y="876.5500000000001" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)"><tspan x="370.2445" dy="-3.3000000000000007">2 B/item</tspan><tspan x="370.2445" dy="14.3">∝ COUNT</tspan></text>
+</g>
+<g class="edge-label" data-from="RESIDUAL" data-to="CAPGATE" data-label="pillar principle
+data never moves">
+  <rect x="629.2535" y="854.2500000000001" width="100.81000000000002" height="44.6" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="679.6585" y="876.5500000000001" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)"><tspan x="679.6585" dy="-3.3000000000000007">pillar principle</tspan><tspan x="679.6585" dy="14.3">data never moves</tspan></text>
+</g>
+<g class="edge-label" data-from="S3" data-to="ISO" data-label="exhaustive proof">
+  <rect x="338.765" y="1363.7" width="96.65200000000003" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="387.091" y="1378.8500000000001" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">exhaustive proof</text>
+</g>
+<g class="edge-label" data-from="ISO" data-to="RIDVIEWS" data-label="all bijections">
+  <rect x="639.4670000000001" y="1363.7" width="75.268" height="30.3" rx="2" ry="2" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="1" />
+  <text x="677.1010000000001" y="1378.8500000000001" text-anchor="middle" font-size="11" font-weight="400" fill="var(--_text-sec)" dy="3.8499999999999996">all bijections</text>
+</g>
+<g class="node" data-id="GGUF" data-label="GGUF Source
+675.7 MB" data-shape="rectangle">
+  <rect x="176.35399999999998" y="100.9" width="124.20100000000001" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="238.4545" y="127.80000000000001" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="238.4545" dy="-3.9000000000000012">GGUF Source</tspan><tspan x="238.4545" dy="16.900000000000002">675.7 MB</tspan></text>
+</g>
+<g class="node" data-id="TWIN" data-label="Twin mmap
+7.9 MB
+cross-destroy" data-shape="rectangle">
+  <rect x="454.319" y="92.45" width="127.165" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="517.9015" y="127.80000000000001" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="517.9015" dy="-12.350000000000001">Twin mmap</tspan><tspan x="517.9015" dy="16.900000000000002">7.9 MB</tspan><tspan x="517.9015" dy="16.900000000000002">cross-destroy</tspan></text>
+</g>
+<g class="node" data-id="SPARSE" data-label="Sparse file
+2.72 GB logical
+0.68 GB disk
+75% holes" data-shape="rectangle">
+  <rect x="765.5420000000001" y="84" width="127.906" height="87.60000000000001" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="829.4950000000001" y="127.80000000000001" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="829.4950000000001" dy="-20.8">Sparse file</tspan><tspan x="829.4950000000001" dy="16.900000000000002">2.72 GB logical</tspan><tspan x="829.4950000000001" dy="16.900000000000002">0.68 GB disk</tspan><tspan x="829.4950000000001" dy="16.900000000000002">75% holes</tspan></text>
+</g>
+<g class="node" data-id="CUBE" data-label="geo_cube_serve
+weights" data-shape="rectangle">
+  <rect x="56" y="347.90000000000003" width="144.208" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="128.10399999999998" y="374.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="128.10399999999998" dy="-3.9000000000000012">geo_cube_serve</tspan><tspan x="128.10399999999998" dy="16.900000000000002">weights</tspan></text>
+</g>
+<g class="node" data-id="GEOFS" data-label="geofs_rid
+files" data-shape="rectangle">
+  <rect x="346.844" y="347.90000000000003" width="98.266" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="395.977" y="374.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="395.977" dy="-3.9000000000000012">geofs_rid</tspan><tspan x="395.977" dy="16.900000000000002">files</tspan></text>
+</g>
+<g class="node" data-id="KVRID" data-label="kv_rid_serve
+state" data-shape="rectangle">
+  <rect x="613.13" y="347.90000000000003" width="123.46" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="674.86" y="374.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="674.86" dy="-3.9000000000000012">kv_rid_serve</tspan><tspan x="674.86" dy="16.900000000000002">state</tspan></text>
+</g>
+<g class="node" data-id="RT" data-label="gguf_roundtrip
+full file" data-shape="rectangle">
+  <rect x="884.414" y="347.90000000000003" width="129.388" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="949.108" y="374.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="949.108" dy="-3.9000000000000012">gguf_roundtrip</tspan><tspan x="949.108" dy="16.900000000000002">full file</tspan></text>
+</g>
+<g class="node" data-id="GHOST" data-label="GhostLog
+passive
+5 B/event
+{block_id, from, to}" data-shape="rectangle">
+  <rect x="250.58200000000005" y="578" width="145.69000000000003" height="87.60000000000001" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="323.4270000000001" y="621.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="323.4270000000001" dy="-20.8">GhostLog</tspan><tspan x="323.4270000000001" dy="16.900000000000002">passive</tspan><tspan x="323.4270000000001" dy="16.900000000000002">5 B/event</tspan><tspan x="323.4270000000001" dy="16.900000000000002">{block_id, from, to}</tspan></text>
+</g>
+<g class="node" data-id="WIRE" data-label="Gear Wire
+1 B/event
+{q:3b|dc:3b|dx:2b}
+seal=0xFF" data-shape="rectangle">
+  <rect x="444.27200000000005" y="578" width="145.69" height="87.60000000000001" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="517.1170000000001" y="621.8" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="517.1170000000001" dy="-20.8">Gear Wire</tspan><tspan x="517.1170000000001" dy="16.900000000000002">1 B/event</tspan><tspan x="517.1170000000001" dy="16.900000000000002">{q:3b|dc:3b|dx:2b}</tspan><tspan x="517.1170000000001" dy="16.900000000000002">seal=0xFF</tspan></text>
+</g>
+<g class="node" data-id="ADAPTER" data-label="Adapter
+WRITE: lift() + append
+READ: Δ-chain from wire" data-shape="rectangle">
+  <rect x="637.962" y="586.45" width="181.25799999999998" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="728.591" y="621.8000000000001" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="728.591" dy="-12.350000000000001">Adapter</tspan><tspan x="728.591" dy="16.900000000000002">WRITE: lift() + append</tspan><tspan x="728.591" dy="16.900000000000002">READ: Δ-chain from wire</tspan></text>
+</g>
+<g class="node" data-id="TIED" data-label="tied_dedup
+{tensor_id → home}" data-shape="rectangle">
+  <rect x="147.0845" y="846.1250000000001" width="148.654" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="221.4115" y="873.0250000000001" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="221.4115" dy="-3.9000000000000012">tied_dedup</tspan><tspan x="221.4115" dy="16.900000000000002">{tensor_id → home}</tspan></text>
+</g>
+<g class="node" data-id="RESIDUAL" data-label="residual_space
+bond-addressed" data-shape="rectangle">
+  <rect x="444.7505" y="850.3500000000001" width="140.503" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="515.002" y="877.2500000000001" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="515.002" dy="-3.9000000000000012">residual_space</tspan><tspan x="515.002" dy="16.900000000000002">bond-addressed</tspan></text>
+</g>
+<g class="node" data-id="CAPGATE" data-label="geo_cap_account
+budget gate
+leverage ≥ 1" data-shape="rectangle">
+  <rect x="774.0635" y="846.1250000000001" width="148.654" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="848.3905" y="881.4750000000001" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="848.3905" dy="-12.350000000000001">geo_cap_account</tspan><tspan x="848.3905" dy="16.900000000000002">budget gate</tspan><tspan x="848.3905" dy="16.900000000000002">leverage ≥ 1</tspan></text>
+</g>
+<g class="node" data-id="FSEEK" data-label="frame_seek
+stride-37
+1440-cycle" data-shape="rectangle">
+  <rect x="293.9305" y="1088.9" width="111.604" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="349.7325" y="1124.25" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="349.7325" dy="-12.350000000000001">frame_seek</tspan><tspan x="349.7325" dy="16.900000000000002">stride-37</tspan><tspan x="349.7325" dy="16.900000000000002">1440-cycle</tspan></text>
+</g>
+<g class="node" data-id="TELE" data-label="Telescoped
+{w0 → w}
+1 entry = 143 steps" data-shape="rectangle">
+  <rect x="453.5345" y="1088.9" width="142.726" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="524.8975" y="1124.25" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="524.8975" dy="-12.350000000000001">Telescoped</tspan><tspan x="524.8975" dy="16.900000000000002">{w0 → w}</tspan><tspan x="524.8975" dy="16.900000000000002">1 entry = 143 steps</tspan></text>
+</g>
+<g class="node" data-id="COMP" data-label="Composed path
+O(1) per target" data-shape="rectangle">
+  <rect x="644.2605" y="1097.3500000000001" width="131.611" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="710.066" y="1124.2500000000002" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="710.066" dy="-3.9000000000000012">Composed path</tspan><tspan x="710.066" dy="16.900000000000002">O(1) per target</tspan></text>
+</g>
+<g class="node" data-id="S3" data-label="6× S₃ perms
+on 12³ = 1728
+mutual inverses" data-shape="rectangle">
+  <rect x="160.19" y="1340.125" width="134.575" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="227.4775" y="1375.475" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="227.4775" dy="-12.350000000000001">6× S₃ perms</tspan><tspan x="227.4775" dy="16.900000000000002">on 12³ = 1728</tspan><tspan x="227.4775" dy="16.900000000000002">mutual inverses</tspan></text>
+</g>
+<g class="node" data-id="ISO" data-label="iso_rot90
+tri ↔ square
+on 144" data-shape="rectangle">
+  <rect x="479.41700000000003" y="1344.3500000000001" width="116.05" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="537.442" y="1379.7" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="537.442" dy="-12.350000000000001">iso_rot90</tspan><tspan x="537.442" dy="16.900000000000002">tri ↔ square</tspan><tspan x="537.442" dy="16.900000000000002">on 144</tspan></text>
+</g>
+<g class="node" data-id="RIDVIEWS" data-label="RID 8 languages
+pent / tri / snubL / R
+hosoya / zeck
+pascal / hexagram" data-shape="rectangle">
+  <rect x="758.7350000000001" y="1340.125" width="150.877" height="87.60000000000001" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="834.1735000000001" y="1383.925" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="834.1735000000001" dy="-20.8">RID 8 languages</tspan><tspan x="834.1735000000001" dy="16.900000000000002">pent / tri / snubL / R</tspan><tspan x="834.1735000000001" dy="16.900000000000002">hosoya / zeck</tspan><tspan x="834.1735000000001" dy="16.900000000000002">pascal / hexagram</tspan></text>
+</g>
+<g class="node" data-id="MOD" data-label="physical =
+(a_w × logical + b_w)
+% 144" data-shape="rectangle">
+  <rect x="253.91649999999998" y="1599.8" width="159.028" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="333.4305" y="1635.1499999999999" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="333.4305" dy="-12.350000000000001">physical =</tspan><tspan x="333.4305" dy="16.900000000000002">(a_w × logical + b_w)</tspan><tspan x="333.4305" dy="16.900000000000002">% 144</tspan></text>
+</g>
+<g class="node" data-id="COPRIME" data-label="a_w ∈ coprime(144)
+= 48 views" data-shape="rectangle">
+  <rect x="460.94449999999995" y="1608.25" width="150.13599999999997" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="536.0124999999999" y="1635.15" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="536.0124999999999" dy="-3.9000000000000012">a_w ∈ coprime(144)</tspan><tspan x="536.0124999999999" dy="16.900000000000002">= 48 views</tspan></text>
+</g>
+<g class="node" data-id="SCALE" data-label="144 scales
+= 144 bijective views
+NO holes" data-shape="rectangle">
+  <rect x="659.0805" y="1599.8" width="156.805" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="737.4830000000001" y="1635.1499999999999" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="737.4830000000001" dy="-12.350000000000001">144 scales</tspan><tspan x="737.4830000000001" dy="16.900000000000002">= 144 bijective views</tspan><tspan x="737.4830000000001" dy="16.900000000000002">NO holes</tspan></text>
+</g>
+<g class="node" data-id="SLOT" data-label="20,736 slots
+× 128 bytes
+= 1 window" data-shape="rectangle">
+  <rect x="286.5205" y="1846.8" width="112.34500000000001" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="342.69300000000004" y="1882.1499999999999" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="342.69300000000004" dy="-12.350000000000001">20,736 slots</tspan><tspan x="342.69300000000004" dy="16.900000000000002">× 128 bytes</tspan><tspan x="342.69300000000004" dy="16.900000000000002">= 1 window</tspan></text>
+</g>
+<g class="node" data-id="TESS" data-label="1 tesseract
+= 8 cubes × 144
+= 1,152 slots" data-shape="rectangle">
+  <rect x="446.86550000000005" y="1846.8" width="127.90599999999999" height="70.7" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="510.81850000000003" y="1882.1499999999999" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="510.81850000000003" dy="-12.350000000000001">1 tesseract</tspan><tspan x="510.81850000000003" dy="16.900000000000002">= 8 cubes × 144</tspan><tspan x="510.81850000000003" dy="16.900000000000002">= 1,152 slots</tspan></text>
+</g>
+<g class="node" data-id="INDEX" data-label="cube 0 = index frame
+cubes 1-7 = data" data-shape="rectangle">
+  <rect x="622.7715000000001" y="1855.25" width="160.51" height="53.800000000000004" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="703.0265" y="1882.15" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)"><tspan x="703.0265" dy="-3.9000000000000012">cube 0 = index frame</tspan><tspan x="703.0265" dy="16.900000000000002">cubes 1-7 = data</tspan></text>
+</g>
+</svg>

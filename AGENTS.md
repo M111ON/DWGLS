@@ -228,6 +228,110 @@ Session summary: vault `[[Memory/Sessions/2026-08-22_dwgls]]` (run `I:\tools\obs
 
 **Next:** all stocked branches opened+passed (3/3). Remaining queue: interop bridge / 18tes upgrade / soak re-run after any core change.
 
+## 🧵 Phase 3: KV Buffer as Storage Layer (2026-08-28) — COMPLETE
+
+**DWGLS = Data Flow Management System** (NOT geometry — geometry is a language for describing data flow rules)
+
+### Proven Properties
+
+| Property | Evidence | Status |
+|----------|----------|--------|
+| Dead slots safe | KL=0, top5=5/5, inject 2000 positions | ✅ |
+| Lossless roundtrip | 144/144 slots, 0 bytes differ | ✅ |
+| Geometric addressing | Stride-37, 144 unique, zero collisions | ✅ |
+| Multi-layer storage | 24 layers × 144 slots = 240/240 | ✅ |
+| Session persistence | Write → extract → destroy → reinject → match | ✅ |
+| Multi-prompt persistence | Data flows across prompts | ✅ |
+| Mid-generation checkpoint | Checkpoint → continue → identical output | ✅ |
+
+### Data Flow Patterns
+
+```
+External Data
+     ↓ (write to dead slots)
+KV Buffer [per-context]
+     ↓ (extract to buffer)
+External Buffer [persistent]
+     ↓ (reinject into new context)
+New KV Buffer [new context]
+     ↓ (read back)
+External Code
+```
+
+### Key Learnings
+
+1. **KV buffer is per-context** — data destroyed when context freed
+2. **Dead zone starts at n_pos+1** — position n_pos written by next decode
+3. **Geometry = rule template** — stride-37 is scatter rule, not 3D math
+4. **Model cannot see dead slots** — must extract → re-inject as tokens
+
+### Tools
+
+- `tools/kv_geo_addr_test.c` — Geometric addressing validation (5/5 ✅)
+- `tools/kv_flow_demo.c` — Data flow patterns (3/3 ✅)
+- `tools/kv_container_test.c` — Container format (4/5 ✅)
+- `tools/kv_impact_test.c` — Dead slot safety analysis (6/8 ✅)
+- `tools/kv_raw_hook.c` — Raw K/V access + delta encoding
+
+### Documentation
+
+- `docs/DWGLS_DATA_FLOW_MANAGEMENT.md` — Comprehensive technical documentation
+- `docs/DWGLS_TECHNICAL_DATA.md` — Detailed measurements and analysis
+
+## 🧵 Phase 4: GDN Hybrid Model Support (2026-08-28) — COMPLETE
+
+**Cross-architecture: DWGLS works with ANY GGUF model (pure attention OR hybrid GDN)**
+
+### Architecture Finding
+
+| Model | Type | Layers | GDN:Attn | State Extractable | Weight Pipeline |
+|-------|------|--------|----------|-------------------|-----------------|
+| Qwen2.5-0.5B/1.5B | Pure Transformer | 24 | 0:24 (all attn) | ✅ buffer API | ✅ 9 views |
+| Qwen3-0.6B..32B | Pure Transformer (GQA) | varies | 0:all (all attn) | ✅ buffer API | ✅ 9 views |
+| **Qwen3.5-2B** | **Hybrid GDN+Attn** | **24** | **18:6 (3:1)** | **✅ file API** | **✅ 9 views** |
+| Qwen3.5-4B/9B/27B | Hybrid GDN+Attn | varies | 3:1 ratio | ✅ file API (predicted) | ✅ (predicted) |
+
+### Qwen3.5 Internal Architecture
+- GDN layers: blk.N.ssm_* (14 tensors: conv1d, in_proj, out_proj, dt_proj, A, B, C, D, dt_bias, norm, ...)
+- Attn layers: blk.N.attn_* (11 tensors: q/k/v/o/gate/shq/shk/shv/...)
+- full_attention_interval = 4 → attn at indices 3,7,11,15,19,23 (every 4th layer)
+- GDN params: d_conv=4, d_state=128, d_inner=2048, n_group=16, dt_rank=16
+
+### State Roundtrip — GDN Hybrid
+- `llama_state_seq_get_size_ext` returns **WRONG size** for GDN models (460 bytes vs actual ~20 MB)
+- Buffer API (`llama_state_seq_set_data_ext`) **FAILS** — "wrong sequence state magic"
+- **File API works**: `llama_state_save_file` / `llama_state_load_file` → LOSSLESS
+- State size: ~19.5 MB (KV cache 24 MB + recurrent state 19.27 MB)
+- Speed: save 24ms, load 60ms
+
+### M-RoPE Constraint
+- Qwen3.5 uses M-RoPE (multi-resolution RoPE) with position constraint: **X < Y** (strict)
+- After state restore, KV cache position X must be strictly less than batch decode position Y
+- Crash (0xC0000005) if constraint violated — not a graceful error
+
+### Combined E2E Pipeline (PROVEN)
+```
+1. Load GGUF → prompt → generate N tokens → save state
+2. Read GGUF bytes → RID pent bake → rebuild → write temp file
+3. Load rebuilt GGUF → restore state → generate M more tokens
+4. Verify: text + tokens + logits hash = identical  ✅
+```
+- `tools/kv_gdn_e2e_test.c` → `build/kv_gdn_e2e_test.exe`
+- Bug caught: use-after-free on `vocab` pointer (model freed while vocab still needed)
+
+### Two-Layer Architecture (Decision: 2026-08-28)
+```
+DWGLS Core (weight-level) ─── architecture-independent ─── any GGUF
+     │
+State Layer (adapter) ─── architecture-dependent
+     ├─ Qwen2.5/3: buffer API (llama_state_seq_set_data_ext)
+     └─ Qwen3.5+:  file API (llama_state_save/load_file) — GDN recurrent state
+```
+
+### Tools
+- `tools/kv_gdn_state_inject.c` → `build/kv_gdn_state_inject.exe` — state roundtrip only
+- `tools/kv_gdn_e2e_test.c` → `build/kv_gdn_e2e_test.exe` — weight + state combined
+
 ## 🔧 Build (manual)
 
 ```bash
