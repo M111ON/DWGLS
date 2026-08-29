@@ -60,7 +60,7 @@ static llama_token *generate(const char *gguf_path, const char *prompt,
     if (!model) { fprintf(stderr, "  (llama cannot load %s)\n", gguf_path); return NULL; }
 
     struct llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 512; cp.n_batch = 64; cp.n_threads = 4; cp.n_threads_batch = 4;
+    cp.n_ctx = 2048; cp.n_batch = 512; cp.n_threads = 4; cp.n_threads_batch = 4;
     struct llama_context *ctx = llama_init_from_model(model, cp);
     if (!ctx) { llama_model_free(model); return NULL; }
 

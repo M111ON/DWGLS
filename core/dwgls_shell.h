@@ -1,6 +1,6 @@
-/*
- * dwgls_shell.h — Universal Container Shell
- * ════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════════════════
+ * dwgls_shell.h — Universal Container Shell for DWGLS
+ * ═══════════════════════════════════════════════════════════════════════════
  *
  * 32 bytes. Fixed. Every DWGLS file starts with this.
  * The shell identifies the container, declares geometry, and validates integrity.
@@ -8,48 +8,42 @@
  *
  * SACRED: 20736, 1728, 144, 12
  * PRINCIPLE: MAP not COMPRESS | coordinate = address
- *
- * BUILD: gcc -O2 -Wall -Icore -o test_shell tests/test_shell.c -lm
- * DEPENDS: none (self-contained)
- * ════════════════════════════════════════════════════════════════
- */
+ * ═══════════════════════════════════════════════════════════════════════════ */
 
 #ifndef DWGLS_SHELL_H
 #define DWGLS_SHELL_H
 
 #include <stdint.h>
-#include <string.h>
 
-/* ════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════
    CONSTANTS
-   ════════════════════════════════════════════════════════════════ */
+   ═══════════════════════════════════════════════════════════════ */
 
-#define DWGLS_SHELL_MAGIC        0x4457474Cu  /* "DWGL" — DWGLS universal */
-#define DWGLS_SHELL_VERSION      1u
-#define DWGLS_SHELL_SZ           32u
-#define DWGLS_TOTAL_SLOTS        20736u       /* 12^4 = 144^2 */
+#define DWGLS_SHELL_MAGIC    0x4457474Cu  /* "DWGL" — DWGLS universal */
+#define DWGLS_SHELL_VERSION  1u
+#define DWGLS_SHELL_SZ       32u
 
 /* ── Codec IDs (registered, not magic-numbered) ──────────────── */
-#define CODEC_NONE               0u   /* raw / passthrough */
-#define CODEC_KIS_FRAME          1u   /* geo_kis_container: frame+block payload */
-#define CODEC_KIS_4D             2u   /* geo_kis_4d_container: 3-axis resolve */
-#define CODEC_TESSERACT          3u   /* tesseract_container: 8-octant views */
-#define CODEC_GCUBE              4u   /* geo_cube_container: multi-tensor blocks */
-#define CODEC_BEAM_ENTROPY       5u   /* beam_entropy_container: BECCoord 8-bit */
-#define CODEC_TESS               6u   /* geo_tess_container: stride-37, .tess */
-#define CODEC_KIS_CODEC_V6       7u   /* kis_codec_v6: sort+mask+codebook */
-#define CODEC_DIAMOND_FIELD      8u   /* geo_diamond_field_v4: 5-path adaptive */
-#define CODEC_USER_START         64u  /* user-defined codecs start here */
+#define CODEC_NONE           0u   /* raw / passthrough */
+#define CODEC_KIS_FRAME      1u   /* geo_kis_container: frame+block payload */
+#define CODEC_KIS_4D         2u   /* geo_kis_4d_container: 3-axis resolve */
+#define CODEC_TESSERACT      3u   /* tesseract_container: 8-octant views */
+#define CODEC_GCUBE          4u   /* geo_cube_container: multi-tensor blocks */
+#define CODEC_BEAM_ENTROPY   5u   /* beam_entropy_container: BECCoord 8-bit */
+#define CODEC_TESS           6u   /* geo_tess_container: stride-37, .tess */
+#define CODEC_KIS_CODEC_V6   7u   /* kis_codec_v6: sort+mask+codebook */
+#define CODEC_DIAMOND_FIELD  8u   /* geo_diamond_field_v4: 5-path adaptive */
+#define CODEC_USER_START     64u  /* user-defined codecs start here */
 
 /* ── Integrity modes ─────────────────────────────────────────── */
-#define INTEGRITY_NONE           0u
-#define INTEGRITY_CRC32          1u   /* ISO 3309 / ITU-T V.42 */
-#define INTEGRITY_CRC64          2u   /* ECMA-182 */
-#define INTEGRITY_XXH64          3u   /* xxHash64 (fast, non-crypto) */
+#define INTEGRITY_NONE       0u
+#define INTEGRITY_CRC32      1u   /* ISO 3309 / ITU-T V.42 */
+#define INTEGRITY_CRC64      2u   /* ECMA-182 */
+#define INTEGRITY_XXH64      3u   /* xxHash64 (fast, non-crypto) */
 
-/* ════════════════════════════════════════════════════════════════
-   SHELL HEADER (32 bytes, packed)
-   ════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   SHELL HEADER (32 bytes packed)
+   ═══════════════════════════════════════════════════════════════ */
 
 #pragma pack(push, 1)
 typedef struct {
@@ -72,17 +66,15 @@ typedef struct {
 } DWGLS_Shell;
 #pragma pack(pop)
 
-/* ════════════════════════════════════════════════════════════════
-   CRC-64/ECMA-182
-   Polynomial: 0x42F0E1EBA9EA3693, init=F...F, xorout=F...F
-   Same algorithm as geo_kis_container.h kis_crc64().
-   ════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   CRC-64/ECMA (polynomial 0x42F0E1EBA9EA3693, init=F...F, xorout=F...F)
+   ═══════════════════════════════════════════════════════════════ */
 
 #define DWGLS_CRC64_POLY  UINT64_C(0x42F0E1EBA9EA3693)
 
 static inline uint64_t dwgls_crc64(const uint8_t *data, uint32_t len)
 {
-    uint64_t crc = UINT64_C(0xFFFFFFFFFFFFFFFF);
+    uint64_t crc = UINT64_C(0xFFFFFFFFFFFFFFFF);  /* ECMA: init */
     for (uint32_t i = 0; i < len; i++) {
         crc ^= (uint64_t)data[i] << 56;
         for (int j = 0; j < 8; j++) {
@@ -91,31 +83,12 @@ static inline uint64_t dwgls_crc64(const uint8_t *data, uint32_t len)
                 :  (crc << 1);
         }
     }
-    return crc ^ UINT64_C(0xFFFFFFFFFFFFFFFF);
+    return crc ^ UINT64_C(0xFFFFFFFFFFFFFFFF);  /* ECMA: xorout */
 }
 
-/* ════════════════════════════════════════════════════════════════
-   CRC-32 (ISO 3309 / ITU-T V.42)
-   Same algorithm as tesseract_container.h tess_crc32().
-   ════════════════════════════════════════════════════════════════ */
-
-#define DWGLS_CRC32_POLY  0xEDB88320u
-
-static inline uint32_t dwgls_crc32(const uint8_t *data, uint32_t len)
-{
-    uint32_t crc = 0xFFFFFFFFu;
-    for (uint32_t i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (int j = 0; j < 8; j++) {
-            crc = (crc >> 1) ^ (-(crc & 1u) & DWGLS_CRC32_POLY);
-        }
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
-
-/* ════════════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════════
    SHELL FUNCTIONS
-   ════════════════════════════════════════════════════════════════ */
+   ═══════════════════════════════════════════════════════════════ */
 
 /* ── shell_init ────────────────────────────────────────────────
  * Initialize shell from parameters. Zeroes reserved fields.
@@ -157,42 +130,6 @@ static inline uint32_t dwgls_shell_total_size(const DWGLS_Shell *s)
     return DWGLS_SHELL_SZ + s->payload_size;
 }
 
-/* ── shell_compute_checksum ────────────────────────────────────
- * Compute checksum over entire file (shell + payload).
- * The checksum field in the shell is zeroed before computation
- * to avoid chicken-and-egg dependency.
- * payload_ptr must point to the first byte after the shell.
- */
-static inline uint64_t dwgls_shell_compute_checksum(
-    const DWGLS_Shell *s, const uint8_t *payload_ptr)
-{
-    /* Copy shell and zero the checksum field for computation */
-    DWGLS_Shell tmp;
-    memcpy(&tmp, s, sizeof(DWGLS_Shell));
-    tmp.checksum = 0;
-
-    /* CRC over shell (all 32 bytes, with checksum=0) */
-    uint64_t crc = dwgls_crc64((const uint8_t *)&tmp, DWGLS_SHELL_SZ);
-    /* Extend over payload */
-    if (payload_ptr && s->payload_size > 0) {
-        uint64_t p_crc = dwgls_crc64(payload_ptr, s->payload_size);
-        crc ^= p_crc;  /* combine shell + payload checksums */
-    }
-    return crc;
-}
-
-/* ── shell_verify ──────────────────────────────────────────────
- * Verify checksum. payload_ptr points to first byte after shell.
- * Returns 0=ok, -1=checksum mismatch, -2=no integrity mode.
- */
-static inline int dwgls_shell_verify(const DWGLS_Shell *s,
-                                      const uint8_t *payload_ptr)
-{
-    if (s->integrity == INTEGRITY_NONE) return -2;
-    uint64_t expected = dwgls_shell_compute_checksum(s, payload_ptr);
-    return (expected == s->checksum) ? 0 : -1;
-}
-
 /* ── shell_codec_name ──────────────────────────────────────────
  * Human-readable codec name.
  */
@@ -212,13 +149,87 @@ static inline const char* dwgls_shell_codec_name(uint8_t codec)
     }
 }
 
-/* ── shell_print ───────────────────────────────────────────────
- * Debug dump of shell fields.
+/* ── shell_compute_checksum ────────────────────────────────────
+ * Compute checksum over shell (with checksum=0) + payload.
+ * Returns the checksum value.
  */
-static inline void dwgls_shell_print(const DWGLS_Shell *s)
+static inline uint64_t dwgls_shell_compute_checksum(const DWGLS_Shell *s,
+                                                     const void *payload)
 {
-    (void)s; /* suppress unused warning in release builds */
-    /* Actual print done via printf in test code */
+    uint64_t crc = UINT64_C(0xFFFFFFFFFFFFFFFF);
+
+    /* Hash shell with checksum field zeroed */
+    const uint8_t *p = (const uint8_t *)s;
+    for (uint32_t i = 0; i < DWGLS_SHELL_SZ; i++) {
+        uint8_t byte = (i >= 24 && i < 32) ? 0 : p[i];  /* zero out checksum field (bytes 24-31) */
+        crc ^= (uint64_t)byte << 56;
+        for (int j = 0; j < 8; j++) {
+            crc = (crc & (UINT64_C(1) << 63))
+                ? ((crc << 1) ^ DWGLS_CRC64_POLY)
+                :  (crc << 1);
+        }
+    }
+
+    /* Hash payload */
+    if (payload && s->payload_size) {
+        p = (const uint8_t *)payload;
+        for (uint32_t i = 0; i < s->payload_size; i++) {
+            crc ^= (uint64_t)p[i] << 56;
+            for (int j = 0; j < 8; j++) {
+                crc = (crc & (UINT64_C(1) << 63))
+                    ? ((crc << 1) ^ DWGLS_CRC64_POLY)
+                    :  (crc << 1);
+            }
+        }
+    }
+
+    return crc ^ UINT64_C(0xFFFFFFFFFFFFFFFF);
+}
+
+/* ── shell_verify_integrity ────────────────────────────────────
+ * Verify shell magic + checksum over entire file (shell + payload).
+ * Returns 0 on pass, negative on error:
+ *   -1: bad magic
+ *   -2: bad version
+ *   -3: checksum mismatch
+ *   -4: buffer too short
+ */
+static inline int dwgls_shell_verify_integrity(const DWGLS_Shell *s,
+                                                const void *payload,
+                                                uint32_t payload_len)
+{
+    if (payload_len < s->payload_size) return -4;
+
+    int v = dwgls_shell_validate(s);
+    if (v != 0) return v;
+
+    /* Compute checksum over shell (with zeroed checksum) + payload */
+    uint64_t crc = UINT64_C(0xFFFFFFFFFFFFFFFF);
+    const uint8_t *p = (const uint8_t *)s;
+
+    for (uint32_t i = 0; i < DWGLS_SHELL_SZ; i++) {
+        uint8_t byte = (i >= 24 && i < 32) ? 0 : p[i];  /* zero out checksum field */
+        crc ^= (uint64_t)byte << 56;
+        for (int j = 0; j < 8; j++) {
+            crc = (crc & (UINT64_C(1) << 63))
+                ? ((crc << 1) ^ DWGLS_CRC64_POLY)
+                :  (crc << 1);
+        }
+    }
+
+    p = (const uint8_t *)payload;
+    for (uint32_t i = 0; i < s->payload_size; i++) {
+        crc ^= (uint64_t)p[i] << 56;
+        for (int j = 0; j < 8; j++) {
+            crc = (crc & (UINT64_C(1) << 63))
+                ? ((crc << 1) ^ DWGLS_CRC64_POLY)
+                :  (crc << 1);
+        }
+    }
+    crc ^= UINT64_C(0xFFFFFFFFFFFFFFFF);
+
+    if (crc != s->checksum) return -3;
+    return 0;
 }
 
 #endif /* DWGLS_SHELL_H */

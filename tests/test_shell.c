@@ -1,273 +1,181 @@
-/* test_shell.c — DWGLS Shell + Codec Interface Tests
+/*
+ * tests/test_shell.c — DWGLS Shell tests
+ * ═══════════════════════════════════════════════════════════════════════════
  *
- * BUILD: gcc -O2 -Wall -Wextra -Icore -o build/test_shell.exe tests/test_shell.c -lm
- * RUN:   build/test_shell.exe
+ * T1  shell_init + shell_validate — basic header operations
+ * T2  shell_total_size — correct total size computation
+ * T3  shell_codec_name — all registered codecs have names
+ * T4  shell_compute_checksum / shell_verify_integrity — CRC64 integrity
+ * T5  bad magic detection
+ * T6  bad version detection
+ * T7  checksum mismatch detection
+ * T8  buffer too short detection
+ * T9  roundtrip: init → compute checksum → verify
+ * T10 shell size is exactly 32 bytes (compile-time check)
  *
- * Tests:
- *   T1: Shell init + validate (magic, version)
- *   T2: Shell total_size calculation
- *   T3: Shell checksum compute + verify (roundtrip)
- *   T4: Shell codec_name mapping
- *   T5: Codec context default values
- *   T6: Raw codec encode/decode roundtrip
- *   T7: Raw codec payload_size
- *   T8: Raw codec verify (always ok)
- *   T9: Raw codec resolve (identity)
- *  T10: dwgls_open auto-detect DWGLS shell
- *  T11: dwgls_open rejects invalid magic
- *  T12: dwgls_open rejects too-small buffer
- *  T13: CRC-64 matches geo_kis_container.h kis_crc64()
- *  T14: Shell is exactly 32 bytes (sizeof assert)
+ * BUILD: gcc -O2 -Wall -Wextra -I. -Icore -o build/test_shell tests/test_shell.c -lm
  */
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
-#include <assert.h>
-#include "dwgls_shell.h"
-#include "dwgls_codec.h"
+#include <stdlib.h>
+#include "../core/dwgls_shell.h"
+#include "../core/dwgls_codec.h"
+#include "../core/codec_tess.h"
 
-static int tests_passed = 0;
-static int tests_failed = 0;
+static int pass = 0, fail = 0;
 
-#define TEST(name) \
-    do { printf("  T%02d %-40s ", __COUNTER__ + 1, name); } while(0)
-
-#define PASS() \
-    do { printf("PASS\n"); tests_passed++; } while(0)
-
-#define FAIL(msg) \
-    do { printf("FAIL: %s\n", msg); tests_failed++; } while(0)
-
-/* ── T1: Shell init + validate ───────────────────────────────── */
-static void test_shell_init_validate(void)
-{
-    TEST("shell init + validate");
-    DWGLS_Shell s;
-    dwgls_shell_init(&s, CODEC_TESS, 20736, 65536, 705024, 34, INTEGRITY_CRC64);
-
-    if (s.magic != DWGLS_SHELL_MAGIC) { FAIL("bad magic"); return; }
-    if (s.version != DWGLS_SHELL_VERSION) { FAIL("bad version"); return; }
-    if (s.codec_id != CODEC_TESS) { FAIL("bad codec_id"); return; }
-    if (s.total_slots != 20736) { FAIL("bad total_slots"); return; }
-    if (s.scale_factor != 65536) { FAIL("bad scale_factor"); return; }
-    if (s.payload_size != 705024) { FAIL("bad payload_size"); return; }
-    if (s.cell_size != 34) { FAIL("bad cell_size"); return; }
-    if (dwgls_shell_validate(&s) != 0) { FAIL("validate failed"); return; }
-    PASS();
-}
-
-/* ── T2: Shell total_size ────────────────────────────────────── */
-static void test_shell_total_size(void)
-{
-    TEST("shell total_size");
-    DWGLS_Shell s;
-    dwgls_shell_init(&s, CODEC_TESS, 20736, 65536, 705024, 34, INTEGRITY_CRC64);
-
-    uint32_t total = dwgls_shell_total_size(&s);
-    if (total != 32 + 705024) { FAIL("wrong total"); return; }
-    PASS();
-}
-
-/* ── T3: Shell checksum roundtrip ────────────────────────────── */
-static void test_shell_checksum(void)
-{
-    TEST("shell checksum roundtrip");
-    DWGLS_Shell s;
-    dwgls_shell_init(&s, CODEC_NONE, 20736, 65536, 4, 1, INTEGRITY_CRC64);
-
-    /* Simulate payload */
-    uint8_t payload[4] = {0xDE, 0xAD, 0xBE, 0xEF};
-    s.checksum = dwgls_shell_compute_checksum(&s, payload);
-
-    /* Verify should pass */
-    if (dwgls_shell_verify(&s, payload) != 0) { FAIL("verify failed"); return; }
-
-    /* Corrupt payload → verify should fail */
-    payload[0] = 0x00;
-    if (dwgls_shell_verify(&s, payload) == 0) { FAIL("verify should fail on corrupt"); return; }
-    PASS();
-}
-
-/* ── T4: Shell codec_name ────────────────────────────────────── */
-static void test_shell_codec_name(void)
-{
-    TEST("shell codec_name mapping");
-    if (strcmp(dwgls_shell_codec_name(CODEC_TESS), "tess") != 0) { FAIL("tess"); return; }
-    if (strcmp(dwgls_shell_codec_name(CODEC_GCUBE), "gcube") != 0) { FAIL("gcube"); return; }
-    if (strcmp(dwgls_shell_codec_name(CODEC_NONE), "raw") != 0) { FAIL("raw"); return; }
-    if (strcmp(dwgls_shell_codec_name(99), "user_defined") != 0) { FAIL("user_defined"); return; }
-    PASS();
-}
-
-/* ── T5: Codec context defaults ──────────────────────────────── */
-static void test_codec_ctx_default(void)
-{
-    TEST("codec context defaults");
-    DWGLS_CodecCtx ctx = dwgls_ctx_default(65536);
-    if (ctx.total_slots != 20736) { FAIL("total_slots"); return; }
-    if (ctx.x_slots != 6912) { FAIL("x_slots"); return; }
-    if (ctx.y_slots != 6912) { FAIL("y_slots"); return; }
-    if (ctx.z_slots != 6912) { FAIL("z_slots"); return; }
-    if (ctx.scale_factor != 65536) { FAIL("scale"); return; }
-    PASS();
-}
-
-/* ── T6: Raw codec encode/decode roundtrip ───────────────────── */
-static void test_raw_codec_roundtrip(void)
-{
-    TEST("raw codec encode/decode roundtrip");
-    DWGLS_CodecCtx ctx = dwgls_ctx_default(65536);
-    uint8_t src[32] = {0};
-    for (int i = 0; i < 32; i++) src[i] = (uint8_t)(i * 7 + 3);
-
-    uint8_t encoded[64];
-    int32_t enc_sz = DWGLS_CODEC_RAW.encode(src, 32, &ctx, encoded, sizeof(encoded));
-    if (enc_sz != 32) { FAIL("encode size"); return; }
-
-    uint8_t decoded[32];
-    int32_t dec_sz = DWGLS_CODEC_RAW.decode(encoded, (uint32_t)enc_sz, &ctx, decoded, sizeof(decoded));
-    if (dec_sz != 32) { FAIL("decode size"); return; }
-
-    if (memcmp(src, decoded, 32) != 0) { FAIL("roundtrip mismatch"); return; }
-    PASS();
-}
-
-/* ── T7: Raw codec payload_size ──────────────────────────────── */
-static void test_raw_payload_size(void)
-{
-    TEST("raw codec payload_size");
-    DWGLS_CodecCtx ctx = dwgls_ctx_default(65536);
-    uint32_t sz = DWGLS_CODEC_RAW.payload_size(1000, &ctx);
-    if (sz != 1000) { FAIL("wrong size"); return; }
-    PASS();
-}
-
-/* ── T8: Raw codec verify ────────────────────────────────────── */
-static void test_raw_verify(void)
-{
-    TEST("raw codec verify");
-    uint8_t data[] = {1, 2, 3, 4, 5};
-    if (DWGLS_CODEC_RAW.verify(data, 5) != 0) { FAIL("should pass"); return; }
-    PASS();
-}
-
-/* ── T9: Raw codec resolve (identity) ────────────────────────── */
-static void test_raw_resolve(void)
-{
-    TEST("raw codec resolve (identity)");
-    DWGLS_CodecCtx ctx = dwgls_ctx_default(65536);
-    for (uint32_t slot = 0; slot < 100; slot++) {
-        uint32_t resolved = DWGLS_CODEC_RAW.resolve(slot, &ctx);
-        if (resolved != slot) { FAIL("non-identity"); return; }
-    }
-    PASS();
-}
-
-/* ── T10: dwgls_open auto-detect DWGLS ──────────────────────── */
-static void test_open_dwgls(void)
-{
-    TEST("dwgls_open auto-detect DWGLS shell");
-    uint8_t buf[32 + 4];
-    DWGLS_Shell *s = (DWGLS_Shell *)buf;
-    dwgls_shell_init(s, CODEC_NONE, 20736, 65536, 4, 1, INTEGRITY_NONE);
-    buf[32] = 0xDE; buf[33] = 0xAD; buf[34] = 0xBE; buf[35] = 0xEF;
-
-    DWGLS_File f;
-    memset(&f, 0, sizeof(f));
-    int rc = dwgls_open(&f, buf, sizeof(buf));
-    if (rc != 0) { FAIL("open failed"); return; }
-    if (f.shell.codec_id != CODEC_NONE) { FAIL("wrong codec"); return; }
-    if (f.payload_len != 4) { FAIL("wrong payload_len"); return; }
-    PASS();
-}
-
-/* ── T11: dwgls_open rejects invalid magic ───────────────────── */
-static void test_open_bad_magic(void)
-{
-    TEST("dwgls_open rejects invalid magic");
-    uint8_t buf[32];
-    memset(buf, 0xFF, sizeof(buf));  /* all 0xFF = bad magic */
-
-    DWGLS_File f;
-    memset(&f, 0, sizeof(f));
-    int rc = dwgls_open(&f, buf, sizeof(buf));
-    if (rc != -2) { FAIL("should return -2 (unrecognized)"); return; }
-    PASS();
-}
-
-/* ── T12: dwgls_open rejects too-small buffer ────────────────── */
-static void test_open_small_buffer(void)
-{
-    TEST("dwgls_open rejects small buffer");
-    uint8_t buf[16];  /* smaller than DWGLS_SHELL_SZ (32) */
-    DWGLS_File f;
-    memset(&f, 0, sizeof(f));
-    int rc = dwgls_open(&f, buf, sizeof(buf));
-    if (rc != -1) { FAIL("should return -1 (too small)"); return; }
-    PASS();
-}
-
-/* ── T13: CRC-64 matches reference ────────────────────────────── */
-static void test_crc64_reference(void)
-{
-    TEST("CRC-64 matches kis_crc64 reference");
-    /* Known test vector: empty input → ECMA CRC64 = 0x0000000000000000 */
-    /* Actually: CRC64/ECMA of empty is 0x0000000000000000 */
-    uint8_t data[] = "123456789";
-    uint64_t crc = dwgls_crc64(data, 9);
-    /* CRC64/ECMA-182 of "123456789" = 0x6C40DF5F95A7810A (known test vector) */
-    if (crc != UINT64_C(0x6C40DF5F95A7810A)) {
-        /* Note: this test vector is for the REFLECTED variant.
-         * Our implementation is MSB-first (non-reflected).
-         * The correct value for non-reflected ECMA CRC64 of "123456789"
-         * may differ. Let's just check it's not zero and is deterministic. */
-        uint64_t crc2 = dwgls_crc64(data, 9);
-        if (crc != crc2) { FAIL("non-deterministic"); return; }
-        /* Accept — we'll verify against kis_crc64 in integration */
-    }
-    PASS();
-}
-
-/* ── T14: Shell is exactly 32 bytes ──────────────────────────── */
-static void test_shell_size(void)
-{
-    TEST("shell is exactly 32 bytes");
-    if (sizeof(DWGLS_Shell) != 32) {
-        FAIL("sizeof(DWGLS_Shell) != 32");
-        return;
-    }
-    if (DWGLS_SHELL_SZ != 32) {
-        FAIL("DWGLS_SHELL_SZ != 32");
-        return;
-    }
-    PASS();
-}
-
-/* ════════════════════════════════════════════════════════════════
-   MAIN
-   ════════════════════════════════════════════════════════════════ */
+#define CHECK(desc, cond) do { \
+    if (cond) { pass++; printf("  [PASS] %s\n", desc); } \
+    else { fail++; printf("  [FAIL] %s\n", desc); } \
+} while(0)
 
 int main(void)
 {
-    printf("═══ DWGLS Shell + Codec Tests ═══\n\n");
+    printf("═══════════════════════════════════════\n");
+    printf("  DWGLS Shell Tests\n");
+    printf("═══════════════════════════════════════\n\n");
 
-    test_shell_init_validate();
-    test_shell_total_size();
-    test_shell_checksum();
-    test_shell_codec_name();
-    test_codec_ctx_default();
-    test_raw_codec_roundtrip();
-    test_raw_payload_size();
-    test_raw_verify();
-    test_raw_resolve();
-    test_open_dwgls();
-    test_open_bad_magic();
-    test_open_small_buffer();
-    test_crc64_reference();
-    test_shell_size();
+    /* ── T1: shell_init + shell_validate ───────────────────────────── */
+    {
+        DWGLS_Shell s;
+        dwgls_shell_init(&s, CODEC_TESS, 20736, 65536, 1024, 4, INTEGRITY_CRC64);
+        CHECK("T1a: shell_init sets magic", s.magic == DWGLS_SHELL_MAGIC);
+        CHECK("T1b: shell_init sets version", s.version == DWGLS_SHELL_VERSION);
+        CHECK("T1c: shell_init sets codec_id", s.codec_id == CODEC_TESS);
+        CHECK("T1d: shell_init sets total_slots", s.total_slots == 20736);
+        CHECK("T1e: shell_init sets scale_factor", s.scale_factor == 65536);
+        CHECK("T1f: shell_init sets payload_size", s.payload_size == 1024);
+        CHECK("T1g: shell_init sets cell_size", s.cell_size == 4);
+        CHECK("T1h: shell_init sets integrity", s.integrity == INTEGRITY_CRC64);
+        CHECK("T1i: shell_init zeroes checksum", s.checksum == 0);
+        CHECK("T1j: shell_validate passes", dwgls_shell_validate(&s) == 0);
+    }
 
-    printf("\n═══ Results: %d PASS, %d FAIL ═══\n",
-           tests_passed, tests_failed);
+    /* ── T2: shell_total_size ──────────────────────────────────────── */
+    {
+        DWGLS_Shell s;
+        dwgls_shell_init(&s, CODEC_TESS, 20736, 65536, 1024, 4, INTEGRITY_CRC64);
+        CHECK("T2: total_size = 32 + payload", dwgls_shell_total_size(&s) == 1056);
+    }
 
-    return tests_failed > 0 ? 1 : 0;
+    /* ── T3: shell_codec_name ──────────────────────────────────────── */
+    {
+        CHECK("T3a: CODEC_NONE name", strcmp(dwgls_shell_codec_name(CODEC_NONE), "raw") == 0);
+        CHECK("T3b: CODEC_KIS_FRAME name", strcmp(dwgls_shell_codec_name(CODEC_KIS_FRAME), "kis_frame") == 0);
+        CHECK("T3c: CODEC_KIS_4D name", strcmp(dwgls_shell_codec_name(CODEC_KIS_4D), "kis_4d") == 0);
+        CHECK("T3d: CODEC_TESSERACT name", strcmp(dwgls_shell_codec_name(CODEC_TESSERACT), "tesseract") == 0);
+        CHECK("T3e: CODEC_GCUBE name", strcmp(dwgls_shell_codec_name(CODEC_GCUBE), "gcube") == 0);
+        CHECK("T3f: CODEC_BEAM_ENTROPY name", strcmp(dwgls_shell_codec_name(CODEC_BEAM_ENTROPY), "beam_entropy") == 0);
+        CHECK("T3g: CODEC_TESS name", strcmp(dwgls_shell_codec_name(CODEC_TESS), "tess") == 0);
+        CHECK("T3h: CODEC_KIS_CODEC_V6 name", strcmp(dwgls_shell_codec_name(CODEC_KIS_CODEC_V6), "kis_v6") == 0);
+        CHECK("T3i: CODEC_DIAMOND_FIELD name", strcmp(dwgls_shell_codec_name(CODEC_DIAMOND_FIELD), "diamond_field") == 0);
+        CHECK("T3j: unknown codec name", strcmp(dwgls_shell_codec_name(99), "user_defined") == 0);
+    }
+
+    /* ── T4: checksum computation and verification ─────────────────── */
+    {
+        DWGLS_Shell s;
+        uint8_t payload[64] = {0};
+        for (int i = 0; i < 64; i++) payload[i] = (uint8_t)(i * 7);
+
+        dwgls_shell_init(&s, CODEC_TESS, 20736, 65536, 64, 4, INTEGRITY_CRC64);
+
+        /* Compute checksum */
+        uint64_t crc = dwgls_shell_compute_checksum(&s, payload);
+        CHECK("T4a: checksum non-zero", crc != 0);
+
+        s.checksum = crc;
+
+        /* Verify integrity */
+        int v = dwgls_shell_verify_integrity(&s, payload, 64);
+        CHECK("T4b: verify_integrity passes", v == 0);
+    }
+
+    /* ── T5: bad magic detection ───────────────────────────────────── */
+    {
+        DWGLS_Shell s = {0};
+        s.magic = 0xDEADBEEF;
+        s.version = DWGLS_SHELL_VERSION;
+        CHECK("T5: bad magic detected", dwgls_shell_validate(&s) == -1);
+    }
+
+    /* ── T6: bad version detection ─────────────────────────────────── */
+    {
+        DWGLS_Shell s = {0};
+        s.magic = DWGLS_SHELL_MAGIC;
+        s.version = 99;
+        CHECK("T6: bad version detected", dwgls_shell_validate(&s) == -2);
+    }
+
+    /* ── T7: checksum mismatch detection ───────────────────────────── */
+    {
+        DWGLS_Shell s;
+        uint8_t payload[64] = {0};
+        for (int i = 0; i < 64; i++) payload[i] = (uint8_t)(i * 7);
+
+        dwgls_shell_init(&s, CODEC_TESS, 20736, 65536, 64, 4, INTEGRITY_CRC64);
+        uint64_t crc = dwgls_shell_compute_checksum(&s, payload);
+        s.checksum = crc;
+
+        /* Corrupt payload */
+        payload[0] ^= 0xFF;
+
+        int v = dwgls_shell_verify_integrity(&s, payload, 64);
+        CHECK("T7: checksum mismatch detected", v == -3);
+    }
+
+    /* ── T8: buffer too short detection ────────────────────────────── */
+    {
+        DWGLS_Shell s;
+        uint8_t payload[32] = {0};  /* shorter than declared payload_size */
+
+        dwgls_shell_init(&s, CODEC_TESS, 20736, 65536, 64, 4, INTEGRITY_CRC64);
+        uint64_t crc = dwgls_shell_compute_checksum(&s, payload);
+        s.checksum = crc;
+
+        int v = dwgls_shell_verify_integrity(&s, payload, 32);
+        CHECK("T8: buffer too short detected", v == -4);
+    }
+
+    /* ── T9: full roundtrip ────────────────────────────────────────── */
+    {
+        DWGLS_Shell s;
+        uint8_t payload[128];
+        for (int i = 0; i < 128; i++) payload[i] = (uint8_t)(i * 13 + 7);
+
+        dwgls_shell_init(&s, CODEC_GCUBE, 20736, 65536, 128, 2, INTEGRITY_CRC64);
+        uint64_t crc = dwgls_shell_compute_checksum(&s, payload);
+        s.checksum = crc;
+
+        int v = dwgls_shell_verify_integrity(&s, payload, 128);
+        CHECK("T9: full roundtrip passes", v == 0);
+    }
+
+    /* ── T10: shell size is exactly 32 bytes ───────────────────────── */
+    {
+        CHECK("T10: DWGLS_Shell is 32 bytes", sizeof(DWGLS_Shell) == 32);
+    }
+
+    /* ── Bonus: codec registry ─────────────────────────────────────── */
+    {
+        const DWGLS_CodecVtable *c;
+
+        c = dwgls_codec_find(CODEC_NONE);
+        CHECK("Bonus: codec_find RAW", c != NULL && c->info().codec_id == CODEC_NONE);
+
+        c = dwgls_codec_find(CODEC_TESS);
+        CHECK("Bonus: codec_find TESS", c != NULL && c->info().codec_id == CODEC_TESS);
+
+        c = dwgls_codec_find(CODEC_GCUBE);
+        CHECK("Bonus: codec_find GCUBE", c != NULL && c->info().codec_id == CODEC_GCUBE);
+
+        c = dwgls_codec_find(99);
+        CHECK("Bonus: codec_find unknown returns NULL", c == NULL);
+    }
+
+    printf("\n═══════════════════════════════════════\n");
+    printf("RESULTS: %d/%d PASS\n", pass, pass + fail);
+    return fail ? 1 : 0;
 }

@@ -151,7 +151,7 @@ static float *decode_next(GGUFBox *box, const char *gguf_path, const char *promp
     if (!model) return NULL;
 
     struct llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 512;
+    cp.n_ctx = 2048;
     cp.n_batch = 64;
     cp.n_threads = 4;
     cp.n_threads_batch = 4;

@@ -140,7 +140,7 @@ static llama_token *generate(const char *gguf_path, const char *prompt,
     struct llama_model *model = llama_model_load_from_file(gguf_path, mp);
     if (!model) return NULL;
     struct llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 512; cp.n_batch = 64; cp.n_threads = 4; cp.n_threads_batch = 4;
+    cp.n_ctx = 2048; cp.n_batch = 512; cp.n_threads = 4; cp.n_threads_batch = 4;
     struct llama_context *ctx = llama_init_from_model(model, cp);
     if (!ctx) { llama_model_free(model); return NULL; }
     const struct llama_vocab *vocab = llama_model_get_vocab(model);
@@ -555,7 +555,7 @@ int main(int argc, char **argv) {
                   strcmp(llama_vocab_get_text(vocab, 1), "\"") == 0);
 
                 struct llama_context_params cp = llama_context_default_params();
-                cp.n_ctx = 512; cp.n_batch = 64; cp.n_threads = 4; cp.n_threads_batch = 4;
+                cp.n_ctx = 2048; cp.n_batch = 512; cp.n_threads = 4; cp.n_threads_batch = 4;
                 struct llama_context *ctx = llama_init_from_model(model, cp);
                 CHECK("P6: llama_init_from_model — context จาก field-built model", ctx != NULL);
                 if (ctx) {

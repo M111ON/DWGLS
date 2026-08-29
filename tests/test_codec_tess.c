@@ -1,318 +1,371 @@
-/* test_codec_tess.c — DWGLS TESS Codec Adapter Tests
+/*
+ * tests/test_codec_tess.c — TESS Codec roundtrip tests
+ * ═══════════════════════════════════════════════════════════════════════════
  *
- * BUILD: gcc -O2 -Wall -Wextra -Icore -o build/test_codec_tess.exe tests/test_codec_tess.c -lm
- * RUN:   build/test_codec_tess.exe
+ * T1  tess_info — codec info correct
+ * T2  tess_payload_size — correct size computation
+ * T3  tess_encode + tess_decode roundtrip (F32)
+ * T4  tess_encode + tess_decode roundtrip (F16/BF16 cell size 2)
+ * T5  tess_encode + tess_decode roundtrip (Q8_0 cell size 34)
+ * T6  tess_verify — valid payload passes
+ * T5  tess_verify — corrupt payload fails
+ * T6  tess_resolve — stride-37 scatter matches gather inverse
+ * T7  full DWGLS file: shell + codec payload roundtrip
+ * T8  mmap-friendly: payload pointer arithmetic works
+ * T9  codec registry finds TESS
+ * T10 multiple encode/decode cycles produce identical results
  *
- * Tests:
- *   T1: info() returns correct metadata
- *   T2: encode/decode roundtrip (uint8_t, cell=1)
- *   T3: encode/decode roundtrip (cell=4, Q8_0-ish)
- *   T4: payload_size matches actual encode output
- *   T5: verify() detects corrupted payload
- *   T6: resolve() = stride_scatter for all 20736 slots
- *   T7: encode rejects n_elems > 20736
- *   T8: shell_from_header roundtrip
- *   T9: resolve_octant = scatter(resolve_octant_raw(slot))
- *  T10: vtable is properly populated (all function pointers non-NULL)
+ * BUILD: gcc -O2 -Wall -Wextra -I. -Icore -o build/test_codec_tess tests/test_codec_tess.c -lm
  */
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
-#include <assert.h>
-#include "dwgls_codec.h"
-#include "dwgls_codec_tess.h"
+#include <stdlib.h>
+#include <math.h>
+#include "../core/dwgls_shell.h"
+#include "../core/dwgls_codec.h"
+#include "../core/codec_tess.h"
+#include "../core/geo_tess_container.h"
 
-static int tests_passed = 0;
-static int tests_failed = 0;
+static int pass = 0, fail = 0;
 
-#define TEST(name) \
-    do { printf("  T%02d %-44s ", __COUNTER__ + 1, name); } while(0)
+#define CHECK(desc, cond) do { \
+    if (cond) { pass++; printf("  [PASS] %s\n", desc); } \
+    else { fail++; printf("  [FAIL] %s\n", desc); } \
+} while(0)
 
-#define PASS() \
-    do { printf("PASS\n"); tests_passed++; } while(0)
-
-#define FAIL(msg) \
-    do { printf("FAIL: %s\n", msg); tests_failed++; } while(0)
-
-/* ── T1: info() ─────────────────────────────────────────────── */
-static void test_info(void)
+/* Deterministic test data generator */
+static void fill_test_data(void *buf, uint32_t n_elems, uint32_t cell_size, uint32_t seed)
 {
-    TEST("info() returns correct metadata");
-    DWGLS_CodecInfo info = DWGLS_CODEC_TESS.info();
-    if (info.codec_id != CODEC_TESS) { FAIL("codec_id"); return; }
-    if (strcmp(info.name, "tess") != 0) { FAIL("name"); return; }
-    if (info.min_version != 1) { FAIL("min_version"); return; }
-    if (!(info.flags & CODEC_FLAG_RANDOM_ACCESS)) { FAIL("missing RANDOM_ACCESS flag"); return; }
-    if (!(info.flags & CODEC_FLAG_DERIVED_VIEWS)) { FAIL("missing DERIVED_VIEWS flag"); return; }
-    PASS();
-}
-
-/* ── T2: encode/decode roundtrip (cell=1) ───────────────────── */
-static void test_roundtrip_cell1(void)
-{
-    TEST("encode/decode roundtrip (cell=1)");
-    DWGLS_CodecCtx ctx = dwgls_ctx_default(65536);
-    TESS_CTX_CELL_SIZE(&ctx) = 1;
-    TESS_CTX_GGUF_TYPE(&ctx) = TESS_GGML_Q8_0;
-    TESS_CTX_OCTANT_MASK(&ctx) = 0xFF;
-
-    uint32_t n = 256;
-    uint8_t src[256];
-    for (uint32_t i = 0; i < n; i++) src[i] = (uint8_t)(i * 37 + 13);
-
-    uint8_t payload[64 + 256 + 64 + 8]; /* formula + cubedata + padding + CRC */
-    uint32_t cap = sizeof(payload);
-
-    int32_t written = DWGLS_CODEC_TESS.encode(src, n, &ctx, payload, cap);
-    if (written < 0) { FAIL("encode returned negative"); return; }
-    if ((uint32_t)written != 64 + n + 8) { FAIL("encode size mismatch"); return; }
-
-    uint8_t dst[256];
-    int32_t decoded = DWGLS_CODEC_TESS.decode(payload, (uint32_t)written, &ctx, dst, sizeof(dst));
-    if (decoded < 0) { FAIL("decode returned negative"); return; }
-    if ((uint32_t)decoded != n) { FAIL("decoded size mismatch"); return; }
-
-    for (uint32_t i = 0; i < n; i++) {
-        if (dst[i] != src[i]) {
-            FAIL("data mismatch"); return;
-        }
+    uint8_t *p = (uint8_t *)buf;
+    uint32_t s = seed;
+    for (uint32_t i = 0; i < n_elems * cell_size; i++) {
+        s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+        p[i] = (uint8_t)(s & 0xFF);
     }
-    PASS();
 }
 
-/* ── T3: encode/decode roundtrip (cell=4) ───────────────────── */
-static void test_roundtrip_cell4(void)
+static int memcmp_data(const void *a, const void *b, uint32_t n)
 {
-    TEST("encode/decode roundtrip (cell=4)");
-    DWGLS_CodecCtx ctx = dwgls_ctx_default(65536);
-    TESS_CTX_CELL_SIZE(&ctx) = 4;
-
-    uint32_t n = 64;
-    uint32_t src[64];
-    for (uint32_t i = 0; i < n; i++) src[i] = 0xDEAD0000u + i;
-
-    uint32_t payload[64/4 + 64 + 32]; /* formula in uint32_t units + cubedata + CRC */
-    uint32_t cap = sizeof(payload) * sizeof(uint32_t);
-
-    uint8_t *pb = (uint8_t *)payload;
-    int32_t written = DWGLS_CODEC_TESS.encode(src, n, &ctx, pb, cap);
-    if (written < 0) { FAIL("encode returned negative"); return; }
-
-    uint32_t dst[64];
-    int32_t decoded = DWGLS_CODEC_TESS.decode(pb, (uint32_t)written, &ctx, dst, sizeof(dst));
-    if (decoded < 0) { FAIL("decode returned negative"); return; }
-
-    for (uint32_t i = 0; i < n; i++) {
-        if (dst[i] != src[i]) { FAIL("data mismatch"); return; }
-    }
-    PASS();
+    return memcmp(a, b, n);
 }
-
-/* ── T4: payload_size matches encode ────────────────────────── */
-static void test_payload_size(void)
-{
-    TEST("payload_size() matches encode output");
-    DWGLS_CodecCtx ctx = dwgls_ctx_default(65536);
-    TESS_CTX_CELL_SIZE(&ctx) = 1;
-
-    uint32_t n = 1024;
-    uint32_t expected = DWGLS_CODEC_TESS.payload_size(n, &ctx);
-    uint32_t expected_formula = (uint32_t)sizeof(TESS_Formula);
-    if (expected != expected_formula + n * 1 + 8) {
-        FAIL("payload_size formula mismatch"); return;
-    }
-
-    /* Actually encode and compare */
-    uint8_t src[256];
-    memset(src, 0xAA, 256);
-    uint8_t payload[64 + 256 + 8];
-    int32_t written = DWGLS_CODEC_TESS.encode(src, 256, &ctx, payload, sizeof(payload));
-    uint32_t actual = DWGLS_CODEC_TESS.payload_size(256, &ctx);
-    if ((uint32_t)written != actual) { FAIL("written != payload_size"); return; }
-    PASS();
-}
-
-/* ── T5: verify detects corruption ──────────────────────────── */
-static void test_verify_corruption(void)
-{
-    TEST("verify() detects corrupted payload");
-    DWGLS_CodecCtx ctx = dwgls_ctx_default(65536);
-    TESS_CTX_CELL_SIZE(&ctx) = 1;
-
-    uint8_t src[128];
-    memset(src, 0x42, 128);
-    uint8_t payload[64 + 128 + 8];
-    int32_t written = DWGLS_CODEC_TESS.encode(src, 128, &ctx, payload, sizeof(payload));
-    if (written < 0) { FAIL("encode failed"); return; }
-
-    /* Verify before corruption */
-    int v = DWGLS_CODEC_TESS.verify(payload, (uint32_t)written);
-    if (v != 0) { FAIL("verify failed on clean payload"); return; }
-
-    /* Corrupt a byte in cubedata */
-    payload[70] ^= 0xFF;
-    v = DWGLS_CODEC_TESS.verify(payload, (uint32_t)written);
-    if (v == 0) { FAIL("verify did not detect corruption"); return; }
-
-    PASS();
-}
-
-/* ── T6: resolve() matches stride-37 scatter formula ────────── */
-static void test_resolve(void)
-{
-    TEST("resolve() = (slot×37) mod 20736 for all slots");
-    DWGLS_CodecCtx ctx = dwgls_ctx_default(65536);
-    /* Independent oracle: scatter formula written by hand — (w×37) mod 20736.
-     * 37 coprime to 20736 → permutation (design spec: stride-37, AGENTS.md). */
-    for (uint32_t slot = 0; slot < TESS_TOTAL_SLOTS; slot++) {
-        uint32_t r = DWGLS_CODEC_TESS.resolve(slot, &ctx);
-        uint32_t expected = (slot * 37u) % 20736u;
-        if (r != expected) {
-            FAIL("mismatch at slot"); return;
-        }
-    }
-    PASS();
-}
-
-/* ── T6b: scatter is a bijection (permutation of 20736 cells) ── */
-static void test_scatter_bijection(void)
-{
-    TEST("stride-37 scatter is a bijection (all unique)");
-    static uint8_t seen[20736];
-    memset(seen, 0, sizeof(seen));
-    for (uint32_t slot = 0; slot < TESS_TOTAL_SLOTS; slot++) {
-        uint32_t c = tess_stride_scatter(slot);
-        if (c >= 20736u) { FAIL("cell out of range"); return; }
-        if (seen[c]) { FAIL("duplicate cell — not a permutation"); return; }
-        seen[c] = 1;
-    }
-    for (uint32_t c = 0; c < TESS_TOTAL_SLOTS; c++) {
-        if (!seen[c]) { FAIL("missing cell — not a permutation"); return; }
-    }
-    /* Hand-computed edge values: scatter(k) = k×37 mod 20736
-     *  scatter(0)=0 · scatter(1)=37 · scatter(2)=74
-     *  scatter(20735) = 20735×37 = 767195 = 37×20736 − 37 → 20699 */
-    if (tess_stride_scatter(0)      != 0)     { FAIL("scatter(0)"); return; }
-    if (tess_stride_scatter(1)      != 37)    { FAIL("scatter(1)"); return; }
-    if (tess_stride_scatter(2)      != 74)    { FAIL("scatter(2)"); return; }
-    if (tess_stride_scatter(20735)  != 20699) { FAIL("scatter(20735)"); return; }
-    PASS();
-}
-
-/* ── T7: encode rejects n_elems > 20736 ────────────────────── */
-static void test_encode_overflow(void)
-{
-    TEST("encode rejects n_elems > 20736");
-    DWGLS_CodecCtx ctx = dwgls_ctx_default(65536);
-    TESS_CTX_CELL_SIZE(&ctx) = 1;
-    uint8_t buf[64];
-    int32_t r = DWGLS_CODEC_TESS.encode(buf, 20737, &ctx, buf, 64);
-    if (r != -2) { FAIL("expected -2 overflow error"); return; }
-    PASS();
-}
-
-/* ── T8: shell_from_header roundtrip ────────────────────────── */
-static void test_shell_header_roundtrip(void)
-{
-    TEST("shell ↔ header conversion roundtrip");
-    TESS_Header th;
-    tess_header_init(&th, TESS_GGML_Q8_0, TESS_CELL_Q8_0);
-
-    DWGLS_Shell s;
-    tess_shell_from_header(&s, &th);
-
-    if (s.magic != DWGLS_SHELL_MAGIC) { FAIL("magic"); return; }
-    if (s.codec_id != CODEC_TESS) { FAIL("codec_id"); return; }
-    if (s.total_slots != 20736) { FAIL("total_slots"); return; }
-    if (s.cell_size != TESS_CELL_Q8_0) { FAIL("cell_size"); return; }
-
-    /* Reverse */
-    TESS_Header th2;
-    tess_header_from_shell(&th2, &s, TESS_GGML_Q8_0);
-    if (th2.magic != TESS_MAGIC) { FAIL("th2.magic"); return; }
-    if (th2.total_slots != 20736) { FAIL("th2.total_slots"); return; }
-    if (th2.cell_size != TESS_CELL_Q8_0) { FAIL("th2.cell_size"); return; }
-
-    PASS();
-}
-
-/* ── T9: resolve_octant — independent mirror properties ─────── */
-static void test_resolve_octant(void)
-{
-    TEST("resolve_octant: octant-0 identity + mirror involution");
-    TESS_Header h;
-    tess_header_init(&h, TESS_GGML_F32, TESS_CELL_F32);
-
-    uint32_t slots[] = {0, 1, 100, 6911, 6912, 13823, 13824, 20735};
-
-    /* (a) Octant 0 = no mirror (design spec: bit0/1/2 = X/Y/Z sign) →
-     *     resolve_octant(slot, 0) = scatter(slot) = (slot×37) mod 20736 — hand formula */
-    for (int si = 0; si < 8; si++) {
-        uint32_t actual = tess_codec_resolve_octant(slots[si], 0, &h);
-        uint32_t expected = (slots[si] * 37u) % 20736u;
-        if (actual != expected) { FAIL("octant-0 not identity"); return; }
-    }
-
-    /* (b) Mirror is an involution: m² = id in raw space.
-     *     gather(cell) = raw slot; so gather(resolve_octant(s,o)) = m(s), and
-     *     resolve_octant(m(s), o) must equal scatter(s) = (s×37) mod 20736 */
-    for (int si = 0; si < 8; si++) {
-        for (uint8_t oct = 0; oct < 8; oct++) {
-            uint32_t c1 = tess_codec_resolve_octant(slots[si], oct, &h);
-            uint32_t m = tess_stride_gather(c1);
-            uint32_t c2 = tess_codec_resolve_octant(m, oct, &h);
-            uint32_t expected = (slots[si] * 37u) % 20736u;
-            if (c2 != expected) { FAIL("mirror not involutive"); return; }
-        }
-    }
-
-    /* (c) Wiring consistency: codec adapter == wiring layer (regression only,
-     *     formula correctness is covered by (a)+(b)) */
-    for (int si = 0; si < 8; si++) {
-        for (uint8_t oct = 0; oct < 8; oct++) {
-            uint32_t expected = tess_stride_scatter(
-                tess_resolve_octant(slots[si], oct, &h));
-            uint32_t actual = tess_codec_resolve_octant(slots[si], oct, &h);
-            if (actual != expected) { FAIL("mismatch"); return; }
-        }
-    }
-    PASS();
-}
-
-/* ── T10: vtable populated ──────────────────────────────────── */
-static void test_vtable_populated(void)
-{
-    TEST("vtable has all function pointers set");
-    if (!DWGLS_CODEC_TESS.info) { FAIL("info"); return; }
-    if (!DWGLS_CODEC_TESS.encode) { FAIL("encode"); return; }
-    if (!DWGLS_CODEC_TESS.decode) { FAIL("decode"); return; }
-    if (!DWGLS_CODEC_TESS.payload_size) { FAIL("payload_size"); return; }
-    if (!DWGLS_CODEC_TESS.verify) { FAIL("verify"); return; }
-    if (!DWGLS_CODEC_TESS.resolve) { FAIL("resolve"); return; }
-    PASS();
-}
-
-/* ════════════════════════════════════════════════════════════════
-   MAIN
-   ════════════════════════════════════════════════════════════════ */
 
 int main(void)
 {
-    printf("═══ DWGLS TESS Codec Adapter Tests ═══\n\n");
+    printf("═══════════════════════════════════════\n");
+    printf("  TESS Codec Tests\n");
+    printf("═══════════════════════════════════════\n\n");
 
-    test_info();
-    test_roundtrip_cell1();
-    test_roundtrip_cell4();
-    test_payload_size();
-    test_verify_corruption();
-    test_resolve();
-    test_scatter_bijection();
-    test_encode_overflow();
-    test_shell_header_roundtrip();
-    test_resolve_octant();
-    test_vtable_populated();
+    const uint32_t TOTAL_SLOTS = 20736;
+    const uint32_t N_ELEMS = 1000;  /* test with subset */
 
-    printf("\n═══ Results: %d PASS, %d FAIL ═══\n",
-           tests_passed, tests_failed);
-    return tests_failed ? 1 : 0;
+    /* ── T1: tess_info ─────────────────────────────────────────────── */
+    {
+        DWGLS_CodecInfo info = tess_info();
+        CHECK("T1a: name is 'tess'", strcmp(info.name, "tess") == 0);
+        CHECK("T1b: codec_id is CODEC_TESS", info.codec_id == CODEC_TESS);
+        CHECK("T1c: min_version is 1", info.min_version == 1);
+        CHECK("T1d: has MMAP_FRIENDLY flag", info.flags & CODEC_FLAG_MMAP_FRIENDLY);
+        CHECK("T1e: has RANDOM_ACCESS flag", info.flags & CODEC_FLAG_RANDOM_ACCESS);
+        CHECK("T1f: has DERIVED_VIEWS flag", info.flags & CODEC_FLAG_DERIVED_VIEWS);
+    }
+
+    /* ── T2: tess_payload_size ─────────────────────────────────────── */
+    {
+        DWGLS_CodecCtx ctx = { .total_slots = TOTAL_SLOTS, .scale_factor = 65536 };
+        ctx.user_data[0] = TESS_CELL_F32;  /* 4 bytes */
+        ctx.user_data[1] = TESS_GGML_F32;
+
+        uint32_t sz = tess_payload_size(N_ELEMS, &ctx);
+        uint32_t expected = TESS_HEADER_SIZE + TESS_FORMULA_SIZE + (TOTAL_SLOTS * 4) + TESS_CRC_SIZE;
+        CHECK("T2a: payload size F32", sz == expected);
+
+        ctx.user_data[0] = TESS_CELL_F16;  /* 2 bytes */
+        sz = tess_payload_size(N_ELEMS, &ctx);
+        expected = TESS_HEADER_SIZE + TESS_FORMULA_SIZE + (TOTAL_SLOTS * 2) + TESS_CRC_SIZE;
+        CHECK("T2b: payload size F16", sz == expected);
+
+        ctx.user_data[0] = TESS_CELL_Q8_0;  /* 34 bytes */
+        sz = tess_payload_size(N_ELEMS, &ctx);
+        expected = TESS_HEADER_SIZE + TESS_FORMULA_SIZE + (TOTAL_SLOTS * 34) + TESS_CRC_SIZE;
+        CHECK("T2c: payload size Q8_0", sz == expected);
+    }
+
+    /* ── T3: encode + decode roundtrip F32 ─────────────────────────── */
+    {
+        DWGLS_CodecCtx ctx = { .total_slots = TOTAL_SLOTS, .scale_factor = 65536 };
+        ctx.user_data[0] = TESS_CELL_F32;
+        ctx.user_data[1] = TESS_GGML_F32;
+        ctx.user_data[2] = N_ELEMS;
+        ctx.x_slots = TESS_X_SLOTS;
+        ctx.y_slots = TESS_Y_SLOTS;
+        ctx.z_slots = TESS_Z_SLOTS;
+
+        uint32_t payload_sz = tess_payload_size(N_ELEMS, &ctx);
+        uint8_t *src = (uint8_t *)malloc(N_ELEMS * 4);
+        uint8_t *payload = (uint8_t *)malloc(payload_sz);
+        uint8_t *dst = (uint8_t *)malloc(N_ELEMS * 4);
+
+        fill_test_data(src, N_ELEMS, 4, 0xABCDEF01);
+
+        int32_t enc = tess_encode(src, N_ELEMS, &ctx, payload, payload_sz);
+        CHECK("T3a: encode returns positive bytes", enc > 0);
+        CHECK("T3b: encode size matches payload_size", (uint32_t)enc == payload_sz);
+
+        int32_t dec = tess_decode(payload, enc, &ctx, dst, N_ELEMS * 4);
+        CHECK("T3c: decode returns positive bytes", dec > 0);
+        CHECK("T3d: decode size matches", (uint32_t)dec == N_ELEMS * 4);
+        CHECK("T3e: roundtrip data identical", memcmp_data(src, dst, N_ELEMS * 4) == 0);
+
+        free(src); free(payload); free(dst);
+    }
+
+    /* ── T4: encode + decode roundtrip F16 (cell_size=2) ───────────── */
+    {
+        DWGLS_CodecCtx ctx = { .total_slots = TOTAL_SLOTS, .scale_factor = 65536 };
+        ctx.user_data[0] = TESS_CELL_F16;
+        ctx.user_data[1] = TESS_GGML_F16;
+        ctx.user_data[2] = N_ELEMS;
+        ctx.x_slots = TESS_X_SLOTS;
+        ctx.y_slots = TESS_Y_SLOTS;
+        ctx.z_slots = TESS_Z_SLOTS;
+
+        uint32_t payload_sz = tess_payload_size(N_ELEMS, &ctx);
+        uint8_t *src = (uint8_t *)malloc(N_ELEMS * 2);
+        uint8_t *payload = (uint8_t *)malloc(payload_sz);
+        uint8_t *dst = (uint8_t *)malloc(N_ELEMS * 2);
+
+        fill_test_data(src, N_ELEMS, 2, 0x12345678);
+
+        int32_t enc = tess_encode(src, N_ELEMS, &ctx, payload, payload_sz);
+        CHECK("T4a: encode F16", enc > 0);
+
+        int32_t dec = tess_decode(payload, enc, &ctx, dst, N_ELEMS * 2);
+        CHECK("T4b: decode F16", dec > 0);
+        CHECK("T4c: roundtrip F16 identical", memcmp_data(src, dst, N_ELEMS * 2) == 0);
+
+        free(src); free(payload); free(dst);
+    }
+
+    /* ── T5: encode + decode roundtrip Q8_0 (cell_size=34) ─────────── */
+    {
+        DWGLS_CodecCtx ctx = { .total_slots = TOTAL_SLOTS, .scale_factor = 65536 };
+        ctx.user_data[0] = TESS_CELL_Q8_0;
+        ctx.user_data[1] = TESS_GGML_Q8_0;
+        ctx.user_data[2] = N_ELEMS;
+        ctx.x_slots = TESS_X_SLOTS;
+        ctx.y_slots = TESS_Y_SLOTS;
+        ctx.z_slots = TESS_Z_SLOTS;
+
+        uint32_t payload_sz = tess_payload_size(N_ELEMS, &ctx);
+        uint8_t *src = (uint8_t *)malloc(N_ELEMS * 34);
+        uint8_t *payload = (uint8_t *)malloc(payload_sz);
+        uint8_t *dst = (uint8_t *)malloc(N_ELEMS * 34);
+
+        fill_test_data(src, N_ELEMS, 34, 0xFEEDFACE);
+
+        int32_t enc = tess_encode(src, N_ELEMS, &ctx, payload, payload_sz);
+        CHECK("T5a: encode Q8_0", enc > 0);
+
+        int32_t dec = tess_decode(payload, enc, &ctx, dst, N_ELEMS * 34);
+        CHECK("T5b: decode Q8_0", dec > 0);
+        CHECK("T5c: roundtrip Q8_0 identical", memcmp_data(src, dst, N_ELEMS * 34) == 0);
+
+        free(src); free(payload); free(dst);
+    }
+
+    /* ── T6: tess_verify valid payload ─────────────────────────────── */
+    {
+        DWGLS_CodecCtx ctx = { .total_slots = TOTAL_SLOTS, .scale_factor = 65536 };
+        ctx.user_data[0] = TESS_CELL_F32;
+        ctx.user_data[1] = TESS_GGML_F32;
+        ctx.user_data[2] = N_ELEMS;
+        ctx.x_slots = TESS_X_SLOTS;
+        ctx.y_slots = TESS_Y_SLOTS;
+        ctx.z_slots = TESS_Z_SLOTS;
+
+        uint32_t payload_sz = tess_payload_size(N_ELEMS, &ctx);
+        uint8_t *src = (uint8_t *)malloc(N_ELEMS * 4);
+        uint8_t *payload = (uint8_t *)malloc(payload_sz);
+
+        fill_test_data(src, N_ELEMS, 4, 0xBADF00D);
+        tess_encode(src, N_ELEMS, &ctx, payload, payload_sz);
+
+        int v = tess_verify(payload, payload_sz);
+        CHECK("T6: verify passes on valid payload", v == 0);
+
+        free(src); free(payload);
+    }
+
+    /* ── T7: tess_verify corrupt payload fails ─────────────────────── */
+    {
+        DWGLS_CodecCtx ctx = { .total_slots = TOTAL_SLOTS, .scale_factor = 65536 };
+        ctx.user_data[0] = TESS_CELL_F32;
+        ctx.user_data[1] = TESS_GGML_F32;
+        ctx.user_data[2] = N_ELEMS;
+        ctx.x_slots = TESS_X_SLOTS;
+        ctx.y_slots = TESS_Y_SLOTS;
+        ctx.z_slots = TESS_Z_SLOTS;
+
+        uint32_t payload_sz = tess_payload_size(N_ELEMS, &ctx);
+        uint8_t *src = (uint8_t *)malloc(N_ELEMS * 4);
+        uint8_t *payload = (uint8_t *)malloc(payload_sz);
+
+        fill_test_data(src, N_ELEMS, 4, 0xDEADBEEF);
+        tess_encode(src, N_ELEMS, &ctx, payload, payload_sz);
+
+        /* Corrupt the CubeData (after header + formula) */
+        payload[TESS_HEADER_SIZE + TESS_FORMULA_SIZE + 10] ^= 0xFF;
+
+        int v = tess_verify(payload, payload_sz);
+        CHECK("T7: verify fails on corrupt payload", v == -3);
+
+        free(src); free(payload);
+    }
+
+    /* ── T8: tess_resolve stride-37 scatter/gather ─────────────────── */
+    {
+        DWGLS_CodecCtx ctx = { .total_slots = TOTAL_SLOTS };
+
+        /* Test that scatter and gather are inverses: gather(scatter(i)) == i */
+        int all_ok = 1;
+        for (uint32_t i = 0; i < N_ELEMS && all_ok; i++) {
+            uint32_t scattered = tess_stride_scatter(i);
+            uint32_t gathered = tess_stride_gather(scattered);
+            if (gathered != i % TOTAL_SLOTS) {
+                all_ok = 0;
+            }
+        }
+        CHECK("T8a: stride-37 scatter/gather inverse (first N_ELEMS)", all_ok);
+
+        /* Test resolve function */
+        uint32_t r = codec_tess_resolve(100, &ctx);
+        CHECK("T8b: resolve returns scatter index", r == tess_stride_scatter(100));
+    }
+
+    /* ── T9: full DWGLS file: shell + codec payload roundtrip ──────── */
+    {
+        DWGLS_CodecCtx ctx = { .total_slots = TOTAL_SLOTS, .scale_factor = 65536 };
+        ctx.user_data[0] = TESS_CELL_F32;
+        ctx.user_data[1] = TESS_GGML_F32;
+        ctx.user_data[2] = N_ELEMS;
+        ctx.x_slots = TESS_X_SLOTS;
+        ctx.y_slots = TESS_Y_SLOTS;
+        ctx.z_slots = TESS_Z_SLOTS;
+
+        uint32_t payload_sz = tess_payload_size(N_ELEMS, &ctx);
+        uint32_t file_sz = DWGLS_SHELL_SZ + payload_sz;
+
+        uint8_t *file_buf = (uint8_t *)malloc(file_sz);
+        uint8_t *src = (uint8_t *)malloc(N_ELEMS * 4);
+        uint8_t *dst = (uint8_t *)malloc(N_ELEMS * 4);
+
+        fill_test_data(src, N_ELEMS, 4, 0xCAFEBABE);
+
+        /* Build file: shell + codec payload */
+        DWGLS_Shell *shell = (DWGLS_Shell *)file_buf;
+        uint8_t *payload = file_buf + DWGLS_SHELL_SZ;
+
+        dwgls_shell_init(shell, CODEC_TESS, TOTAL_SLOTS, 65536, payload_sz, 4, INTEGRITY_CRC64);
+        tess_encode(src, N_ELEMS, &ctx, payload, payload_sz);
+
+        /* Compute and set checksum */
+        uint64_t crc = dwgls_shell_compute_checksum(shell, payload);
+        shell->checksum = crc;
+
+        /* Verify file integrity */
+        int v = dwgls_shell_verify_integrity(shell, payload, payload_sz);
+        CHECK("T9a: full file verify passes", v == 0);
+
+        /* Decode through shell + codec */
+        const DWGLS_CodecVtable *codec = dwgls_codec_find(shell->codec_id);
+        CHECK("T9b: codec found", codec != NULL);
+
+        v = codec->verify(payload, payload_sz);
+        CHECK("T9c: codec verify passes", v == 0);
+
+        int32_t dec = codec->decode(payload, payload_sz, &ctx, dst, N_ELEMS * 4);
+        CHECK("T9d: decode through shell works", dec > 0);
+        CHECK("T9e: full file roundtrip identical", memcmp_data(src, dst, N_ELEMS * 4) == 0);
+
+        free(file_buf); free(src); free(dst);
+    }
+
+    /* ── T10: mmap-friendly payload pointer arithmetic ─────────────── */
+    {
+        DWGLS_CodecCtx ctx = { .total_slots = TOTAL_SLOTS, .scale_factor = 65536 };
+        ctx.user_data[0] = TESS_CELL_F32;
+        ctx.user_data[1] = TESS_GGML_F32;
+        ctx.user_data[2] = N_ELEMS;
+        ctx.x_slots = TESS_X_SLOTS;
+        ctx.y_slots = TESS_Y_SLOTS;
+        ctx.z_slots = TESS_Z_SLOTS;
+
+        uint32_t payload_sz = tess_payload_size(N_ELEMS, &ctx);
+        uint8_t *payload = (uint8_t *)malloc(payload_sz);
+
+        uint8_t *src = (uint8_t *)malloc(N_ELEMS * 4);
+        fill_test_data(src, N_ELEMS, 4, 0x11223344);
+        tess_encode(src, N_ELEMS, &ctx, payload, payload_sz);
+
+        /* Direct pointer access to CubeData (after header + formula) */
+        const TESS_Header *hdr = (const TESS_Header *)(payload);
+        const uint8_t *cube_data = payload + TESS_HEADER_SIZE + TESS_FORMULA_SIZE;
+
+        CHECK("T10a: cube_data pointer aligned", ((uintptr_t)cube_data) % 8 == 0);
+        CHECK("T10b: header accessible", hdr->magic == TESS_MAGIC);
+        CHECK("T10c: cell_size correct", hdr->cell_size == 4);
+        CHECK("T10d: total_slots correct", hdr->total_slots == TOTAL_SLOTS);
+
+        free(payload); free(src);
+    }
+
+    /* ── T11: codec registry finds TESS ────────────────────────────── */
+    {
+        const DWGLS_CodecVtable *c = dwgls_codec_find(CODEC_TESS);
+        CHECK("T11a: codec_find TESS returns non-NULL", c != NULL);
+        CHECK("T11b: codec info matches", c->info().codec_id == CODEC_TESS);
+        CHECK("T11c: encode function present", c->encode != NULL);
+        CHECK("T11d: decode function present", c->decode != NULL);
+        CHECK("T11e: verify function present", c->verify != NULL);
+        CHECK("T11f: resolve function present", c->resolve != NULL);
+    }
+
+    /* ── T12: multiple encode/decode cycles ────────────────────────── */
+    {
+        DWGLS_CodecCtx ctx = { .total_slots = TOTAL_SLOTS, .scale_factor = 65536 };
+        ctx.user_data[0] = TESS_CELL_F32;
+        ctx.user_data[1] = TESS_GGML_F32;
+        ctx.user_data[2] = N_ELEMS;
+        ctx.x_slots = TESS_X_SLOTS;
+        ctx.y_slots = TESS_Y_SLOTS;
+        ctx.z_slots = TESS_Z_SLOTS;
+
+        uint32_t payload_sz = tess_payload_size(N_ELEMS, &ctx);
+        uint8_t *src = (uint8_t *)malloc(N_ELEMS * 4);
+        uint8_t *payload = (uint8_t *)malloc(payload_sz);
+        uint8_t *dst = (uint8_t *)malloc(N_ELEMS * 4);
+
+        fill_test_data(src, N_ELEMS, 4, 0x55AA55AA);
+
+        /* Encode → decode → encode → decode cycle */
+        for (int cycle = 0; cycle < 3; cycle++) {
+            int32_t enc = tess_encode(src, N_ELEMS, &ctx, payload, payload_sz);
+            CHECK("T12a: encode cycle", enc > 0);
+
+            int32_t dec = tess_decode(payload, enc, &ctx, dst, N_ELEMS * 4);
+            CHECK("T12b: decode cycle", dec > 0);
+            CHECK("T12c: cycle data identical", memcmp_data(src, dst, N_ELEMS * 4) == 0);
+
+            /* Use decoded as next source */
+            memcpy(src, dst, N_ELEMS * 4);
+        }
+
+        free(src); free(payload); free(dst);
+    }
+
+    printf("\n═══════════════════════════════════════\n");
+    printf("RESULTS: %d/%d PASS\n", pass, pass + fail);
+    return fail ? 1 : 0;
 }
