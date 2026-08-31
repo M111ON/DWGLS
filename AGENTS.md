@@ -114,7 +114,7 @@ DWGLS/
     ├── test_goldberg_decagram.c · test_goldberg_store.c · test_goldberg_file.c
     ├── test_goldberg_lazy.c · test_goldberg_mmap.c · test_ggf_walk.c
     ├── test_ggf_walk_mmap.c · test_ggf_ckpt_replay.c
-    └── test_18tes_field.c · test_moe_expert.c
+    └── test_18tes_field.c · test_moe_expert.c · test_6ico_integration.c
 ```
 
 ## 🧭 Working Rules
@@ -203,19 +203,27 @@ DWGLS/
 2. Check `core/kis_codec_v4.h` — baseline codec state
 3. Run `make test` (if Makefile exists) or compile tests manually
 
-## 🧵 Latest State (2026-08-31) — READ THIS FIRST
+## 🧵 Latest State (2026-09-01) — READ THIS FIRST
 
-Session summary: vault `[[Memory/Sessions/2026-08-31_dwgls]]` (run `I:\tools\obsidian-memory\obsidian_mem.cmd newsession` or query it).
+Session summary: vault `[[Memory/Sessions/2026-09-01_dwgls]]` (run `I:\tools\obsidian-memory\obsidian_mem.cmd newsession` or query it).
 
 **Proven this session (all oracle-pass):**
-- `tests/test_18tes_field.c` — 30/30: full-field roundtrip 20736 slots across 18 tess, mirror_z cross-tess boundary (cube 7→8), stride-37 covers all 20736 slots (coprime with 144 and 20736), global passive log, magnify glass antipodal property.
-- `tests/test_moe_expert.c` — 30/30: MoE expert ↔ geometry address roundtrip (4 layers × 64 experts × 3 wtypes = 768 exhaustive), disk offset determinism, neighbor/sibling properties, capacity overflow, boundary conditions.
-- `tools/moe_expert_demo.c` — 7/7: DtSlotRegion store/load practical verification — roundtrip 96 experts, cross-access flat↔geometry, batch store/load, random+reverse access, geometry coordinate access, metadata in slot.
-- Soak re-run: **118/118 PASS** (117 TIER1 + 1 TIER2 soak), 0 regressions.
+- `tests/test_6ico_integration.c` — 25/25: cross-subsystem integration (geo_codec encode/decode lossless on 20736, cross-GeoType payload identity 4 types, MoE expert address roundtrip 6912, DtSlotRegion store/load 64 experts, stride-37 coprime coverage, 18tes field roundtrip, capacity overflow wrapping, cross-subsystem geo_codec + MoE).
+- MoE bake: 108/108 tensors lossless from real Qwen3-4B-MoE (Q4_K stacked FFN experts) → DtSlotRegion via geometric addressing (2.8GB weight pool).
+- MoE graft: DtSlotRegion pool → valid 3694 MB GGUF → inference BITWISE identical (maxdiff=0.000000, 151936 dims).
+- MoE streaming: top-4/64 experts per layer (93.8% bandwidth savings), Q4_K dequant + SwiGLU FFN matmul, 36/36 layers PASS.
+- `geo_dram_tile.h` include guard fix — `#ifndef GEO_DRAM_TILE_H` eliminates redefinition under dual `-I` paths.
 
-**Known issue:** `core/infra/geo_dram_tile.h` lacks include guard (`#pragma once` is per-path, not per-symbol). When both `-Icore` and `-Icore/infra` are in include path, double inclusion of `geo_dram_tile.h` causes redefinition errors. Workaround: inline `moe_expert_addr.h` functions in demo instead of including the header.
+**Known issue:** `geo_dram_tile.h` infra copy has canonical include guard now (fixed). `dt_slot_init_twin` truncates file when creating new region — stream tool uses direct read-only mmap instead.
 
-**MoE Expert Addressing (new):** `core/moe_expert_addr.h` — pure integer O(1) mapping: expert_id ↔ geometry coordinate (tess, cube, slot) via 18tes flat address space. Address formula: `flat = layer × 64 × 3 + expert × 3 + wtype` (mod 20736). Capacity: up to 6912 experts (20736 ÷ 3 weight types).
+**MoE Expert Addressing (proven):** `core/moe_expert_addr.h` — pure integer O(1) mapping: expert_id ↔ geometry coordinate (tess, cube, slot) via 18tes flat address space. Real model tested: Qwen3-4B-MoE (shared attn + stacked FFN experts, not per-expert indexed). 108 experts in 36 layers × 64 experts × 3 wtypes = 20736 slots.
+
+**MoE Pipeline Tools:**
+- `tools/moe_expert_bake.c` (`make moe-bake`) — GGUF → DtSlotRegion (lossless weight pool)
+- `tools/moe_expert_graft.c` (`make moe-graft`) — DtSlotRegion → valid GGUF → inference
+- `tools/moe_expert_stream.c` (`make moe-stream`) — streaming top-K experts + Q4_K FFN matmul
+
+**Pending:** llama.cpp routing integration (streaming → live inference), geometry quantization map, header dedup, KIS codec v4/v5/v6 + 6ico integration test.
 
 **KV finding:** llama state files NOT prefix-nested (98.8% bytes shift) → delta net loss; link b9733 llama.dll directly (llama-server slot-save broken).
 
@@ -224,14 +232,6 @@ Session summary: vault `[[Memory/Sessions/2026-08-31_dwgls]]` (run `I:\tools\obs
 **MAINLINE DONE (2026-08-22):** `tools/geo_rid_graft.c` (`make rid-graft`) — RID slots → DtSlotRegion (twin mmap) → llama.cpp: A bake lossless (3 languages) · B unfold byte-identical (3 languages) · C real b9733 inference tokens identical + logits@0 BITWISE (151936 dims) · D damage drill localize+restore. llama reads weight storage addressed by RID language views.
 **GEOfs DONE (2026-08-23):** `tools/geofs_rid.c` (`make geofs-rid`) — GeosVolume ⇄ RID slot region: G1 summon real files readback identical · G2 persist blob→parts→DtSlotRegion twin (3 languages) · G3 reload fresh volume all files byte-identical vs ORIGINAL sources · G4 damage flip→localize→re-bake. Twin mmap persists across destroy (7.9MB file). GeoFS = persistent slot region as filesystem layer.
 **KV/state DONE (2026-08-23):** `tools/kv_rid_serve.c` (`make kv-rid`) — llama STATE ⇄ RID slot region: checkpoint mid-generation (@token 100, 1.29MB = 10 parts) · readback byte-identical through pent/tri/snub views · restore in FRESH context → logits@restore BITWISE (maxdiff 0, 151936 dims) + 24 post tokens identical · damage drill localize+re-bake. Lesson: logits capture index is position-sensitive — off-by-one shows as maxdiff ~10, not noise.
-
-**4TH LANGUAGE DONE (2026-08-23):** golden-spiral (phyllotaxis/circle-packing) view — `tools/hosoya_view_probe.c` 11/11 oracle-pass (stride F(7)=13 mod 60: Euclid gcd + bijection + inverse 37≡13⁻¹ + Hosoya cell T(6,0) + φ-convergent 13/8 + mutation red stride-14) · wired as view "hosoya" in `gguf_roundtrip` → full GGUF 5156 parts lossless ×4 languages.
-**CHIRAL SWITCH DONE (2026-08-23):** mirror enantiomorph view "snubR" (complement all diagonal bits) — snubL≠snubR 30/30 squares, both lossless on full GGUF.
-**ZECKENDORF DONE (2026-08-23):** `tools/zeckendorf_probe.c` 9/9 — existence+non-consecutive (1..4000) · uniqueness brute-force leaf-count oracle · reversed-code bijection on 60 slots · mutation red. View "zeck" wired → `gguf_roundtrip` serves **×6 languages: pent/tri/snubL/snubR/hosoya/zeck**, full GGUF lossless each.
-**CIRCLE-CONFIG CATALOG DONE (2026-08-23):** `tools/circle_config_probe.c` 13/13 — contact-degree catalog: deg3=dodeca · deg4=RID(E=120) · deg5=snub(E=150, both enantiomorphs uniform) · deg6=hex packing; `geo_cell_classify` 8-parity bridge non-degenerate. Lesson: uffind return = ROOT not parity — bits must come from the out-param (root-as-bit → all-same diagonals → deg 4/6 alternating).
-**CHAIN-13 RESOLVED (2026-08-23):** transcription error — true word "21212212" (len 8) sum=13 ✓ digit-sum ladder ครบทุก chain; palindrome 5/6 (W₆ even-len+odd-sum impossible); W₆ = W₅∥W₄ → Fibonacci recurrence as word-concatenation. zeckendorf_probe 9/9 with source-image values.
-
-**Next:** MoE streaming → expert routing → llama.cpp integration · geometry quantization map · geo_dram_tile.h include guard fix.
 
 ## 🔧 Build (manual)
 
