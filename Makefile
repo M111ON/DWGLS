@@ -84,6 +84,7 @@ TIER1 := \
   test_6ico_tesseract \
   test_18tes_field \
   test_moe_expert \
+  test_6ico_integration \
   test_hyper_delta_format \
   test_residual_space \
   test_ghost_lift \
@@ -366,6 +367,7 @@ $(BUILD)/mdim_cli: tools/mdim_cli.c core/geofs_mdim.h | $(BUILD)
 LLAMA_INC = I:/llama/include
 LLAMA_DLL = I:/llama/llama-b9733-bin-win-vulkan-x64
 LLAMA_GGUF ?= I:/model/Qwen2.5-0.5B-Instruct-Q8_0.gguf
+MOE_GGUF   ?= F:/model/qwen3-4b-moe-q4_k_m.gguf
 
 # Cactus graft: assemble graft GGUF from gguf_box (header scion + zero-copy
 # body from the source mmap), load it with real llama.cpp, compare inference
@@ -453,6 +455,36 @@ gguf-roundtrip: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare \
 	    -I core -o $(BUILD)/gguf_roundtrip tools/gguf_roundtrip.c -lm
 	./$(BUILD)/gguf_roundtrip $(LLAMA_GGUF)
+
+# ── MoE Expert Bake: GGUF → DtSlotRegion roundtrip ──
+# Reads any GGUF, stores attn projection tensors via geometric addressing,
+# loads back lossless. Proves moe_expert_addr.h + moe_expert_store.h work on real weights.
+moe-bake: | $(BUILD)
+	@test -f $(MOE_GGUF) || { echo "  (skip: $(MOE_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare \
+	    -I core -I core/infra -o $(BUILD)/moe_expert_bake tools/moe_expert_bake.c -lm
+	./$(BUILD)/moe_expert_bake "$(MOE_GGUF)"
+
+# ── MoE Expert Graft: bake + graft GGUF + inference comparison ──
+# Stores attn projection weights via geometric addressing, rebuilds a valid GGUF
+# from pool data + source header, loads with llama.cpp, compares logits + tokens.
+moe-graft: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found)"; exit 0; }
+	@test -f $(MOE_GGUF) || { echo "  (skip: $(MOE_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I core/infra -I $(LLAMA_INC) -o $(BUILD)/moe_expert_graft tools/moe_expert_graft.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lm
+	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/moe_expert_graft "$(MOE_GGUF)" "$(LLAMA_DLL)" "The capital of France is"
+
+# ── MoE Expert Streaming: load only router-selected experts ──
+# Reads baked region, extracts top-k expert slices per layer, byte-verifies.
+moe-stream: | $(BUILD)
+	@test -f $(MOE_GGUF) || { echo "  (skip: $(MOE_GGUF) not found)"; exit 0; }
+	@test -f moe_expert_region.bin || { echo "  (skip: moe_expert_region.bin not found — run moe-bake first)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I core -I core/infra -I $(LLAMA_INC) -o $(BUILD)/moe-stream tools/moe_expert_stream.c -lm
+	./$(BUILD)/moe-stream "$(MOE_GGUF)" 0
 
 # ── Output on the +37 belt: model's token+logits stream → field ──
 # Step ⑤: real generation through the field-built graft, then embed the

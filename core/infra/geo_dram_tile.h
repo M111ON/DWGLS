@@ -27,7 +27,8 @@
  * No malloc. No float. No SIMD. Sub-10ns.
  */
 
-#pragma once
+#ifndef GEO_DRAM_TILE_H
+#define GEO_DRAM_TILE_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -131,3 +132,4 @@ static inline int dram_verify_full(void) {
     }
     return 0;
 }
+#endif /* GEO_DRAM_TILE_H */

@@ -1075,6 +1075,33 @@ static inline int dt_slot_init_twin(DtSlotRegion *r, const char *path,
     return 0;
 }
 
+/* Extend twin file by extra_bytes beyond slot region; return start offset of pool.
+ * Useful for OFFSET mode: slots store pointers, pool holds actual weight data. */
+static inline uint64_t dt_slot_extend_twin(DtSlotRegion *r, uint64_t extra_bytes) {
+    if (!r->is_twin || !r->base) return 0;
+    uint64_t slot_end = (uint64_t)r->n_slots * r->slot_sz;
+    uint64_t total = slot_end + extra_bytes;
+#if defined(_WIN32)
+    LARGE_INTEGER sz; sz.QuadPart = (LONGLONG)total;
+    SetFilePointerEx(r->hSlotFile, sz, NULL, FILE_BEGIN);
+    SetEndOfFile(r->hSlotFile);
+    /* remap with new size */
+    UnmapViewOfFile(r->base);
+    CloseHandle(r->hSlotMapping);
+    r->hSlotMapping = CreateFileMappingA(r->hSlotFile, NULL, PAGE_READWRITE,
+                                         (DWORD)(total >> 32), (DWORD)total, NULL);
+    if (!r->hSlotMapping) return 0;
+    r->base = (uint8_t*)MapViewOfFile(r->hSlotMapping, FILE_MAP_ALL_ACCESS, 0, 0, total);
+    if (!r->base) return 0;
+#else
+    if (ftruncate(r->slot_fd, (off_t)total) != 0) return 0;
+    munmap(r->base, r->n_slots * r->slot_sz);
+    r->base = (uint8_t*)mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED, r->slot_fd, 0);
+    if (r->base == MAP_FAILED) { r->base = NULL; return 0; }
+#endif
+    return slot_end;
+}
+
 static inline uint8_t *dt_slot_ptr(DtSlotRegion *r, uint32_t addr) {
     if (!r->base || addr >= r->n_slots) return NULL;
     return r->base + (size_t)addr * r->slot_sz;
