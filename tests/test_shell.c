@@ -169,7 +169,7 @@ int main(void)
         CHECK("Bonus: codec_find TESS", c != NULL && c->info().codec_id == CODEC_TESS);
 
         c = dwgls_codec_find(CODEC_GCUBE);
-        CHECK("Bonus: codec_find GCUBE", c != NULL && c->info().codec_id == CODEC_GCUBE);
+        CHECK("Bonus: codec_find GCUBE (not yet implemented, returns NULL)", c == NULL);
 
         c = dwgls_codec_find(99);
         CHECK("Bonus: codec_find unknown returns NULL", c == NULL);

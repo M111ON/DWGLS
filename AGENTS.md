@@ -99,6 +99,8 @@ DWGLS/
 │       ├── geo_ggf_ckpt.h         ← checkpoint/replay manifest (.mfp, provenance
 │       │                            + CRC64) — fresh-process restore
 │       ├── fibo_walk.h            ← walk clock: state = (seed, round, tick), live route
+│       ├── moe_expert_addr.h     ← ★ MoE: expert_id ↔ geometry coordinate (pure int O(1))
+│       ├── moe_expert_store.h    ← MoE: store/load on DtSlotRegion
 │       └── tied_dedup.h           ← registry {tensor_id → home} (dedup ระดับไฟล์)
 │
 ├── core/infra/     (2 headers)
@@ -111,7 +113,8 @@ DWGLS/
     ├── test_fibo_walk.c · test_tied_dedup.c · test_geo_dual_view.c
     ├── test_goldberg_decagram.c · test_goldberg_store.c · test_goldberg_file.c
     ├── test_goldberg_lazy.c · test_goldberg_mmap.c · test_ggf_walk.c
-    └── test_ggf_walk_mmap.c · test_ggf_ckpt_replay.c
+    ├── test_ggf_walk_mmap.c · test_ggf_ckpt_replay.c
+    └── test_18tes_field.c · test_moe_expert.c
 ```
 
 ## 🧭 Working Rules
@@ -186,8 +189,8 @@ DWGLS/
 - พิสูจน์แล้ว: `tests/test_tess_index_frame.c` (7/7), `test_tess_scale_log.c` (10/10),
   `test_tess_frame_seek.c` (8/8), `test_tess_magnify.c` (12/12), `test_tess_hex_delta.c` (10/10)
 
-### 18tes (6ico compound) = FUTURE UPGRADE
-- 18 tesseracts × 8 cube × 144 = 20736 — ยังไม่ implement, ซับซ้อนเกินไปตอนนี้
+### 18tes (6ico compound) = DONE
+- 18 tesseracts × 8 cube × 144 = 20736 — full field tested `tests/test_18tes_field.c` (30/30)
 
 ### Working Rule: No Geometry Construction
 - ห้าม compute vertex/face/projection/coordinate จริง — ใช้แค่โครงสร้าง (cube/octant/route/vertex)
@@ -200,17 +203,19 @@ DWGLS/
 2. Check `core/kis_codec_v4.h` — baseline codec state
 3. Run `make test` (if Makefile exists) or compile tests manually
 
-## 🧵 Latest State (2026-08-22) — READ THIS FIRST
+## 🧵 Latest State (2026-08-31) — READ THIS FIRST
 
-Session summary: vault `[[Memory/Sessions/2026-08-22_dwgls]]` (run `I:\tools\obsidian-memory\obsidian_mem.cmd newsession` or query it).
+Session summary: vault `[[Memory/Sessions/2026-08-31_dwgls]]` (run `I:\tools\obsidian-memory\obsidian_mem.cmd newsession` or query it).
 
 **Proven this session (all oracle-pass):**
-- `tools/geo_archimedean_test.c` — RID from int-dodeca via **R(u,F)=(vertex,face)** labeling (NOT directed edges!): V=60 · E=120 (=GEO_COMP_SPIKE_120) · faces 20△+30□+12⬠ · degree 4 · Euler 2. RID = 3-language interchange hub.
-- `tools/geo_snub_test.c` — snub dodeca = chiral diagonal split of RID squares: V=60 · E=150 · F=92 (=GEO_GOLDBERG_92) · figure 3.3.3.3.5. Parity constraint solve → EXACTLY 2 solutions (bitwise complements) = enantiomorph pair. Lesson: naive local rule FAILS on odd cycles — solve globally.
-- `tools/geo_rid_serve.c` — data-plane PASSED on real GGUF (Qwen2.5-0.5B, 675.7MB): bake via RID slots (part f → layer f/60, slot f%60), lossless verify, 3 language views (pent/tri/snub-diag) each structural bijection over 60 slots with identical XOR == source; damage drill: localize slot + re-bake restores.
-- `core/iso_rot90.h` tri↔square bridge on 144 · `core/kis_cube_views.h` S₃ views · `tools/geo_cube_serve.c` real-GGUF bake all 6 views XOR match
-- `tools/geo_pentagrid_test.c` Elser-Sloane quasi-crystal: order-5 int rotation impossible, band 47.9%, mod-11 cycle
-- `tools/geo_invert_compound_test.c` dodeca 2-invert compound T1-T6
+- `tests/test_18tes_field.c` — 30/30: full-field roundtrip 20736 slots across 18 tess, mirror_z cross-tess boundary (cube 7→8), stride-37 covers all 20736 slots (coprime with 144 and 20736), global passive log, magnify glass antipodal property.
+- `tests/test_moe_expert.c` — 30/30: MoE expert ↔ geometry address roundtrip (4 layers × 64 experts × 3 wtypes = 768 exhaustive), disk offset determinism, neighbor/sibling properties, capacity overflow, boundary conditions.
+- `tools/moe_expert_demo.c` — 7/7: DtSlotRegion store/load practical verification — roundtrip 96 experts, cross-access flat↔geometry, batch store/load, random+reverse access, geometry coordinate access, metadata in slot.
+- Soak re-run: **118/118 PASS** (117 TIER1 + 1 TIER2 soak), 0 regressions.
+
+**Known issue:** `core/infra/geo_dram_tile.h` lacks include guard (`#pragma once` is per-path, not per-symbol). When both `-Icore` and `-Icore/infra` are in include path, double inclusion of `geo_dram_tile.h` causes redefinition errors. Workaround: inline `moe_expert_addr.h` functions in demo instead of including the header.
+
+**MoE Expert Addressing (new):** `core/moe_expert_addr.h` — pure integer O(1) mapping: expert_id ↔ geometry coordinate (tess, cube, slot) via 18tes flat address space. Address formula: `flat = layer × 64 × 3 + expert × 3 + wtype` (mod 20736). Capacity: up to 6912 experts (20736 ÷ 3 weight types).
 
 **KV finding:** llama state files NOT prefix-nested (98.8% bytes shift) → delta net loss; link b9733 llama.dll directly (llama-server slot-save broken).
 
@@ -226,7 +231,7 @@ Session summary: vault `[[Memory/Sessions/2026-08-22_dwgls]]` (run `I:\tools\obs
 **CIRCLE-CONFIG CATALOG DONE (2026-08-23):** `tools/circle_config_probe.c` 13/13 — contact-degree catalog: deg3=dodeca · deg4=RID(E=120) · deg5=snub(E=150, both enantiomorphs uniform) · deg6=hex packing; `geo_cell_classify` 8-parity bridge non-degenerate. Lesson: uffind return = ROOT not parity — bits must come from the out-param (root-as-bit → all-same diagonals → deg 4/6 alternating).
 **CHAIN-13 RESOLVED (2026-08-23):** transcription error — true word "21212212" (len 8) sum=13 ✓ digit-sum ladder ครบทุก chain; palindrome 5/6 (W₆ even-len+odd-sum impossible); W₆ = W₅∥W₄ → Fibonacci recurrence as word-concatenation. zeckendorf_probe 9/9 with source-image values.
 
-**Next:** all stocked branches opened+passed (3/3). Remaining queue: interop bridge / 18tes upgrade / soak re-run after any core change.
+**Next:** MoE streaming → expert routing → llama.cpp integration · geometry quantization map · geo_dram_tile.h include guard fix.
 
 ## 🔧 Build (manual)
 

@@ -82,6 +82,8 @@ TIER1 := \
   twin_seeker_test \
   twin_seeker_hard_test \
   test_6ico_tesseract \
+  test_18tes_field \
+  test_moe_expert \
   test_hyper_delta_format \
   test_residual_space \
   test_ghost_lift \
