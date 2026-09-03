@@ -7,6 +7,9 @@
 #   make clean         — remove build artifacts
 #   make list          — list available tests
 
+# Ensure mingw gcc is on PATH (MSYS2 bash may not find it by default)
+export PATH := /mingw64/bin:$(PATH)
+
 CC      := gcc
 CFLAGS  := -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -I. -Icore -Icore/infra -Icore/infra -no-pie
 LDFLAGS := -lm
@@ -418,6 +421,17 @@ tess-stream-view: | $(BUILD)
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
 	cmd //c "set PATH=$(LLAMA_DLL);%PATH%&& $(BUILD)\tesspack_stream_view.exe $(MOE_GGUF) F:/model/qwen3moe.tesspack $(LLAMA_DLL)"
+
+# Breathe view: MEM_RESERVE + per-tensor MEM_COMMIT (no 5.2GB allocation)
+breathe-view: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found)"; exit 0; }
+	@test -f $(MOE_GGUF) || { echo "  (skip: $(MOE_GGUF) not found)"; exit 0; }
+	@test -f F:/model/qwen3moe.tesspack || { echo "  (skip: .tesspack not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/tesspack_breathe_view.exe tools/tesspack_breathe_view.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lpsapi -lzstd -lm
+	cmd //c "set PATH=$(LLAMA_DLL);%PATH%&& $(BUILD)\tesspack_breathe_view.exe $(MOE_GGUF) F:/model/qwen3moe.tesspack $(LLAMA_DLL)"
 
 # ── Real generation through the graft (multi-token, greedy) ──
 # Uses the same llama.cpp DLLs as graft-llama; skips if they are absent.

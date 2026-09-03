@@ -130,7 +130,7 @@ static void test_classify(void) {
 
     KVRemapCtx ctx;
     kv_remap_init(&ctx, n_ctx);
-    kv_remap_register(&ctx, layer_k, layer_v, k_nb1, v_nb1,
+    kv_remap_register(&ctx, (void **)layer_k, (void **)layer_v, k_nb1, v_nb1,
                        k_size, v_size, n_embd_k, layer_id, N_LAYERS);
 
     /* Set skeleton (captures current random state as baseline) */
@@ -181,7 +181,7 @@ static void test_full_cycle(void) {
 
     KVRemapCtx ctx;
     kv_remap_init(&ctx, n_ctx);
-    kv_remap_register(&ctx, layer_k, layer_v, k_nb1, v_nb1,
+    kv_remap_register(&ctx, (void **)layer_k, (void **)layer_v, k_nb1, v_nb1,
                        k_size, v_size, n_embd_k, layer_id, N_LAYERS);
 
     /* Set skeleton at 0% change */
@@ -262,7 +262,7 @@ static void test_geo_delta(void) {
 
     KVRemapCtx ctx;
     kv_remap_init(&ctx, n_ctx);
-    kv_remap_register(&ctx, layer_k, layer_v, k_nb1, v_nb1,
+    kv_remap_register(&ctx, (void **)layer_k, (void **)layer_v, k_nb1, v_nb1,
                        k_size, v_size, n_embd_k, layer_id, N_LAYERS);
 
     kv_remap_set_skeleton(&ctx);
@@ -301,7 +301,7 @@ static void test_rebuild(void) {
 
     KVRemapCtx ctx;
     kv_remap_init(&ctx, n_ctx);
-    kv_remap_register(&ctx, layer_k, layer_v, k_nb1, v_nb1,
+    kv_remap_register(&ctx, (void **)layer_k, (void **)layer_v, k_nb1, v_nb1,
                        k_size, v_size, n_embd_k, layer_id, N_LAYERS);
 
     kv_remap_set_skeleton(&ctx);
@@ -334,7 +334,7 @@ static void test_rail(void) {
 
     KVRemapCtx ctx;
     kv_remap_init(&ctx, n_ctx);
-    kv_remap_register(&ctx, layer_k, layer_v, k_nb1, v_nb1,
+    kv_remap_register(&ctx, (void **)layer_k, (void **)layer_v, k_nb1, v_nb1,
                        k_size, v_size, n_embd_k, layer_id, N_LAYERS);
 
     kv_remap_set_skeleton(&ctx);
@@ -380,7 +380,7 @@ static void test_rail_freeze(void) {
 
     KVRemapCtx ctx;
     kv_remap_init(&ctx, n_ctx);
-    kv_remap_register(&ctx, layer_k, layer_v, k_nb1, v_nb1,
+    kv_remap_register(&ctx, (void **)layer_k, (void **)layer_v, k_nb1, v_nb1,
                        k_size, v_size, n_embd_k, layer_id, N_LAYERS);
 
     kv_remap_set_skeleton(&ctx);
@@ -430,7 +430,7 @@ static void test_streaming(void) {
 
     KVRemapCtx ctx;
     kv_remap_init(&ctx, n_ctx);
-    kv_remap_register(&ctx, layer_k, layer_v, k_nb1, v_nb1,
+    kv_remap_register(&ctx, (void **)layer_k, (void **)layer_v, k_nb1, v_nb1,
                        k_size, v_size, n_embd_k, layer_id, N_LAYERS);
 
     /* Turn 0: set skeleton */

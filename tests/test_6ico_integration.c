@@ -24,10 +24,9 @@
 #include "../core/moe_expert_store.h"
 #include "../core/moe_expert_addr.h"
 
-/* Local tesseract constants — geo_tesseract_addr.h redefines TESS_CELLS to 8
-   which corrupts geo_tess_wiring.h's TESS_TOTAL (18*(8*8)=1152 instead of
-   20736). Use local defines to avoid the conflict (same pattern as
-   test_18tes_field.c). */
+/* Local tesseract constants — kept for clarity despite conflict being fixed
+   (geo_tess_wiring.h uses TESS_CELLS=144, geo_tesseract_addr.h uses
+   TESS_3D_CELLS=8). These local defines are harmless. */
 #define FIELD_TOTAL     20736u
 #define N_TESS          18u
 #define CUBES_PER_TESS  8u

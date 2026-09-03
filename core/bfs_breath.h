@@ -106,6 +106,7 @@ static inline void bfs_breath_tick(BFSBreath *b)
     /* oscillate scale between (1 − step) and (1 + step)? No — breath
      * CONTRACTS toward 0 (deeper scale), like the seeker. On reaching
      * scale_step, flip to expand back. Simple cosine-ish walk. */
+    double old_scale = b->cur_scale;
     if (b->direction > 0) {
         b->cur_scale -= b->scale_step;
         if (b->cur_scale <= b->scale_step) { b->cur_scale = b->scale_step; b->direction = -1; }
@@ -114,6 +115,11 @@ static inline void bfs_breath_tick(BFSBreath *b)
         if (b->cur_scale >= 1.0) { b->cur_scale = 1.0; b->direction = 1; }
     }
     double s = b->cur_scale;
+
+    /* gear event: record breath scale transition */
+    uint32_t old_pos = (uint32_t)(BFS_TOTAL_SLOTS * old_scale) % BFS_TOTAL_SLOTS;
+    uint32_t new_pos = (uint32_t)(BFS_TOTAL_SLOTS * s) % BFS_TOTAL_SLOTS;
+    bfs_gear_push(&b->fs->fg_log, old_pos, new_pos);
 
     for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
         if (b->fs->block_owner[i] == 0xFFFFFFFF) continue;   /* free slot */
@@ -184,6 +190,9 @@ static inline void bfs_breath_print(const BFSBreath *b)
            b->ticks, b->reanchors, b->peak_delta, (unsigned)BFS_BREATH_BOUND);
     printf("  Delta layer: %u B (int8, bounded) vs %u B (int32, unbounded) = %.1fx smaller\n",
            new_bytes, old_bytes, old_bytes > 0 ? (double)old_bytes / (double)new_bytes : 0.0);
+    printf("  Gear log: %u events (%u bytes) | RIM=%s\n",
+           bfs_gear_count(&b->fs->fg_log), bfs_gear_bytes(&b->fs->fg_log),
+           bfs_gear_is_rim(&b->fs->fg_log) ? "yes" : "no");
     printf("  All bounded: %s | cur_scale=%.4f | dir=%c\n",
            bfs_breath_all_bounded(b) ? "YES" : "NO",
            b->cur_scale, b->direction > 0 ? '-' : '+');

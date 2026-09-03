@@ -2,9 +2,8 @@
  *
  * 18 tesseracts × 8 cubes × 144 slots = 20736
  *
- * NOTE: geo_tess_wiring.h and geo_tesseract_addr.h both define TESS_CELLS
- * (144 vs 8). Include ONLY geo_tess_wiring.h and use tess_to_flat/flat_to_tess.
- * Tesseract cell indexing done inline to avoid macro conflict.
+ * NOTE: geo_tess_wiring.h (TESS_CELLS=144) and geo_tesseract_addr.h
+ * (TESS_3D_CELLS=8) no longer conflict. Both can be included safely.
  *
  * Verify:
  * T1: flat ↔ tess roundtrip (all 20736 positions)

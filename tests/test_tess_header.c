@@ -37,9 +37,9 @@ int main(void) {
 
     /* T4: Magic constant */
     {
-        int ok = (TESS_MAGIC == 0x54455353u);
-        printf("[%s] T4: TESS_MAGIC = 0x%08X (expect 0x54455353)\n",
-               ok ? "PASS" : "FAIL", TESS_MAGIC);
+        int ok = (GEO_TESS_MAGIC == 0x54455353u);
+        printf("[%s] T4: GEO_TESS_MAGIC = 0x%08X (expect 0x54455353)\n",
+               ok ? "PASS" : "FAIL", GEO_TESS_MAGIC);
         ok ? pass++ : fail++;
     }
 
@@ -94,7 +94,7 @@ int main(void) {
     {
         TESS_Header h;
         tess_header_init(&h, TESS_GGML_Q8_0, TESS_CELL_Q8_0);
-        int ok = (h.magic == TESS_MAGIC) &&
+        int ok = (h.magic == GEO_TESS_MAGIC) &&
                  (h.version == 1) &&
                  (h.total_slots == 20736) &&
                  (h.cell_size == 34) &&
@@ -171,6 +171,10 @@ int main(void) {
         int ok = (tess_gguf_type_to_cell_size(TESS_GGML_Q8_0) == 34) &&
                  (tess_gguf_type_to_cell_size(TESS_GGML_F32) == 4) &&
                  (tess_gguf_type_to_cell_size(TESS_GGML_BF16) == 2) &&
+                 (tess_gguf_type_to_cell_size(TESS_GGML_Q4_K) == 144) &&
+                 (tess_gguf_type_to_cell_size(TESS_GGML_Q5_K) == 176) &&
+                 (tess_gguf_type_to_cell_size(TESS_GGML_Q6_K) == 210) &&
+                 (tess_gguf_type_to_cell_size(TESS_GGML_Q8_K) == 292) &&
                  (tess_gguf_type_to_cell_size(99) == 0);
         printf("[%s] T14: gguf_type → cell_size mapping\n",
                ok ? "PASS" : "FAIL");

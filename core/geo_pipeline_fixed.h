@@ -24,7 +24,7 @@
 #include "geo_hyperbolic_walk.h"
 
 #define PIPE_TESS     0u
-#define PIPE_CELLS    TESS_CELLS
+#define PIPE_CELLS    TESS_3D_CELLS
 #define PIPE_SLOTS    TESS_SLOTS
 
 /* cell base in the 20736 field */

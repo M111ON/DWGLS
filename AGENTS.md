@@ -154,6 +154,12 @@ DWGLS/
 - ระวังกับดัก: เทสที่ตรวจแค่ "ค่าเดิมถูก persist กลับมาเหมือนเดิม" (เช่น expected = frame_enc(...)
   เทียบกับ field ที่ set ด้วย frame_enc เดียวกัน) พิสูจน์ได้แค่ wiring ไม่ได้พิสูจน์ formula
 
+### Experiments = History (ห้ามลบ experiment)
+- **ทุก experiment/debug scratch เก็บไว้เป็นประวัติ** — เอาไปเป็นบทเรียนได้ทีหลัง
+- กฎ: experiment → ไปไว้ที่ `deprecated/` (ไม่ commit ลง main history, แต่ห้าม delete)
+- ห้ามลบไฟล์ experiment แม้จะ "ไม่ใช้งานแล้ว / สร้างใหม่ได้" — ย้ายไป `deprecated/` แทน
+- ลบได้เฉพาะ artifact ใหญ่ที่ regenerable จริง (เช่น .tesspack/.gguf ที่ bake ใหม่ได้) และต้องถามก่อนถ้าไม่ชัวร์
+
 ### Design Principles (Timeline-First)
 - เลือกใช้ **timeline-first**: int, base-2 scale, ไม่มี 0, ทุกสถานะ deterministic + replay ได้
 - hyperbolic/residual = เก็บส่วนต่างที่ explicit; geometry = template เท่านั้น (ไม่ใช่ตัวคำนวณ)
@@ -197,15 +203,45 @@ DWGLS/
   เป็นโครงร่างการ map: int ล้วน, LUT static, modular arithmetic เท่านั้น
 - scale/hyperbolic/4D = ฟังก์ชัน map บน address ไม่ใช่ space ที่ต้องสร้าง
 
+## 🔄 Session Handoff — Context Policy (ask-before-hop)
+
+Trigger (any): compact/summarization happened · early messages gone · history noticeably short (context window strained)
+Action:
+1. Summarize: done / pending / next + ponytail mode + cwd
+2. ASK user before `opencode new` — show summary, wait confirm
+3. On confirm: `I:\tools\obsidian-memory\obsidian_mem.cmd endsession "summary" --proj DWGLS-native-fs` → `opencode run "Resume: <summary> | ponytail/full | I:\DWGLS-native-fs"`
+
+> **Cross-session/cross-platform handoff:** `python tools/handoff.py --summary "..." --proj DWGLS-native-fs`
+> pushes the summary to BOTH the obsidian vault (local, `[[Memory/Sessions/...]]`) AND the cloud-memory
+> worker (remote — searchable from any platform via `search_memory "<term>"`, needs `CLOUD_MEMORY_API_KEY`
+> from `I:/tools/cloud-workspace/.cloud_memory_key`). Use it for the summary in step 3 instead of the raw
+> `endsession` call when the next session may run on another machine/client.
+
+> **Full-work trail (handoff summary ไม่พอต่อยอด):** `tools/session_trail.py` เก็บงานทั้ง session
+> (commits / vault note / บันทึก) ไว้ใน temp pool `I:/tools/cloud-workspace/trail/` ให้ `query` ได้ทันที
+> โดยไม่ต้อง embed แล้ว `promote` เอาเข้า cloud-memory (source `trail/...`) + vault `Trail/` เมื่อถึงเวลา:
+> `collect-git --proj X` · `collect-vault --proj X` · `query --proj X` · `promote --proj X`
+> (Vectorize eventual consistency ~2-4 นาที ก่อน search เจอของที่เพิ่ง promote)
+>
+> **Automation (อัตโนมัติแล้ว):** `obsidian_mem endsession` จะ collect-vault + collect-git เข้า trail
+> ให้อัตโนมัติ (hook ทำงานเมื่อมี `tools/session_trail.py` ใต้ cwd เท่านั้น) — ไม่ต้องรัน collect เอง
+> ส่วน `promote` ถูก nudge ด้วย scheduled task รายชั่วโมง `session-trail-<proj>` (Windows popup
+> เมื่อมี trail ที่ยังไม่ promote อายุเกิน N ชม., default 6):
+> `tools/session_trail.py schedule --after-hours 6 --proj X` (ติดตั้ง) · `schedule --uninstall --proj X`
+> · `nudge --proj X` (ดูสถานะ/นับถอยหลังด้วยตัวเอง) · `auto --proj X` (รัน catch-up collect+nudge เอง)
+> Trail state อยู่ที่ `I:/tools/cloud-workspace/trail/<proj>/state.json` (last_collect/last_promote)
+
+Guard: no auto-hop silent · no re-hop within 10 min · never hop on same summary twice (anti-loop)
+
 ## 📋 Session Start
 
 1. Check `core/geo_param_grid.h` — understand current GeoType
 2. Check `core/kis_codec_v4.h` — baseline codec state
 3. Run `make test` (if Makefile exists) or compile tests manually
 
-## 🧵 Latest State (2026-09-01) — READ THIS FIRST
+## 🧵 Latest State (2026-09-03) — READ THIS FIRST
 
-Session summary: vault `[[Memory/Sessions/2026-09-01_dwgls]]` (run `I:\tools\obsidian-memory\obsidian_mem.cmd newsession` or query it).
+Session summary: vault `[[Memory/Sessions/2026-09-03_dwgls]]` (run `I:\tools\obsidian-memory\obsidian_mem.cmd newsession` or query it).
 
 **Proven this session (all oracle-pass):**
 - `tests/test_6ico_integration.c` — 25/25: cross-subsystem integration (geo_codec encode/decode lossless on 20736, cross-GeoType payload identity 4 types, MoE expert address roundtrip 6912, DtSlotRegion store/load 64 experts, stride-37 coprime coverage, 18tes field roundtrip, capacity overflow wrapping, cross-subsystem geo_codec + MoE).
@@ -213,6 +249,8 @@ Session summary: vault `[[Memory/Sessions/2026-09-01_dwgls]]` (run `I:\tools\obs
 - MoE graft: DtSlotRegion pool → valid 3694 MB GGUF → inference BITWISE identical (maxdiff=0.000000, 151936 dims).
 - MoE streaming: top-4/64 experts per layer (93.8% bandwidth savings), Q4_K dequant + SwiGLU FFN matmul, 36/36 layers PASS.
 - `geo_dram_tile.h` include guard fix — `#ifndef GEO_DRAM_TILE_H` eliminates redefinition under dual `-I` paths.
+- **Streaming capo load** (this session): `TESS_CapoReader` lazy per-capo decode API in `core/geo_tess_container.h:433` + `tools/tess_load_stream.c` CLI (info/load/range/scan). Synthetic 300×144B tensor → .tess → streaming decode: 300/300 match, CRC-64 verified. `tests/test_tess_stream.c` ALL PASS.
+- **.tess ↔ MoE bridge** (this session): `tools/tess_moe_bridge.c` — GGUF → multi-capo .tess on disk → stream-serve individual expert blocks → verify lossless against original GGUF. Fixed critical bug: MoE tensors (64 experts × thousands of cells) exceed single capo capacity (20736), solved with multi-capo (ceil(total_cells/20736) capo files, `stream_load_range` spans capo boundaries). Real Qwen3-4B-MoE: **6912 experts (36 layers × 3 wtypes × 64 experts) ALL PASS bitwise identical**.
 
 **Known issue:** `geo_dram_tile.h` infra copy has canonical include guard now (fixed). `dt_slot_init_twin` truncates file when creating new region — stream tool uses direct read-only mmap instead.
 
@@ -223,9 +261,40 @@ Session summary: vault `[[Memory/Sessions/2026-09-01_dwgls]]` (run `I:\tools\obs
 - `tools/moe_expert_graft.c` (`make moe-graft`) — DtSlotRegion → valid GGUF → inference
 - `tools/moe_expert_stream.c` (`make moe-stream`) — streaming top-K experts + Q4_K FFN matmul
 
-**Pending:** llama.cpp routing integration (streaming → live inference), geometry quantization map, header dedup, KIS codec v4/v5/v6 + 6ico integration test.
+**Pipeline Tools:**
+- `tools/tess_bake.c` (`make tess-bake`) — GGUF → .tess files (scatter-encode, capo multi-chunk for >20736 blocks)
+- `tools/tess_load.c` (`make tess-load`) — .tess → raw weights (multi-cube capo decode, CRC-64 verify)
+- `tools/tess_load_stream.c` (`make tess-stream`) — streaming per-capo reader (info/load/range/scan)
+- `tools/tess_assemble.c` (`make tess-assemble`) — .tess + original GGUF metadata → assembled GGUF
+- `tools/tess_moe_bridge.c` (`make tess-moe-bridge`) — GGUF → multi-capo → stream-serve experts → verify lossless
+- `tools/tess_packer.c` (`make tess-packer`) — pack dir of .tess → single .tesspack / unpack / info
+- `tools/tess_gguf_pack.c` (`make tess-gguf-pack`) — GGUF → .tesspack directly (no intermediate files)
+- `tools/moe_expert_route.c` (`make moe-route`) — combined bake+route+graft for MoE routing integration
+- `tools/tesspack_graft.c` (`make tess-graft`) — .tesspack → valid GGUF (MoE weight graft)
+- `tools/tesspack_llama_view.c` (`make tess-view`) — .tesspack → assemble full GGUF + llama.cpp inference verification
+
+**KIS + breathing_fs:**
+- KIS v4/v5/v6/v6b × 6ico full field: all active codecs pass (v5 angular collision documented)
+- v6b streaming codec plugged as default into breathing_fs, replacing DynContainer (DynContainer fully removed)
+- Fan24 gear (ring-24 CRT bijection) + magnifier seeker (glass center, antipodal inversion) adapters integrated
+- Header dedup: TESS_CELLS→TESS_ADDR_CELLS, TESS_MAGIC→TESS_CONTAINER_MAGIC, K-quant types added
+- Full test suite: 116/118 PASS (2 pre-existing flaky bfs tests)
+
+**.tess pipeline:** Capo multi-chunk proven lossless — 291/291 tensors, 1181 .tess files (722 MB), token_embd (206 capos) + output.weight (206 capos) all bitwise identical. Scatter throughput 0.7-3 GB/s, bake ~49 MB/s (I/O bound). Streaming capo load now available (no big buffer needed).
+
+**.tesspack single-file container** (this session): `.tesspack` = all capos in one file with index-at-end (zip-style). Format: header[16] (magic/version/n_capos/index_offset) + sequential capo data + index entries (name_len+name+capo_id+offset+size). `tess_capo_open_pack()` in `core/geo_tess_container.h:600` provides random access. `tools/tess_packer.c` CLI: `pack <dir> <out> | info <pack> | unpack <pack> <dir>`. **Real Qwen3-4B-MoE: 43,596 capos (108 tensors × multi-capo, incl. F16 down at 1201 capos/layer) ALL PASS lossless** — 2.87GB single file replaces 13k individual .tess files. Uses `_fseeki64`/`_ftelli64` for >2GB files on Windows.
+
+**MoE Streaming from .tesspack** (this session, Path B): `tools/moe_expert_stream_pack.c` (`make moe-stream-pack`) — GGUF router → top-K selection → stream only selected experts from single `.tesspack` file → dequant → SwiGLU FFN matmul → verify lossless. `TESS_PackIndex` (mmap once + scan index once) replaces per-capo fopen. **Real Qwen3-4B-MoE layer 0: 4/4 experts PASS (maxdiff=0, cos=1.0), 12/12 byte-identical, 93.8% bandwidth savings (4.9 MB streamed vs 77.8 MB full tensor).**
+
+**Tesspack graft** (this session): `tools/tesspack_graft.c` (`make tess-graft`) — .tesspack → valid GGUF. `tesspack_load_tensor()` bulk-loads all capos for a tensor name from pack, `tesspack_graft_to_gguf()` writes assembled output. **Real Qwen3-4B-MoE: 108/108 MoE tensors loaded from pack (2801.7 MB), 326 from source, 0 skipped, output `F:/model/moe_tesspack_graft.gguf` (3694.1 MB).** Fixed critical bugs: cell count for quantized types (`size/GGUF_CELL_SIZE[dtype]` not `dims_product`), `tess_capo_load_range` return convention (0=error, positive=bytes), Windows >2GB ftell (`_ftelli64`), index entry format (content bytes not sizeof).
+
+**Tesspack view → GGUF assembly** (this session): `tools/tesspack_llama_view.c` (`make tess-view`) — reads original GGUF header + metadata, opens .tesspack, assembles full GGUF on disk, verifies via llama.cpp. **Real Qwen3-4B-MoE: 12/12 PASS (T1-T12), logits BITWISE identical (diffs=0, maxdiff=0), all 151936 vocab dims.** from_pack=108/108 MoE tensors (2801.7 MB), from_source=326 non-MoE (886.4 MB). Per-capo direct write to body (no temp alloc) fixed 17 large ffn_down_exps tensors (1201 capos each). Assemble: 62.7s, write: 86s, total: 149s for 3.7 GB GGUF. DLL runtime fix: MSYS2 mingw64 libs replace ancient system MinGW 8.1 (2018). `tools/gcube_token_run.c` has llama.cpp include path reference.
+
+**Tesspack I/O benchmark** (this session): `tests/bench_tesspack.c` (`make bench-tesspack`). Real Qwen3-4B-MoE (217 multi-capo tensors, 44319 capos, 3.9GB .tesspack): GGUF sequential read 109.3 MB/s, pack sequential read 103.4 MB/s, `tess_pack_open` mmap init 0.057s. **MoE stream (4/64 experts): 1.636s, 869 MB/s, 1421 MB read → 89.4% bandwidth savings, 9.4x speedup vs full expert read.** Full expert read: 15.4s, 86.9 MB/s. Bug found & fixed: `tess_capo_load_range` writes `n_elems × cell_size` bytes (Q4_K cell_size=210 → 4.3MB/capo), stack buffer overflow from undersized `uint8_t buf[20736]`. Fixed with dynamic allocation based on actual cell_size.
 
 **KV finding:** llama state files NOT prefix-nested (98.8% bytes shift) → delta net loss; link b9733 llama.dll directly (llama-server slot-save broken).
+
+**Follow-up session baseline fix** (2026-09-03+): `core/geo_tess_container.h` gained .tesspack mmap reader but never included OS headers — `HANDLE`/`CreateFileA` on Windows, `mmap`/`open` elsewhere. Tests compiled only when another header happened to pull in windows.h first. Added canonical platform include block (stdio/stdlib + windows.h under `_WIN32`, mmap headers under `#else`, matching `geo_zerocopy.h`/`geo_mdim.h`). **Unblocked 6 BUILD FAILs:** test_shell, test_tess_header, test_fibo_dual_rail, test_tess_stream, test_tess_moe_bridge, test_tesspack. New baseline: **TIER1 118/121 PASS · TIER2 4/4 PASS** (was 112/121). 3 remaining RUN FAILs are WIP subsystems (bfs_persist rdh bijection, bfs_stability partial-block, hybrid_kv dt_put).
 
 **Branches STOCKED (ห้ามเปิดก่อน mainline เสร็จ):** docs/ARCHIMEDEAN-STOCK-2026-08-22.md — ภาษาที่ 4 Hosoya/circle view · snub chiral switch · Zeckendorf · circle-config catalog.
 

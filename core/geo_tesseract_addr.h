@@ -31,7 +31,7 @@
 #include <stdint.h>
 
 #define TESS_AXES        4u
-#define TESS_CELLS       8u
+#define TESS_3D_CELLS    8u   /* 3D cells (cubes) in a 4D tesseract */
 #define TESS_SLOTS       144u
 #define TESS_PER_TESS    1152u                  /* 8*144 */
 #define TESS_COUNT       18u
@@ -63,7 +63,7 @@ static inline uint32_t tess_adjacent(uint32_t idx, uint32_t out[6]) {
 /* ── flat address in the 20736 field (fixed frame) ─────────────── */
 static inline uint32_t tess_flat(uint32_t tess, uint32_t cell, uint32_t slot) {
     return (tess % TESS_COUNT) * TESS_PER_TESS
-         + (cell % TESS_CELLS) * TESS_SLOTS
+         + (cell % TESS_3D_CELLS) * TESS_SLOTS
          + (slot % TESS_SLOTS);
 }
 static inline void tess_unflat(uint32_t flat,
@@ -82,11 +82,10 @@ static inline int geo_tesseract_verify(void) {
             if (tess_axis(idx) != ax || tess_sign(idx) != s) return -1;
         }
     /* XOR involution: flip twice returns */
-    for (uint32_t idx = 0; idx < TESS_CELLS; idx++)
-        for (uint32_t k = 0; k < 3; k++)
+    for (uint32_t idx = 0; idx < TESS_3D_CELLS; idx++)        for (uint32_t k = 0; k < 3; k++)
             if (tess_neighbor_xor(tess_neighbor_xor(idx, k), k) != idx) return -2;
     /* adjacency degree 6 and excludes opposite */
-    for (uint32_t idx = 0; idx < TESS_CELLS; idx++) {
+    for (uint32_t idx = 0; idx < TESS_3D_CELLS; idx++) {
         uint32_t out[6]; uint32_t n = tess_adjacent(idx, out);
         if (n != 6) return -3;
         uint32_t opp = tess_index(tess_axis(idx), tess_sign(idx) ^ 1u);

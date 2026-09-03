@@ -314,7 +314,7 @@ int main(void)
         const uint8_t *cube_data = payload + TESS_HEADER_SIZE + TESS_FORMULA_SIZE;
 
         CHECK("T10a: cube_data pointer aligned", ((uintptr_t)cube_data) % 8 == 0);
-        CHECK("T10b: header accessible", hdr->magic == TESS_MAGIC);
+        CHECK("T10b: header accessible", hdr->magic == GEO_TESS_MAGIC);
         CHECK("T10c: cell_size correct", hdr->cell_size == 4);
         CHECK("T10d: total_slots correct", hdr->total_slots == TOTAL_SLOTS);
 
