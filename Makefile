@@ -101,7 +101,6 @@ TIER1 := \
   test_shell \
   test_tess_header \
   test_geofs \
-  test_tess_codec \
   test_fibo_checkpoint \
   test_fibo_walk \
   test_fibo_dual_rail \
@@ -135,6 +134,9 @@ TIER1 := \
   test_kv_rail_geofs \
   test_kv_dramtile \
   test_gear_wire_bridge \
+  test_tess_stream \
+  test_tess_moe_bridge \
+  test_tesspack \
 
 # ── เทสต์ที่เหลือ (ไม่ได้อยู่ใน TIER1/TIER2) = legacy ประวัติการพัฒนา ──
 # เขียนก่อน rescope 2026-08-14 — เก็บไว้ย้อนดูเท่านั้น ไม่ใช้ยืนยันระบบปัจจุบัน
@@ -382,6 +384,41 @@ graft-llama:
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
 	PATH="$(LLAMA_DLL):$$PATH" ./build/test_gguf_graft_llama $(LLAMA_GGUF) $(LLAMA_DLL)
 
+# Tesspack graft: load original + tesspack-graft GGUF, compare logits+tokens bitwise
+# Note: uses cmd.exe to run test (MSYS2 sh cannot resolve Windows DLLs correctly)
+tesspack-graft-llama: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found)"; exit 0; }
+	@test -f $(MOE_GGUF) || { echo "  (skip: $(MOE_GGUF) not found)"; exit 0; }
+	@test -f F:/model/moe_tesspack_graft.gguf || { echo "  (skip: tesspack graft GGUF not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/test_tesspack_graft_llama tests/test_tesspack_graft_llama.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
+	cmd //c "set PATH=$(LLAMA_DLL);%PATH%&& $(BUILD)\test_tesspack_graft_llama.exe $(MOE_GGUF) F:/model/moe_tesspack_graft.gguf $(LLAMA_DLL)"
+
+# Tesspack view: assemble from .tesspack (mmap) + inference verification
+tess-view: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found)"; exit 0; }
+	@test -f $(MOE_GGUF) || { echo "  (skip: $(MOE_GGUF) not found)"; exit 0; }
+	@test -f F:/model/qwen3moe.tesspack || { echo "  (skip: .tesspack not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/tesspack_llama_view.exe tools/tesspack_llama_view.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
+	cmd //c "set PATH=$(LLAMA_DLL);%PATH%&& $(BUILD)\tesspack_llama_view.exe $(MOE_GGUF) F:/model/qwen3moe.tesspack F:/model/moe_tessview_out.gguf $(LLAMA_DLL)"
+
+# Tesspack stream view: llama fed directly from .tesspack via per-tensor
+# callback (no graft file) — load ms + decode tok/s vs plain GGUF baseline
+tess-stream-view: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found)"; exit 0; }
+	@test -f $(MOE_GGUF) || { echo "  (skip: $(MOE_GGUF) not found)"; exit 0; }
+	@test -f F:/model/qwen3moe.tesspack || { echo "  (skip: .tesspack not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/tesspack_stream_view.exe tools/tesspack_stream_view.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
+	cmd //c "set PATH=$(LLAMA_DLL);%PATH%&& $(BUILD)\tesspack_stream_view.exe $(MOE_GGUF) F:/model/qwen3moe.tesspack $(LLAMA_DLL)"
+
 # ── Real generation through the graft (multi-token, greedy) ──
 # Uses the same llama.cpp DLLs as graft-llama; skips if they are absent.
 graft-gen: | $(BUILD)
@@ -485,6 +522,81 @@ moe-stream: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
 	    -I core -I core/infra -I $(LLAMA_INC) -o $(BUILD)/moe-stream tools/moe_expert_stream.c -lm
 	./$(BUILD)/moe-stream "$(MOE_GGUF)" 0
+
+# ── MoE Routing Integration: route → serve → inference ──
+# Runs router gate per layer → selects top-K experts → rebuilds GGUF
+# with routed experts from DtSlotRegion → loads through llama.cpp.
+# Proves the full bake → route → serve → inference pipeline.
+moe-route: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found)"; exit 0; }
+	@test -f $(MOE_GGUF) || { echo "  (skip: $(MOE_GGUF) not found)"; exit 0; }
+	@test -f moe_expert_region.bin || { echo "  (skip: moe_expert_region.bin not found — run moe-bake first)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I core/infra -I $(LLAMA_INC) -o $(BUILD)/moe_expert_route tools/moe_expert_route.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lm
+	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/moe_expert_route "$(MOE_GGUF)" "$(LLAMA_DLL)" "The capital of France is"
+
+# ── Tess Bake: GGUF → .tess encode ──
+# Encodes each tensor into a .tess file with stride-37 scatter + CRC-64.
+TESS_GGUF ?= $(LLAMA_GGUF)
+tess-bake: | $(BUILD)
+	@test -f "$(TESS_GGUF)" || { echo "  (skip: $(TESS_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -Wall -Wno-unused-parameter -I core -o $(BUILD)/tess_bake tools/tess_bake.c -lm
+	@mkdir -p tess_out
+	./$(BUILD)/tess_bake "$(TESS_GGUF)" tess_out
+
+# ── Tess Load: .tess → raw weights (verify + decode) ──
+tess-load: | $(BUILD)
+	@ls tess_out/*.tess >/dev/null 2>&1 || { echo "  (skip: no .tess files in tess_out/ — run tess-bake first)"; exit 0; }
+	$(CC) -O2 -Wall -I core -o $(BUILD)/tess_load tools/tess_load.c -lm
+	@for f in tess_out/*.tess; do \
+	    echo "── $$f ──"; \
+	    ./$(BUILD)/tess_load "$$f" "/dev/null" 2>&1 || true; \
+	done
+
+# ── Tess Roundtrip: bake → load → compare bytes ──
+tess-roundtrip: tess-bake | $(BUILD)
+	@test -f "$(TESS_GGUF)" || { echo "  (skip: $(TESS_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -Wall -Wno-unused-parameter -I core -o $(BUILD)/tess_roundtrip tools/tess_roundtrip.c -lm
+	@echo "=== Roundtrip: SmolLM2 token_embd ==="
+	./$(BUILD)/tess_roundtrip "$(TESS_GGUF)" "token_embd.weight" tess_out
+	@echo "=== Roundtrip: SmolLM2 blk.0.attn_q ==="
+	./$(BUILD)/tess_roundtrip "$(TESS_GGUF)" "blk.0.attn_q.weight" tess_out
+
+# ── Tess Assemble: .tess files → reconstruct GGUF ──
+tess-assemble: tess-bake | $(BUILD)
+	@test -f "$(TESS_GGUF)" || { echo "  (skip: $(TESS_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -Wall -Wno-unused-parameter -I core -o $(BUILD)/tess_assemble tools/tess_assemble.c -lm
+	./$(BUILD)/tess_assemble "$(TESS_GGUF)" tess_out tess_out/assembled.gguf
+
+# ── Tess Stream: .tess capo streaming reader ──
+tess-stream: | $(BUILD)
+	$(CC) -O2 -Wall -I core -I core/infra -o $(BUILD)/tess_stream tools/tess_load_stream.c -lm
+	@echo "✅ tess_stream ready → ./$(BUILD)/tess_stream <file.tess> <info|load|range|scan>"
+	@$(CC) -O2 -Wall -I core -I core/infra -o $(BUILD)/test_tess_stream tests/test_tess_stream.c -lm && ./$(BUILD)/test_tess_stream
+
+# ── Tess ↔ MoE Bridge: .tess capo → DtSlotRegion expert slot (synthetic demo) ──
+tess-moe-bridge: | $(BUILD)
+	$(CC) -O2 -Wall -I core -I core/infra -o $(BUILD)/test_tess_moe_bridge tests/test_tess_moe_bridge.c -lm
+	./$(BUILD)/test_tess_moe_bridge
+	@echo "✅ tess ↔ MoE bridge verified"
+
+# ── .tesspack: single-file container for .tess capos ──
+tess-pack: | $(BUILD)
+	$(CC) -O2 -Wall -I core -I core/infra -o $(BUILD)/tess_packer tools/tess_packer.c -lm
+	@echo "✅ tess_packer ready → ./$(BUILD)/tess_packer <pack|info|unpack>"
+	@$(CC) -O2 -Wall -I. -o $(BUILD)/test_tesspack tests/test_tesspack.c -lm && ./$(BUILD)/test_tesspack
+
+# ── GGUF → .tesspack directly ──
+tess-gguf-pack: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wno-format -I core -I core/infra -o $(BUILD)/tess_gguf_pack tools/tess_gguf_pack.c -lm
+	@echo "✅ tess_gguf_pack ready → ./$(BUILD)/tess_gguf_pack <gguf> <out.tesspack> [filter]"
+
+# ── MoE Streaming from .tesspack ──
+moe-stream-pack: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wno-format -I core -I core/infra -o $(BUILD)/moe_stream_pack tools/moe_expert_stream_pack.c -lm
+	@echo "✅ moe_stream_pack ready → ./$(BUILD)/moe_stream_pack <gguf> <tesspack> [layer]"
 
 # ── Output on the +37 belt: model's token+logits stream → field ──
 # Step ⑤: real generation through the field-built graft, then embed the
@@ -652,4 +764,10 @@ ggf_fs: tools/ggf_fs_probe.c core/geo_ggf_fs.h core/geo_ggf_ckpt.h core/geo_ggf_
 	@echo "▶ BUILD  ggf_fs_probe"
 	$(CC) $(CFLAGS) -o $(BUILD)/ggf_fs_probe tools/ggf_fs_probe.c $(LDFLAGS)
 	@echo "✅ ggf_fs ready → ./$(BUILD)/ggf_fs_probe --mount <ckpt-dir> [--sweep r1 t1 r2 t2]"
+
+bench-tesspack: tests/bench_tesspack.c core/geo_tess_container.h | $(BUILD)
+	@echo "▶ BUILD  bench_tesspack"
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format -Wno-unused-function -I core -o $(BUILD)/bench_tesspack tests/bench_tesspack.c -lm
+	@echo "✅ bench-tesspack ready"
+	cmd //c "$(BUILD)\bench_tesspack.exe F:\model\qwen3-4b-moe-q4_k_m.gguf F:\model\qwen3moe.tesspack 3"
 

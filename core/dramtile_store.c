@@ -5,9 +5,7 @@
 int dt_store_init(DRamTileStore *store, size_t min_bytes) {
     memset(store, 0, sizeof(*store));
     dt_enable_lock_privilege();
-    size_t cap = min_bytes < 4UL * 1024 * 1024 * 1024
-               ? 4UL * 1024 * 1024 * 1024
-               : min_bytes;
+    size_t cap = min_bytes < (1UL << 20) ? (1UL << 20) : min_bytes;
 #ifdef _WIN32
     store->base = (uint8_t*)VirtualAlloc(NULL, cap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     store->is_mmap = (store->base != NULL);

@@ -16,7 +16,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include "dwgls_dynamic_codec.h"
+#include "bfs_v6b_adapter.h"
+#include "bfs_magnify.h"
+#include "bfs_fan24.h"
 
 #define BFS_MAGIC          0x42524548u
 #define BFS_VERSION        1u
@@ -111,10 +113,11 @@ typedef struct {
     uint32_t block_owner[BFS_BLOCKS];
     BFSBlockMeta block_meta[BFS_BLOCKS];
     int8_t block_data[BFS_BLOCKS][BFS_SLOTS_BLOCK];
-    uint8_t block_encoded[BFS_BLOCKS][512];
+    uint8_t block_encoded[BFS_BLOCKS][2048];
     uint16_t block_encoded_size[BFS_BLOCKS];
     uint32_t delta_log[256];
     uint32_t delta_count;
+    FGXLog   fg_log;        /* fan24 gear events (8-bit, replaces delta_log future) */
 } BreathingFS;
 
 /* ═══════════════ INIT ═══════════════ */
@@ -124,6 +127,7 @@ static inline void bfs_init(BreathingFS *fs) {
     fs->magic = BFS_MAGIC;
     fs->version = BFS_VERSION;
     seeker_init(&fs->seeker);
+    fgx_log_init(&fs->fg_log);
     for (uint32_t i = 0; i < BFS_BLOCKS; i++)
         fs->block_owner[i] = 0xFFFFFFFF;
 }
@@ -181,17 +185,16 @@ static inline int bfs_write(BreathingFS *fs, const char *name,
         bm->delta = 0;
         bm->scale_at_write = (uint8_t)(fs->seeker.scale * 100);
 
-        /* Use static DynContainer — no stack/heap overflow */
-        DynContainer _bfs_dc;
-        dyn_init(&_bfs_dc);
-        int rc = dyn_encode(&_bfs_dc, fs->block_data[bi], BFS_SLOTS_BLOCK);
+        /* Use v6b streaming codec — static, no heap alloc */
+        V6bContainer _bfs_dc;
+        v6b_dc_init(&_bfs_dc);
+        int rc = v6b_dc_encode(&_bfs_dc, fs->block_data[bi], BFS_SLOTS_BLOCK);
         if (rc == 0) {
-            bm->strategy = _bfs_dc.header.strategy;
-            bm->payload_size = _bfs_dc.header.payload_size;
-            memcpy(fs->block_encoded[bi], _bfs_dc.payload, _bfs_dc.header.payload_size);
-            fs->block_encoded_size[bi] = _bfs_dc.header.payload_size;
-            if (_bfs_dc.header.strategy < 4)
-                fe->strategies[_bfs_dc.header.strategy]++;
+            bm->strategy = _bfs_dc.strategy;
+            bm->payload_size = (uint16_t)_bfs_dc.payload_size;
+            memcpy(fs->block_encoded[bi], _bfs_dc.payload, _bfs_dc.payload_size);
+            fs->block_encoded_size[bi] = (uint16_t)_bfs_dc.payload_size;
+            fe->strategies[0]++;  /* v6b always uses strategy 0 (v6b) */
         }
 
         fs->block_owner[bi] = fs->n_files;
@@ -227,24 +230,22 @@ static inline int bfs_read(const BreathingFS *fs, const char *name,
         uint32_t bi = fe->home_block + b;
         if (bi >= BFS_BLOCKS) return -4;
 
-        /* Use static DynContainer — no stack/heap overflow */
-        DynContainer _bfs_dc;
-        dyn_init(&_bfs_dc);
-        _bfs_dc.header.strategy = fs->block_meta[bi].strategy;
-        _bfs_dc.header.payload_size = fs->block_encoded_size[bi];
-        memcpy(_bfs_dc.payload, fs->block_encoded[bi], _bfs_dc.header.payload_size);
-        _bfs_dc.header.checksum = dyn_crc32(_bfs_dc.payload, _bfs_dc.header.payload_size);
+        /* Use v6b codec — static, no heap alloc */
+        V6bContainer _bfs_dc;
+        v6b_dc_init(&_bfs_dc);
+        _bfs_dc.strategy = fs->block_meta[bi].strategy;
+        _bfs_dc.payload_size = fs->block_encoded_size[bi];
+        memcpy(_bfs_dc.payload, fs->block_encoded[bi], _bfs_dc.payload_size);
+        _bfs_dc.checksum = v6b_dc_crc32(_bfs_dc.payload, _bfs_dc.payload_size);
 
         uint32_t offset = b * BFS_SLOTS_BLOCK;
         uint32_t bsz = BFS_SLOTS_BLOCK;
         if (offset + bsz > fe->total_bytes) bsz = fe->total_bytes - offset;
 
-        /* STABILITY FIX (Aug 10, 2026): decode only bsz real bytes, not the
-         * full 144-slot block. dyn_decode(..., BFS_SLOTS_BLOCK) wrote past
-         * the caller's buffer whenever a file's LAST block was partial
-         * (total_bytes % 144 != 0) — out_size contract was ≥ total_bytes. */
-        int rc = dyn_decode(&_bfs_dc, out + offset, bsz);
+        int8_t dec[BFS_SLOTS_BLOCK];
+        int rc = v6b_dc_decode(&_bfs_dc, dec, BFS_SLOTS_BLOCK);
         if (rc != 0) return -5;
+        memcpy(out + offset, dec, bsz);
     }
     return 0;
 }
@@ -252,6 +253,7 @@ static inline int bfs_read(const BreathingFS *fs, const char *name,
 /* ═══════════════ DELTA OPS ═══════════════ */
 static inline void bfs_move_seeker(BreathingFS *fs, double new_scale) {
     if (!fs) return;
+    uint32_t old_pos = fs->seeker.current_pos;
     seeker_scale(&fs->seeker, new_scale);
     for (uint32_t b = 0; b < BFS_BLOCKS; b++) {
         if (fs->block_owner[b] != 0xFFFFFFFF) {
@@ -261,23 +263,32 @@ static inline void bfs_move_seeker(BreathingFS *fs, double new_scale) {
             bm->delta = (int32_t)bm->current_pos - (int32_t)bm->home_pos;
         }
     }
-    if (fs->delta_count < 256)
+    /* gear event: 8-bit ring-24 CRT bijection */
+    if (fs->delta_count < 256) {
         fs->delta_log[fs->delta_count++] = fs->seeker.current_pos;
+        bfs_gear_push(&fs->fg_log, old_pos, fs->seeker.current_pos);
+    }
+    /* magnifier glass: store as separate field (is_hyperbolic = window>space) */
+    fs->seeker.is_hyperbolic |= bfs_mg_flat_in_glass(fs->seeker.current_pos) ? 2 : 0;
 }
 
 static inline void bfs_go_home(BreathingFS *fs) {
     if (!fs) return;
     /* seeker must physically return to home_pos — lossless read is defined
      * at home (delta=0). seeker_scale keeps current_pos; restore it here. */
+    uint32_t old_pos = fs->seeker.current_pos;
     fs->seeker.home_pos = fs->seeker.home_pos % BFS_TOTAL_SLOTS;
     fs->seeker.current_pos = fs->seeker.home_pos;
     seeker_scale(&fs->seeker, 1.0);
+    fs->seeker.is_hyperbolic = 0;  /* clear glass flag on return home */
     for (uint32_t b = 0; b < BFS_BLOCKS; b++) {
         if (fs->block_owner[b] != 0xFFFFFFFF) {
             fs->block_meta[b].current_pos = fs->block_meta[b].home_pos;
             fs->block_meta[b].delta = 0;
         }
     }
+    /* gear event for home return */
+    bfs_gear_push(&fs->fg_log, old_pos, fs->seeker.current_pos);
 }
 
 static inline void bfs_delta_stats(const BreathingFS *fs) {
@@ -294,6 +305,9 @@ static inline void bfs_delta_stats(const BreathingFS *fs) {
     }
     printf("  Deltas: %u non-zero / %u blocks | max |delta| = %d\n",
            non_zero, fs->n_blocks_used, max_d);
+    printf("  Gear: %u events (%u bytes) | RIM=%s\n",
+           bfs_gear_count(&fs->fg_log), bfs_gear_bytes(&fs->fg_log),
+           bfs_gear_is_rim(&fs->fg_log) ? "yes" : "no");
 }
 
 /* ═══════════════ VERIFY ═══════════════ */

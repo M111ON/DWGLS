@@ -149,14 +149,16 @@ static inline int bfs_hub_pull_file(BFSHub *h, uint32_t file_idx,
         uint32_t bsz = BFS_SLOTS_BLOCK;
         if (offset + bsz > fe->total_bytes) bsz = fe->total_bytes - offset;
 
-        DynContainer dc;
-        dyn_init(&dc);
-        dc.header.strategy = fs->block_meta[bi].strategy;
-        dc.header.payload_size = (uint16_t)esz;
+        V6bContainer dc;
+        v6b_dc_init(&dc);
+        dc.strategy = fs->block_meta[bi].strategy;
+        dc.payload_size = (uint16_t)esz;
         memcpy(dc.payload, enc, esz);
-        dc.header.checksum = dyn_crc32(dc.payload, esz);
-        int drc = dyn_decode(&dc, out + offset, BFS_SLOTS_BLOCK);
+        dc.checksum = v6b_dc_crc32(dc.payload, esz);
+        int8_t dec[BFS_SLOTS_BLOCK];
+        int drc = v6b_dc_decode(&dc, dec, BFS_SLOTS_BLOCK);
         if (drc != 0) { h->errors++; return -5; }
+        memcpy(out + offset, dec, bsz);
     }
     return 0;
 }

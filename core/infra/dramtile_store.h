@@ -143,9 +143,7 @@ static inline uint32_t dt_name_to_rdh(const char *name) {
 
 static inline int dt_store_init(DRamTileStore *store, size_t min_bytes) {
     memset(store, 0, sizeof(*store));
-    size_t cap = min_bytes < 4ULL * 1024 * 1024 * 1024
-               ? 4ULL * 1024 * 1024 * 1024
-               : min_bytes;
+    size_t cap = min_bytes < (1UL << 20) ? (1UL << 20) : min_bytes;
 #ifdef _WIN32
     store->base = (uint8_t*)VirtualAlloc(NULL, cap, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     store->is_mmap = (store->base != NULL);

@@ -51,7 +51,7 @@
 #define BFS_IMG_EOFF_OFF  (BFS_IMG_META_OFF + BFS_IMG_META_BYT)         /* 3752 */
 #define BFS_IMG_EOFF_BYT  (BFS_BLOCKS * 4u)                             /* 576 */
 #define BFS_IMG_DATA_OFF  (BFS_IMG_EOFF_OFF + BFS_IMG_EOFF_BYT)         /* 4328 */
-#define BFS_IMG_ENC_MAX   512u
+#define BFS_IMG_ENC_MAX   2048u
 #define BFS_IMG_MAX_DATA  (BFS_BLOCKS * BFS_IMG_ENC_MAX)                /* 73728 */
 #define BFS_IMG_MIN_SIZE  (BFS_IMG_DATA_OFF + 4u)                       /* 4332 */
 #define BFS_IMG_MAX_SIZE  (BFS_IMG_DATA_OFF + BFS_IMG_MAX_DATA + 4u)    /* 78060 */
@@ -187,7 +187,7 @@ static inline uint32_t bfs_img_serialize(BreathingFS *fs, uint8_t *dst)
     /* data_size + CRC over [0, data_end) */
     uint32_t actual = BFS_IMG_DATA_OFF + packed + 4u;
     bfs_img_wu32(dst, BFS_HDR_DATA_SIZE, packed);
-    uint32_t crc = dyn_crc32(dst, BFS_IMG_DATA_OFF + packed);
+    uint32_t crc = v6b_dc_crc32(dst, BFS_IMG_DATA_OFF + packed);
     bfs_img_wu32(dst, BFS_IMG_DATA_OFF + packed, crc);
     return actual;
 }
@@ -211,7 +211,7 @@ static inline int bfs_img_parse(const uint8_t *m, size_t size, BreathingFS *fs,
     if (data_end + 4u > size) return -1;   /* truncated / corrupt size */
 
     uint32_t crc_stored = bfs_img_u32(m, data_end);
-    uint32_t crc_actual = dyn_crc32(m, data_end);
+    uint32_t crc_actual = v6b_dc_crc32(m, data_end);
     if (crc_actual != crc_stored) return -4;
 
     memset(fs, 0, sizeof(*fs));
@@ -418,18 +418,19 @@ static inline int bfs_mmap_read(const BFSMmapFS *mfs, const char *name,
             p_off + fs->block_encoded_size[bi] > mfs->map_size)
             return -4;
         /* decode directly from mapped payload — zero-copy */
-        DynContainer dc;
-        dyn_init(&dc);
-        dc.header.strategy = fs->block_meta[bi].strategy;
-        dc.header.payload_size = fs->block_encoded_size[bi];
-        memcpy(dc.payload, mfs->map_ptr + p_off, dc.header.payload_size);
-        dc.header.checksum = dyn_crc32(dc.payload, dc.header.payload_size);
+        V6bContainer dc;
+        v6b_dc_init(&dc);
+        dc.strategy = fs->block_meta[bi].strategy;
+        dc.payload_size = fs->block_encoded_size[bi];
+        memcpy(dc.payload, mfs->map_ptr + p_off, dc.payload_size);
+        dc.checksum = v6b_dc_crc32(dc.payload, dc.payload_size);
         uint32_t offset = b * BFS_SLOTS_BLOCK;
         uint32_t bsz = BFS_SLOTS_BLOCK;
         if (offset + bsz > fe->total_bytes) bsz = fe->total_bytes - offset;
-        /* STABILITY FIX: same partial-last-block guard as bfs_read */
-        int rc = dyn_decode(&dc, out + offset, bsz);
+        int8_t dec[BFS_SLOTS_BLOCK];
+        int rc = v6b_dc_decode(&dc, dec, BFS_SLOTS_BLOCK);
         if (rc != 0) return -5;
+        memcpy(out + offset, dec, bsz);
     }
     return 0;
 }
@@ -494,22 +495,22 @@ static inline int bfs_rdh_verify_all(const BFSMmapFS *mfs)
         uint16_t esz = fs->block_encoded_size[bi];
         if (esz == 0 || p_off < BFS_IMG_DATA_OFF || p_off + esz > mfs->map_size) { bad++; continue; }
 
-        DynContainer dc;
-        dyn_init(&dc);
-        dc.header.strategy = fs->block_meta[bi].strategy;
-        dc.header.payload_size = esz;
+        V6bContainer dc;
+        v6b_dc_init(&dc);
+        dc.strategy = fs->block_meta[bi].strategy;
+        dc.payload_size = esz;
         memcpy(dc.payload, mfs->map_ptr + p_off, esz);
-        dc.header.checksum = dyn_crc32(dc.payload, esz);
+        dc.checksum = v6b_dc_crc32(dc.payload, esz);
         int8_t raw[BFS_SLOTS_BLOCK];
-        int rc = dyn_decode(&dc, raw, BFS_SLOTS_BLOCK);
+        int rc = v6b_dc_decode(&dc, raw, BFS_SLOTS_BLOCK);
         if (rc != 0) { bad++; continue; }
 
-        DynContainer re;
-        dyn_init(&re);
-        rc = dyn_encode(&re, raw, BFS_SLOTS_BLOCK);
+        V6bContainer re;
+        v6b_dc_init(&re);
+        rc = v6b_dc_encode(&re, raw, BFS_SLOTS_BLOCK);
         if (rc != 0) { bad++; continue; }
-        if (re.header.strategy != fs->block_meta[bi].strategy ||
-            re.header.payload_size != esz ||
+        if (re.strategy != fs->block_meta[bi].strategy ||
+            re.payload_size != esz ||
             memcmp(re.payload, mfs->map_ptr + p_off, esz) != 0) {
             bad++; continue;
         }

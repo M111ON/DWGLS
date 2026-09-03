@@ -172,14 +172,16 @@ static inline int bfs_anchor_read(const BreathingFS *fs, const BFSAnchorSet *as,
         if (offset + bsz > fe->total_bytes) bsz = fe->total_bytes - offset;
 
         /* decode directly from stored encoded payload (home snapshot) */
-        DynContainer dc;
-        dyn_init(&dc);
-        dc.header.strategy = fs->block_meta[bi].strategy;
-        dc.header.payload_size = fs->block_encoded_size[bi];
-        memcpy(dc.payload, fs->block_encoded[bi], dc.header.payload_size);
-        dc.header.checksum = dyn_crc32(dc.payload, dc.header.payload_size);
-        int rc = dyn_decode(&dc, out + offset, BFS_SLOTS_BLOCK);
+        V6bContainer dc;
+        v6b_dc_init(&dc);
+        dc.strategy = fs->block_meta[bi].strategy;
+        dc.payload_size = fs->block_encoded_size[bi];
+        memcpy(dc.payload, fs->block_encoded[bi], dc.payload_size);
+        dc.checksum = v6b_dc_crc32(dc.payload, dc.payload_size);
+        int8_t dec[BFS_SLOTS_BLOCK];
+        int rc = v6b_dc_decode(&dc, dec, BFS_SLOTS_BLOCK);
         if (rc != 0) return -5;
+        memcpy(out + offset, dec, bsz);
     }
     return 0;
 }
