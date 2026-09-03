@@ -239,9 +239,9 @@ Guard: no auto-hop silent · no re-hop within 10 min · never hop on same summar
 2. Check `core/kis_codec_v4.h` — baseline codec state
 3. Run `make test` (if Makefile exists) or compile tests manually
 
-## 🧵 Latest State (2026-09-03) — READ THIS FIRST
+## 🧵 Latest State (2026-09-04) — READ THIS FIRST
 
-Session summary: vault `[[Memory/Sessions/2026-09-03_dwgls]]` (run `I:\tools\obsidian-memory\obsidian_mem.cmd newsession` or query it).
+Session summary: vault `[[Memory/Sessions/2026-09-04_dwgls-native-fs]]` (run `I:\tools\obsidian-memory\obsidian_mem.cmd newsession` or query it).
 
 **Proven this session (all oracle-pass):**
 - `tests/test_6ico_integration.c` — 25/25: cross-subsystem integration (geo_codec encode/decode lossless on 20736, cross-GeoType payload identity 4 types, MoE expert address roundtrip 6912, DtSlotRegion store/load 64 experts, stride-37 coprime coverage, 18tes field roundtrip, capacity overflow wrapping, cross-subsystem geo_codec + MoE).
@@ -272,6 +272,7 @@ Session summary: vault `[[Memory/Sessions/2026-09-03_dwgls]]` (run `I:\tools\obs
 - `tools/moe_expert_route.c` (`make moe-route`) — combined bake+route+graft for MoE routing integration
 - `tools/tesspack_graft.c` (`make tess-graft`) — .tesspack → valid GGUF (MoE weight graft)
 - `tools/tesspack_llama_view.c` (`make tess-view`) — .tesspack → assemble full GGUF + llama.cpp inference verification
+- `tools/tesspack_breathe_view.c` (`make tess-breathe`) — mmap RSS measurement: breathing_fs proof on real MoE model
 
 **KIS + breathing_fs:**
 - KIS v4/v5/v6/v6b × 6ico full field: all active codecs pass (v5 angular collision documented)
@@ -291,6 +292,8 @@ Session summary: vault `[[Memory/Sessions/2026-09-03_dwgls]]` (run `I:\tools\obs
 **Tesspack view → GGUF assembly** (this session): `tools/tesspack_llama_view.c` (`make tess-view`) — reads original GGUF header + metadata, opens .tesspack, assembles full GGUF on disk, verifies via llama.cpp. **Real Qwen3-4B-MoE: 12/12 PASS (T1-T12), logits BITWISE identical (diffs=0, maxdiff=0), all 151936 vocab dims.** from_pack=108/108 MoE tensors (2801.7 MB), from_source=326 non-MoE (886.4 MB). Per-capo direct write to body (no temp alloc) fixed 17 large ffn_down_exps tensors (1201 capos each). Assemble: 62.7s, write: 86s, total: 149s for 3.7 GB GGUF. DLL runtime fix: MSYS2 mingw64 libs replace ancient system MinGW 8.1 (2018). `tools/gcube_token_run.c` has llama.cpp include path reference.
 
 **Tesspack I/O benchmark** (this session): `tests/bench_tesspack.c` (`make bench-tesspack`). Real Qwen3-4B-MoE (217 multi-capo tensors, 44319 capos, 3.9GB .tesspack): GGUF sequential read 109.3 MB/s, pack sequential read 103.4 MB/s, `tess_pack_open` mmap init 0.057s. **MoE stream (4/64 experts): 1.636s, 869 MB/s, 1421 MB read → 89.4% bandwidth savings, 9.4x speedup vs full expert read.** Full expert read: 15.4s, 86.9 MB/s. Bug found & fixed: `tess_capo_load_range` writes `n_elems × cell_size` bytes (Q4_K cell_size=210 → 4.3MB/capo), stack buffer overflow from undersized `uint8_t buf[20736]`. Fixed with dynamic allocation based on actual cell_size.
+
+**Breathing FS proof** (this session): `tools/tesspack_breathe_view.c` — mmap-based RSS measurement on real Qwen3-4B-MoE (3.5GB GGUF). **mmap IS the breathing model**: 3.5GB file → 48MB RSS at load → 1331MB peak (36%) during MoE inference → 64% of file never paged into physical RAM. tesspack-assembled GGUF: 43MB load → 1326MB peak (identical breathing). Assembly step 103s (I/O bound). VirtualAlloc MEM_RESERVE 4.9GB proof: zero physical RAM, incremental MEM_COMMIT budget 1.3GB < 2GB limit on 8GB machine. **no_alloc=true does NOT work in b9733 DLL** — `llama_model_init_from_user` forces full allocation regardless (struct layout mismatch suspected, DLL compiled from different header version). Assembled GGUF inference slower (1.83 vs 2.45 tok/s) due to pack order ≠ layer order (tensor layout mismatch on disk).
 
 **KV finding:** llama state files NOT prefix-nested (98.8% bytes shift) → delta net loss; link b9733 llama.dll directly (llama-server slot-save broken).
 
