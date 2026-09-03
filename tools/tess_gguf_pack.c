@@ -153,6 +153,19 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* ── embed GGUF header (0..data_offset) as reserved index entry ── */
+    uint64_t gguf_hdr_off = (uint64_t)_ftelli64(fout);
+    uint32_t gguf_hdr_sz = (uint32_t)gguf.data_offset;
+    fwrite(gguf.base, 1, gguf_hdr_sz, fout);
+
+    TESSPack_Entry gguf_hdr_entry;
+    memset(&gguf_hdr_entry, 0, sizeof(gguf_hdr_entry));
+    gguf_hdr_entry.name_len = (uint8_t)strlen(TPAK_GGUF_HEADER_NAME);
+    memcpy(gguf_hdr_entry.name, TPAK_GGUF_HEADER_NAME, gguf_hdr_entry.name_len);
+    gguf_hdr_entry.capo_id = 0;
+    gguf_hdr_entry.file_offset = gguf_hdr_off;
+    gguf_hdr_entry.capo_size = gguf_hdr_sz;
+
     uint64_t idx_off = (uint64_t)_ftelli64(fout);
     for (uint32_t i = 0; i < n_entries; i++) {
         fwrite(&entries[i].name_len, 1, 1, fout);
@@ -161,11 +174,18 @@ int main(int argc, char **argv) {
         fwrite(&entries[i].file_offset, 8, 1, fout);
         fwrite(&entries[i].capo_size, 4, 1, fout);
     }
+    /* write GGUF header entry last (after tensor capo entries) */
+    fwrite(&gguf_hdr_entry.name_len, 1, 1, fout);
+    fwrite(gguf_hdr_entry.name, 1, gguf_hdr_entry.name_len, fout);
+    fwrite(&gguf_hdr_entry.capo_id, 4, 1, fout);
+    fwrite(&gguf_hdr_entry.file_offset, 8, 1, fout);
+    fwrite(&gguf_hdr_entry.capo_size, 4, 1, fout);
 
     _fseeki64(fout, 0, SEEK_SET);
     uint32_t hdr[16] = {0};
     hdr[0] = TPAK_MAGIC; hdr[1] = 1;
-    hdr[2] = total_capos; hdr[3] = (uint32_t)idx_off;
+    hdr[2] = total_capos + 1; /* +1 for __gguf_header__ entry */
+    hdr[3] = (uint32_t)idx_off;
     fwrite(hdr, 1, 64, fout);
     fclose(fout);
 

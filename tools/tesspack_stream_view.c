@@ -18,6 +18,11 @@
  *                          fill (1.0 for multipliers, 0.0 for bias) to match
  *                          the plain loader's "absent = identity" semantics
  *
+ * Pack-only mode (TESS_PACK_ONLY=1): Uses the embedded GGUF header
+ *   (__gguf_header__ entry) from the pack for metadata. Non-MoE tensor
+ *   fallback reads from the pack data region. Requires DLL that supports
+ *   gguf_init_from_buffer (not available in b9733 build).
+ *
  * Both phases run the same greedy generation over the same prompt. Output:
  * load ms / decode tok/s per phase, plus BITWISE logits + token equality
  * between A and B — proving the pack-fed model is identical to the GGUF one.
@@ -27,6 +32,7 @@
  *        env TESS_NGEN   = generated tokens (default 16)
  *        env TESS_PHASE  = "plain" | "stream" — run one phase only (default: both)
  *        env TESS_TRACE  = log zero-filled tensor names
+ *        env TESS_PACK_ONLY = "1" — ignore GGUF arg, use embedded header from pack
  * ═══════════════════════════════════════════════════════════════════════════ */
 #include <stdio.h>
 #include <stdlib.h>
@@ -108,6 +114,7 @@ static int load_pack_tensor(TensorHook *h, const char *name, uint32_t cell_size,
 static int copy_from_source(TensorHook *h, const char *name, uint8_t *dst,
                             size_t need) {
     GgufReader *g = h->src;
+    if (!g) return -1; /* pack-only mode: no source GGUF */
     for (uint32_t i = 0; i < g->n_tensors; i++) {
         if (strcmp(g->names[i], name) != 0) continue;
         uint64_t src_off = g->data_offset + g->offsets[i];
@@ -312,9 +319,20 @@ int main(int argc, char **argv) {
         ggml_backend_load_all_from_path(dll_dir);
     }
 
+    /* ── open .tesspack (always required) ── */
+    TESS_PackIndex pi;
+    if (tess_pack_open(&pi, pack_path) != 0) {
+        printf("FAIL: tesspack open\n"); return 1;
+    }
     printf("Tesspack Stream View — llama.cpp fed from .tesspack (no graft)\n");
-    printf("GGUF:  %s\nPack:  %s\nPrompt: \"%s\"  n_gen=%d\n",
-           gguf_path, pack_path, prompt, n_gen);
+    printf("Pack:  %s (%u entries, %.1f MB)\n", pack_path, pi.n_entries, (double)pi.file_sz / 1e6);
+
+    if (!gguf_path || gguf_path[0] == '\0') {
+        printf("FAIL: GGUF path required for metadata\n");
+        tess_pack_close(&pi); return 1;
+    }
+    printf("GGUF:  %s\n", gguf_path);
+    printf("Prompt: \"%s\"  n_gen=%d\n", prompt, n_gen);
     printf("═══════════════════════════════════════════════════════════════\n");
 
     const char *phase_only = getenv("TESS_PHASE"); /* "plain" | "stream" = run one phase */
@@ -345,24 +363,28 @@ int main(int argc, char **argv) {
     if (phase_only && strcmp(phase_only, "plain") == 0) {
         printf("\n(TESS_PHASE=plain — phase B skipped)\n");
         run_result_free(&ra);
+        tess_pack_close(&pi);
         return 0;
     }
 
     /* ── Phase B: streamed from .tesspack ── */
     GgufReader src;
-    if (gguf_open(gguf_path, &src) != 0) {
-        printf("FAIL: gguf_reader open\n"); return 1;
+    int src_opened = 0;
+    if (gguf_open(gguf_path, &src) == 0) {
+        src_opened = 1;
+    } else {
+        printf("FAIL: gguf_reader open\n"); tess_pack_close(&pi); return 1;
     }
-    TESS_PackIndex pi;
-    if (tess_pack_open(&pi, pack_path) != 0) {
-        printf("FAIL: tesspack open\n"); gguf_close(&src); return 1;
-    }
-    printf("Phase B: source tensors=%u (%.1f MB data) | pack capos=%u (%.1f MB)\n",
-           src.n_tensors, (double)(src.base_sz - src.data_offset) / 1e6,
+    printf("Phase B: pack capos=%u (%.1f MB)\n",
            pi.n_entries, (double)pi.file_sz / 1e6);
+    if (src_opened) {
+        printf("  source tensors=%u (%.1f MB data)\n",
+               src.n_tensors, (double)(src.base_sz - src.data_offset) / 1e6);
+    }
 
     TensorHook hook; memset(&hook, 0, sizeof(hook));
-    hook.pi = &pi; hook.src = &src;
+    hook.pi = &pi;
+    if (src_opened) hook.src = &src;
 
     double t0 = now_ms();
     struct gguf_init_params gip = { /*.no_alloc =*/ true, /*.ctx =*/ NULL };
@@ -408,7 +430,7 @@ int main(int argc, char **argv) {
         llama_model_free(mB);
         gguf_free(meta);
         tess_pack_close(&pi);
-        gguf_close(&src);
+        if (src_opened) gguf_close(&src);
         return 0;
     }
 
@@ -430,6 +452,6 @@ int main(int argc, char **argv) {
     llama_model_free(mB);
     gguf_free(meta);
     tess_pack_close(&pi);
-    gguf_close(&src);
+    if (src_opened) gguf_close(&src);
     return equal ? 0 : 1;
 }

@@ -799,6 +799,31 @@ static inline int tess_pack_open(TESS_PackIndex *pi, const char *pack_path) {
     return 0;
 }
 
+/* Reserved index entry name for embedded GGUF header.
+ * When present, the entry stores raw GGUF header bytes (0..data_offset)
+ * so the pack is self-contained for llama.cpp metadata (KV + tensor info). */
+#define TPAK_GGUF_HEADER_NAME "__gguf_header__"
+
+/* Retrieve the embedded GGUF header from a .tesspack.
+ * Returns pointer to the header bytes (in mmap) and sets *hdr_sz.
+ * Returns NULL if not found.  The returned pointer is valid until
+ * tess_pack_close().  Do NOT free it. */
+static inline const uint8_t *tess_pack_get_gguf_header(const TESS_PackIndex *pi,
+                                                        uint64_t *hdr_sz) {
+    for (uint32_t i = 0; i < pi->n_entries; i++) {
+        if (pi->entries[i].capo_id == 0 &&
+            strcmp(pi->entries[i].name, TPAK_GGUF_HEADER_NAME) == 0) {
+            uint64_t off = pi->entries[i].offset;
+            uint32_t sz  = pi->entries[i].size;
+            if (off + sz > pi->file_sz) return NULL;
+            *hdr_sz = sz;
+            return pi->base + off;
+        }
+    }
+    *hdr_sz = 0;
+    return NULL;
+}
+
 /* Open a specific capo from a mmapped pack index.
  * Returns 0 on success, sets r->buf to point into mmap (no copy needed). */
 static inline int tess_pack_get_capo(TESS_PackIndex *pi, TESS_CapoReader *r,
