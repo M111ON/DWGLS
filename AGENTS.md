@@ -103,6 +103,12 @@ DWGLS/
 │       ├── moe_expert_store.h    ← MoE: store/load on DtSlotRegion
 │       └── tied_dedup.h           ← registry {tensor_id → home} (dedup ระดับไฟล์)
 │
+│   └── Platonic Field (4) — 4D mutual indexing, bipolar compression
+│       ├── geo_octant.h          ← Phase 1: octant identity + zero-sum binding
+│       ├── geo_tesseract_dense.h ← Phase 3: 1 tesseract, deterministic, bipolar 1/2
+│       ├── geo_voronoi_mask.h    ← Phase 4: Voronoi pointer masking (24 cells × 864)
+│       └── geo_fs_voronoi.h      ← Voronoi cell cache (LRU, hot/cold, existing)
+│
 ├── core/infra/     (2 headers)
 │   ├── gear_lock.h               ← GEAR_GEO_FULL = 20736
 │   └── fibo_spine.h              ← FS_PIPES = 1728, FS_TICKS = 12
@@ -242,6 +248,15 @@ Guard: no auto-hop silent · no re-hop within 10 min · never hop on same summar
 ## 🧵 Latest State (2026-09-04) — READ THIS FIRST
 
 Session summary: vault `[[Memory/Sessions/2026-09-04_dwgls-native-fs]]` (run `I:\tools\obsidian-memory\obsidian_mem.cmd newsession` or query it).
+
+**Platonic Field (this session):**
+- Phase 1 DONE: `core/geo_octant.h` — octant identity + zero-sum binding on 20736 field. 252 lines, header-only. Zero-sum i+j+k ∈ {0,1} selects 4 of 8 octants as tetra-active. Antipodal: valid↔invalid pairs (0↔7,1↔6,2↔5,4↔3). 7/7 tests PASS.
+- Phase 2 DONE: Limacon addressing experiments — aa=9 best overall (3.88 score), aa=6 fastest (1.7μs), aa=5 best spread (300 cells). Factorization verified: 96×36×6=20736. 552 addressing paths = 24 hubs × 23 steps.
+- Phase 3 DONE: `core/geo_tesseract_dense.h` — 1 tesseract, deterministic, bipolar 1/2 compression. 163 lines, header-only. 8 cubes × 144 slots = 1152. Valid cubes: 4 (zero-sum ≤ 1). 5/5 tests PASS.
+- Phase 4 DONE: `core/geo_voronoi_mask.h` — Voronoi pointer masking. 195 lines, header-only. 24 cells × 864 slots = 20736. MaskedPointer = (cell_id, local_offset). Pointer restricted to cell boundary. 7/7 tests PASS.
+- Integration DONE: `core/geo_tess_container.h` now includes geo_octant.h + geo_voronoi_mask.h. Added `tess_stride_scatter_octant()` (scatter + zero-sum validation) and `tess_stride_scatter_voronoi()` (scatter + cell-restricted). TESS_Formula gained `voronoi_cell` (0..23) + `voronoi_flags` fields, struct still 64 bytes. Existing `tess_stride_scatter()` unchanged — backward compatible.
+- Integration test: `tests/test_platonic_integration.c` 6/6 PASS — proves octant roundtrip (50% store, lossless), voronoi roundtrip (mask→unmask), cell distribution (all 24 cells), bipolar compression (50% storage), masked seeking (zero violations).
+- Design crystallization: geometry = rules that connect (not construction). Flexible framework > premature optimization. Both square (12×12) and triangle grids used simultaneously. Entire field can fold into 1728 icosahedra (20736/12 = FS_PIPES).
 
 **Proven this session (all oracle-pass):**
 - `tests/test_6ico_integration.c` — 25/25: cross-subsystem integration (geo_codec encode/decode lossless on 20736, cross-GeoType payload identity 4 types, MoE expert address roundtrip 6912, DtSlotRegion store/load 64 experts, stride-37 coprime coverage, 18tes field roundtrip, capacity overflow wrapping, cross-subsystem geo_codec + MoE).

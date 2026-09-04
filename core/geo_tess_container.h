@@ -23,6 +23,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Platonic Field: octant identity + Voronoi masking */
+#include "geo_octant.h"
+#include "geo_voronoi_mask.h"
+
 /* OS/mmap headers for the .tesspack mmap reader */
 #ifdef _WIN32
   #define WIN32_LEAN_AND_MEAN
@@ -142,7 +146,9 @@ typedef struct {
 
     /* ── Capo + LUT (24 bytes) ────────────────────────────── */
     uint8_t  capo_total;        /* total capos for this tensor   */
-    uint8_t  _pad[23];          /* reserved for future LUT       */
+    uint8_t  voronoi_cell;      /* Voronoi cell id (0..23)        */
+    uint8_t  voronoi_flags;     /* flags: bit0=masked, bit1=frozen */
+    uint8_t  _pad[21];          /* reserved for future LUT       */
 } TESS_Formula;                 /* total: 64 bytes               */
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -240,6 +246,37 @@ static inline uint32_t tess_resolve_octant(uint32_t slot, uint8_t octant,
 
 static inline uint32_t tess_stride_scatter(uint32_t weight_idx) {
     return (weight_idx * TESS_STRIDE_37) % TESS_TOTAL_SLOTS;
+}
+
+/*
+ * Octant-aware scatter: scatter + zero-sum validation.
+ * If the scattered slot lands in an invalid cube (zero-sum > 1),
+ * redirect to the antipodal valid cube.
+ *
+ * Returns: flat address in a valid cube.
+ * Cost: scatter + oct_cube_of + oct_is_valid + oct_antipode_flat.
+ */
+static inline uint32_t tess_stride_scatter_octant(uint32_t weight_idx) {
+    uint32_t slot = (weight_idx * TESS_STRIDE_37) % TESS_TOTAL_SLOTS;
+    uint8_t cube = (uint8_t)(slot / OCT_CELLS);
+    if (!oct_is_valid(cube)) {
+        slot = oct_antipode_flat(slot);
+    }
+    return slot;
+}
+
+/*
+ * Voronoi-masked scatter: scatter + cell-restricted addressing.
+ * Decomposes flat address into (cell_id, local_offset).
+ * Pointer stays within cell boundary — observer sees small range only.
+ *
+ * Returns: flat address (cell_id × 864 + local).
+ * Cost: scatter + vm_mask + vm_unmask.
+ */
+static inline uint32_t tess_stride_scatter_voronoi(uint32_t weight_idx) {
+    uint32_t slot = (weight_idx * TESS_STRIDE_37) % TESS_TOTAL_SLOTS;
+    MaskedPointer p = vm_mask(slot);
+    return vm_unmask(p);
 }
 
 static inline uint32_t tess_stride_gather(uint32_t cell_idx) {
