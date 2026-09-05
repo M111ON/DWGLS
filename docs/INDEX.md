@@ -7,6 +7,7 @@
 | File | Purpose |
 |------|---------|
 | **OVERVIEW.md** | System overview — start here |
+| **PIPELINE-MAP.md** | .tesspack/MoE pipeline map + per-step proof table (2026-09-05) |
 | **PLATONIC_FIELD_ARCHITECTURE.md** | Complete 4D field reference (new) |
 | **PLATONIC_FIELD_DISCOVERY.md** | Mathematical discovery notes |
 | **TETRA_FIELD_STRUCTURE.md** | Tetra field structure collection |

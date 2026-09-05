@@ -132,7 +132,7 @@
 
 Trigger (any): compact/summarization happened · early messages gone · history noticeably short
 Action:
-1. Summarize: done / pending / next + ponytail mode + cwd
+1. Summarize: done / pending / next + cwd
 2. ASK user before `opencode new` — show summary, wait confirm
 3. On confirm: `obsidian_mem.cmd endsession "summary" --proj DWGLS-native-fs`
 
@@ -153,7 +153,9 @@ Action:
 - **Tesspack graft/view/stream/breathe**: all proven on real Qwen3-4B-MoE
 - **KV/state/GeoFS/RID**: all DONE
 - **Breathing FS**: mmap RSS proof — 3.5GB file, 48MB load RSS, 1331MB peak
-- **Baseline**: TIER1 118/121 PASS, TIER2 4/4 PASS
+- **Scale bridge**: BFS seeker ⇄ tess gear ring on ONE timeline (1 tooth = 1 semitone = 2^(1/12));
+  `core/scale_bridge.h` + `tests/test_scale_bridge.c` 35/35 PASS, TIER1 122/122 → docs/PIPELINE-MAP.md §5 + docs/scale-bridge.svg
+- **Baseline**: TIER1 121/121 PASS, TIER2 4/4 PASS (re-verified 2026-09-05; real-pack verify 44,319 capos 0 fail → docs/PIPELINE-MAP.md)
 
 ### Pending (Phase 5 — MoE Next)
 - **Graft OOM fix**: Use `VirtualAlloc(MEM_RESERVE, 3.7GB)` + `MEM_COMMIT` only active regions. Streaming write via mmap.
@@ -180,6 +182,7 @@ Action:
 | tess-graft | `make tess-graft` | .tesspack → GGUF |
 | tess-view | `make tess-view` | .tesspack → assemble + inference verify |
 | tess-breathe | `make tess-breathe` | mmap RSS measurement |
+| scale-follow | `make scale-follow` | sequential vs random page-touch (window memory proof, HDD-bounded) |
 
 ## Build
 

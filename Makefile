@@ -111,6 +111,7 @@ TIER1 := \
   test_geo_hyper_fs \
   test_geo_hyper_real \
   test_rdh_addr \
+  test_scale_bridge \
   test_iso_rot90 \
   test_iso_fold \
   test_kis_cube_views \
@@ -373,6 +374,7 @@ LLAMA_INC = I:/llama/include
 LLAMA_DLL = I:/llama/llama-b9733-bin-win-vulkan-x64
 LLAMA_GGUF ?= I:/model/Qwen2.5-0.5B-Instruct-Q8_0.gguf
 MOE_GGUF   ?= F:/model/qwen3-4b-moe-q4_k_m.gguf
+MOE_TESSPACK ?= F:/model/qwen3moe.tesspack
 
 # Cactus graft: assemble graft GGUF from gguf_box (header scion + zero-copy
 # body from the source mmap), load it with real llama.cpp, compare inference
@@ -432,6 +434,15 @@ breathe-view: | $(BUILD)
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lpsapi -lzstd -lm
 	cmd //c "set PATH=$(LLAMA_DLL);%PATH%&& $(BUILD)\tesspack_breathe_view.exe $(MOE_GGUF) F:/model/qwen3moe.tesspack $(LLAMA_DLL)"
+
+# ── Scale-follow: sequential vs random page-touch on a .tesspack ──
+# Proves the mmap window follows the layer pointer (window memory, not full
+# load). HDD-safe: random phase bounded by --sample 8192 / --time 60 s.
+# Override: make scale-follow MOE_TESSPACK=<path> · args pass through ARGS=
+scale-follow: | $(BUILD)
+	$(CC) -O2 -Wall -Wno-unused-parameter -Wno-format -I. -Icore -o $(BUILD)/test_scale_follow.exe tools/test_scale_follow.c -lpsapi
+	@test -f "$(MOE_TESSPACK)" || { echo "  (skip: $(MOE_TESSPACK) not found)"; exit 0; }
+	./$(BUILD)/test_scale_follow.exe $(MOE_TESSPACK) $(ARGS)
 
 # ── Real generation through the graft (multi-token, greedy) ──
 # Uses the same llama.cpp DLLs as graft-llama; skips if they are absent.
