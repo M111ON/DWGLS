@@ -4,6 +4,7 @@
  * Modes:
  *   info <path>                  — tensor list JSON
  *   tensor <path> <idx> <n>      — decode first n weights, stats JSON
+ *   tensor_raw <path> <idx> <n>  — decode first n weights, raw values JSON
  *   roundtrip <path> <idx> <n>   — adaptive store roundtrip, result JSON
  *
  * Compile:
@@ -142,6 +143,37 @@ int main(int argc, char **argv) {
         printf("\",\"idx\":%u,\"size\":%u,\"decoded\":%u,\"min\":%.6f,\"max\":%.6f,"
                "\"mean\":%.6f,\"distinct_buckets\":%d,\"spread\":%.6f}",
                idx, r.sizes[idx], n, mn, mx, mean, distinct, mx - mn);
+
+        free(w); free(buf); gguf_close(&r);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "tensor_raw") == 0 && argc >= 4) {
+        uint32_t idx = (uint32_t)atoi(argv[3]);
+        uint32_t want_n = argc >= 5 ? (uint32_t)atoi(argv[4]) : 1024;
+        GgufReader r;
+        if (gguf_open(argv[2], &r) != 0) { printf("{}"); return 1; }
+        if (idx >= r.n_tensors) { printf("{\"error\":\"bad idx\"}"); return 1; }
+        uint8_t *buf = (uint8_t*)malloc(r.sizes[idx]);
+        int rc = gguf_read_tensor(argv[2], &r, idx, buf, r.sizes[idx]);
+        if (rc != 0) { printf("{\"error\":\"read %d\"}", rc); return 1; }
+
+        uint32_t n = 0;
+        float *w = NULL;
+        if (r.sizes[idx] % 34 == 0) w = decode_q8(buf, r.sizes[idx], &n);
+        else if (r.sizes[idx] % 4 == 0) w = decode_f32(buf, r.sizes[idx], &n);
+        if (n > want_n) n = want_n;
+
+        if (!w || n == 0) { printf("{\"error\":\"decode failed\"}"); return 1; }
+
+        printf("{\"name\":\"");
+        json_str(r.names[idx]);
+        printf("\",\"idx\":%u,\"size\":%u,\"decoded\":%u,\"weights\":[", idx, r.sizes[idx], n);
+        for (uint32_t i = 0; i < n; i++) {
+            if (i) printf(",");
+            printf("%.6f", w[i]);
+        }
+        printf("]}");
 
         free(w); free(buf); gguf_close(&r);
         return 0;

@@ -176,7 +176,7 @@ static inline int gguf_open(const char *path, GgufReader *r) {
         if (!r->names || !r->offsets || !r->sizes || !r->dtypes ||
             !r->n_dims || !r->dims) goto fail;
 
-    static const struct { uint16_t tsz; uint16_t blck; } tinfo[31] = {
+    static const struct { uint16_t tsz; uint16_t blck; } tinfo[42] = {
         {4,   1},   /* GGML_TYPE_F32    = 0  */
         {2,   1},   /* GGML_TYPE_F16    = 1  */
         {18,  32},  /* GGML_TYPE_Q4_0   = 2  */
@@ -208,6 +208,9 @@ static inline int gguf_open(const char *path, GgufReader *r) {
         {8,   1},   /* GGML_TYPE_F64   =28 */
         {1,   256}, /* GGML_TYPE_IQ1_M =29 */
         {2,   1},   /* GGML_TYPE_BF16  =30 */
+        {0,   0}, {0, 0}, {0, 0}, {0, 0}, {0, 0},  /* 31-35 reserved */
+        {0,   0}, {0, 0}, {0, 0}, {0, 0}, {0, 0},  /* 36-40 reserved */
+        {6,   32},  /* GGML_TYPE_Q1_0  = 41 */
     };
 
     for (uint64_t i = 0; i < n_tensors; i++) {
@@ -239,7 +242,7 @@ static inline int gguf_open(const char *path, GgufReader *r) {
 
         if (gbuf_u64(&b, &data_off) != 0) goto fail;
 
-        if (dtype < 31 && tinfo[dtype].tsz > 0 && tinfo[dtype].blck > 0) {
+        if (dtype < 42 && tinfo[dtype].tsz > 0 && tinfo[dtype].blck > 0) {
             size_t n_elems = 1;
             for (uint32_t d = 0; d < n_dims; d++) n_elems *= (size_t)dims[d];
             tsize = (n_elems / tinfo[dtype].blck) * tinfo[dtype].tsz;

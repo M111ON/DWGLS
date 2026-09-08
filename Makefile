@@ -371,7 +371,7 @@ $(BUILD)/mdim_cli: tools/mdim_cli.c core/geofs_mdim.h | $(BUILD)
 
 # ── Tier 3: llama.cpp graft (step ③) — needs I:/llama + Qwen GGUF ──
 LLAMA_INC = I:/llama/include
-LLAMA_DLL = I:/llama/llama-b9733-bin-win-vulkan-x64
+LLAMA_DLL = I:/llama/llama-v040-bin-win-vulkan-x64
 LLAMA_GGUF ?= I:/model/Qwen2.5-0.5B-Instruct-Q8_0.gguf
 MOE_GGUF   ?= F:/model/qwen3-4b-moe-q4_k_m.gguf
 MOE_TESSPACK ?= F:/model/qwen3moe.tesspack
@@ -380,7 +380,7 @@ MOE_TESSPACK ?= F:/model/qwen3moe.tesspack
 # body from the source mmap), load it with real llama.cpp, compare inference
 # logits bitwise with the original file, and prove reroute-link routing.
 graft-llama:
-	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
 	@mkdir -p build
 	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
@@ -424,6 +424,24 @@ tess-stream-view: | $(BUILD)
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
 	cmd //c "set PATH=$(LLAMA_DLL);%PATH%&& $(BUILD)\tesspack_stream_view.exe $(MOE_GGUF) F:/model/qwen3moe.tesspack $(LLAMA_DLL)"
 
+# Tesspack bridge: pack-only mode (embedded GGUF header, no source GGUF)
+tess-bridge: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found)"; exit 0; }
+	@test -f F:/model/bonsai-4b-q1_0.tesspack || { echo "  (skip: bonsai tesspack not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/tesspack_bridge.exe tools/tesspack_bridge.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm -lpsapi
+	cmd //c "set PATH=$(LLAMA_DLL);%PATH%&& $(BUILD)\tesspack_bridge.exe F:/model/bonsai-4b-q1_0.tesspack F:/model/bonsai-4b-q1_0.gguf $(LLAMA_DLL)"
+
+# Tesspack server: OpenAI-compatible HTTP API served directly from .tesspack
+tess-server: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/tesspack_server.exe tools/tesspack_server.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm -lpsapi -lws2_32
+
 # Breathe view: MEM_RESERVE + per-tensor MEM_COMMIT (no 5.2GB allocation)
 breathe-view: | $(BUILD)
 	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found)"; exit 0; }
@@ -447,7 +465,7 @@ scale-follow: | $(BUILD)
 # ── Real generation through the graft (multi-token, greedy) ──
 # Uses the same llama.cpp DLLs as graft-llama; skips if they are absent.
 graft-gen: | $(BUILD)
-	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I $(LLAMA_INC) -o $(BUILD)/gguf_graft_generate tools/gguf_graft_generate.c \
@@ -459,7 +477,7 @@ graft-gen: | $(BUILD)
 # Writes tensor bytes into the window chain, rebuilds a GGUF from the field,
 # and proves llama.cpp generation is bitwise identical to the original.
 graft-field: | $(BUILD)
-	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I $(LLAMA_INC) -o $(BUILD)/gguf_graft_field tools/gguf_graft_field.c \
@@ -472,7 +490,7 @@ graft-field: | $(BUILD)
 # tensors go through size-classed DtSlotRegion (direct address), big through
 # the contiguous window chain; rebuilds a GGUF and proves generation bitwise.
 graft-hybrid: | $(BUILD)
-	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I $(LLAMA_INC) -o $(BUILD)/gguf_graft_hybrid tools/gguf_graft_hybrid.c \
@@ -485,7 +503,7 @@ graft-hybrid: | $(BUILD)
 # (pent/tri/snub), unfolded back byte-identical, then real llama b9733
 # generation proves tokens identical + logits bitwise. Damage drill included.
 rid-graft: | $(BUILD)
-	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I $(LLAMA_INC) -o $(BUILD)/geo_rid_graft tools/geo_rid_graft.c \
@@ -501,7 +519,7 @@ geofs-rid: | $(BUILD)
 
 # ── llama KV/state ⇄ RID slot region ──
 kv-rid: | $(BUILD)
-	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I $(LLAMA_INC) -o $(BUILD)/kv_rid_serve tools/kv_rid_serve.c \
@@ -628,7 +646,7 @@ moe-stream-pack: | $(BUILD)
 # captured output (tokens + full per-step logits) into the field in +37 belt
 # serial order; read back and prove bitwise identity.
 graft-belt: | $(BUILD)
-	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I $(LLAMA_INC) -o $(BUILD)/gguf_graft_belt tools/gguf_graft_belt.c \
@@ -641,7 +659,7 @@ graft-belt: | $(BUILD)
 # Tokenizer strings live in the window chain; the graft header only carries
 # pointer keys. Serve = materialize full GGUF from the field and generate.
 graft-page: | $(BUILD)
-	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I $(LLAMA_INC) -o $(BUILD)/gguf_graft_page tools/gguf_graft_page.c \
@@ -655,13 +673,20 @@ graft-page: | $(BUILD)
 # the field mmap — pages fault in when ggml reads them at generation, not at
 # load). Measures windows touched / page faults / residency per phase.
 lazy-serve: | $(BUILD)
-	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs I:/llama/llama-b9733-bin-win-vulkan-x64)"; exit 0; }
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I $(LLAMA_INC) -o $(BUILD)/gguf_lazy_serve tools/gguf_lazy_serve.c \
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lpsapi -lm
 	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_lazy_serve $(LLAMA_GGUF) "The capital of France is" 40
+
+# ── Docs SVG re-render: .excalidraw masters → .svg (never drift) ──
+# Source of truth = docs/*.excalidraw (editable in excalidraw.com / VS Code
+# extension). Run after editing a master so the committed .svg stays in sync.
+docs-svg:
+	@echo "▶ render docs/*.excalidraw → docs/*.svg"
+	python tools/render_excalidraw.py
 
 # ── FGLS_vis: geometry visualizer + console ─────────────
 GGUF ?= I:/model/SmolLM2-360M-Instruct.Q8_0.gguf

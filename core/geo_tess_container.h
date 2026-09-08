@@ -720,11 +720,60 @@ static inline int tess_capo_open_pack(TESS_CapoReader *r, const char *pack_path,
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * TESS_PackIndex — mmap-based .tesspack reader (scan index once, mmap once)
+ * Residual region — table-driven redirects for weight-tying & phantom tensors
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+#define TPAK_RESIDUAL_SENTINEL 0x52455344u  /* "RESD" */
+
+enum {
+    TESS_TRANSFORM_NONE        = 0,  /* memcpy src → dst (same dtype) */
+    TESS_TRANSFORM_TYPE_CAST   = 1,  /* dequantize src_type → dst_type */
+    TESS_TRANSFORM_FP16_TO_F32 = 2,  /* f16 → f32 upcast */
+    TESS_TRANSFORM_F32_TO_FP16 = 3,  /* f32 → f16 downcast */
+    TESS_TRANSFORM_IDENTITY    = 4,  /* fill with 1.0f */
+    TESS_TRANSFORM_ZERO        = 5,  /* fill with 0 */
+};
+
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  name_len;          /* length of tensor_name (max 255) */
+    char     name[255];         /* tensor name (e.g. "output.weight") */
+    uint8_t  src_len;           /* length of src_tensor_name */
+    char     src[255];          /* source tensor name (e.g. "token_embd.weight") */
+    uint8_t  src_type;          /* GGML type of source data in pack */
+    uint8_t  dst_type;          /* GGML type callback should report */
+    uint8_t  transform;         /* TESS_TRANSFORM_* enum */
+    uint8_t  _pad;              /* alignment padding */
+} TESS_ResidualEntry;           /* total: 522 bytes */
+#pragma pack(pop)
+
+/* fp16 → float conversion (IEEE 754 half-precision) */
+static inline float fp16_to_float(uint16_t h) {
+    uint32_t s = (h & 0x8000) << 16;
+    uint32_t e = (h >> 10) & 0x1F;
+    uint32_t m = h & 0x3FF;
+    if (e == 0) {
+        if (m == 0) return *(float *)&s;
+        while (!(m & 0x400)) { m <<= 1; e++; }
+        e++; m &= ~0x400;
+    } else if (e == 31) {
+        e = 127 + 15;
+    } else {
+        e += 127 - 15;
+    }
+    uint32_t f = s | (e << 23) | (m << 13);
+    return *(float *)&f;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * TESS_PackIndex — mmap-based .tesspack reader
  * ═══════════════════════════════════════════════════════════════════════════
- * Opens a .tesspack file, reads the entire index into memory, and mmaps
- * the data region.  Provides O(1) capo lookup by (tensor_name, capo_id)
- * without repeated fopen/fclose per capo.
+ * Two open modes:
+ *   tess_pack_open()      — reads index into malloc, mmaps data (original)
+ *   tess_pack_open_mmap() — mmaps entire file, walks index from mmap (zero malloc)
+ *
+ * mmap-only mode: initial RSS = header (64 bytes), index pages fault in on
+ * first walk, tensor data pages fault on access.  No malloc, no fread.
  */
 typedef struct {
     uint8_t *base;          /* mmap base pointer (NULL on Windows without mmap) */
@@ -744,6 +793,10 @@ typedef struct {
     /* pack header */
     uint32_t n_capos;
     uint64_t index_offset;
+
+    /* residual section (version 2+) */
+    const uint8_t *residual_data;
+    uint32_t       residual_count;
 } TESS_PackIndex;
 
 /* Free resources held by a PackIndex. */
@@ -777,8 +830,13 @@ static inline int tess_pack_open(TESS_PackIndex *pi, const char *pack_path) {
     pi->index_offset = hdr[3];
 
     /* get file size */
+#if defined(_WIN32)
     _fseeki64(f, 0, SEEK_END);
     pi->file_sz = (uint64_t)_ftelli64(f);
+#else
+    fseeko(f, 0, SEEK_END);
+    pi->file_sz = (uint64_t)ftello(f);
+#endif
     fclose(f); f = NULL;
 
     /* read index into memory */
@@ -833,6 +891,16 @@ static inline int tess_pack_open(TESS_PackIndex *pi, const char *pack_path) {
     pi->fd = fd;
 #endif
 
+    /* residual section (version 2+) — hdr[6]=offset, hdr[7]=count */
+    {
+        uint32_t r_off = hdr[6];
+        uint32_t r_cnt = hdr[7];
+        if (r_off > 0 && r_cnt > 0 && r_off + (uint64_t)r_cnt * 522 <= pi->file_sz) {
+            pi->residual_data  = pi->base + r_off;
+            pi->residual_count = r_cnt;
+        }
+    }
+
     return 0;
 }
 
@@ -841,20 +909,151 @@ static inline int tess_pack_open(TESS_PackIndex *pi, const char *pack_path) {
  * so the pack is self-contained for llama.cpp metadata (KV + tensor info). */
 #define TPAK_GGUF_HEADER_NAME "__gguf_header__"
 
+/* ═══════ Zero-malloc mmap mode ═══════════════════════════════════════════
+ * Mmaps the entire file, parses header + walks index from the mmap pointer.
+ * No malloc, no fread.  Index pages are faulted in on first walk.
+ * The mmap_ptr field doubles as the "is mmap-only" flag (entries == NULL).
+ * Use tess_pack_get_capo_mmap() for lookups.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* Open a .tesspack in zero-malloc mmap mode.
+ * Returns 0 on success.  Call tess_pack_close() to release. */
+static inline int tess_pack_open_mmap(TESS_PackIndex *pi, const char *pack_path) {
+    memset(pi, 0, sizeof(*pi));
+    pi->fd = -1;
+    pi->entries = NULL;  /* mmap-only mode: no malloc'd index */
+
+    /* mmap the entire file — single syscall, no I/O for index */
+#ifdef _WIN32
+    HANDLE hFile = CreateFileA(pack_path, GENERIC_READ, FILE_SHARE_READ,
+                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return -1;
+    /* get file size */
+    LARGE_INTEGER li;
+    if (!GetFileSizeEx(hFile, &li)) { CloseHandle(hFile); return -1; }
+    pi->file_sz = (uint64_t)li.QuadPart;
+    HANDLE hMap = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!hMap) { CloseHandle(hFile); return -1; }
+    pi->mmap_ptr = MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+    CloseHandle(hMap);
+    CloseHandle(hFile);
+    if (!pi->mmap_ptr) return -1;
+    pi->base = (uint8_t *)pi->mmap_ptr;
+#else
+    int fd = open(pack_path, O_RDONLY);
+    if (fd < 0) return -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0) { close(fd); return -1; }
+    pi->file_sz = (uint64_t)st.st_size;
+    pi->base = (uint8_t *)mmap(NULL, pi->file_sz, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (pi->base == MAP_FAILED) { close(fd); pi->base = NULL; return -1; }
+    pi->fd = fd;
+#endif
+
+    /* parse header from mmap — faults in page 0 only */
+    if (pi->file_sz < 64) return -2;
+    const uint32_t *hdr = (const uint32_t *)pi->base;
+    if (hdr[0] != TPAK_MAGIC) return -2;
+    pi->n_capos     = hdr[2];
+    pi->index_offset = hdr[3];
+
+    /* residual section (version 2+) */
+    {
+        uint32_t r_off = hdr[6];
+        uint32_t r_cnt = hdr[7];
+        if (r_off > 0 && r_cnt > 0 && r_off + (uint64_t)r_cnt * sizeof(TESS_ResidualEntry) <= pi->file_sz) {
+            pi->residual_data  = pi->base + r_off;
+            pi->residual_count = r_cnt;
+        }
+    }
+
+    return 0;
+}
+
+/* Walk mmap'd index to find capo by name + capo_id.
+ * The index is variable-length, so we must scan linearly.
+ * Returns 0 on success, r->buf points directly into mmap. */
+static inline int tess_pack_get_capo_mmap(TESS_PackIndex *pi, TESS_CapoReader *r,
+                                          const char *tensor_name, uint32_t capo_id) {
+    memset(r, 0, sizeof(*r));
+    if (!pi->base || pi->index_offset >= pi->file_sz) return -6;
+
+    const uint8_t *cur = pi->base + pi->index_offset;
+    const uint8_t *end = pi->base + pi->file_sz;
+    uint32_t tname_len = (uint32_t)strlen(tensor_name);
+
+    for (uint32_t i = 0; i < pi->n_capos; i++) {
+        if (cur + 1 > end) return -6;
+        uint8_t name_len = *cur++;
+        if (cur + name_len + 16 > end) return -6;
+        const uint8_t *name_ptr = cur;
+        cur += name_len;
+        uint32_t cid    = *(const uint32_t *)cur;
+        uint64_t offset = *(const uint64_t *)(cur + 4);
+        uint32_t sz     = *(const uint32_t *)(cur + 12);
+        cur += 16;
+
+        if (cid == capo_id && name_len == (uint8_t)tname_len &&
+            memcmp(name_ptr, tensor_name, name_len) == 0) {
+
+            if (offset + sz > pi->file_sz) return -4;
+            r->buf = pi->base + offset;
+            r->owns_buf = 0;
+            r->file_sz  = sz;
+            r->f = NULL;
+            r->hdr = (const TESS_Header *)r->buf;
+            r->fml = (const TESS_Formula *)(r->buf + TESS_HEADER_SIZE);
+            if (tess_header_validate(r->hdr) != 0) return -5;
+            r->cell_size  = r->hdr->cell_size;
+            r->cube_bytes = r->hdr->total_slots * r->cell_size;
+            r->cube_data  = r->buf + TESS_HEADER_SIZE + TESS_FORMULA_SIZE;
+            r->n_elems    = r->hdr->tensor_count ? r->hdr->tensor_count : r->hdr->total_slots;
+            return 0;
+        }
+    }
+    return -6;
+}
+
 /* Retrieve the embedded GGUF header from a .tesspack.
  * Returns pointer to the header bytes (in mmap) and sets *hdr_sz.
  * Returns NULL if not found.  The returned pointer is valid until
- * tess_pack_close().  Do NOT free it. */
+ * tess_pack_close().  Do NOT free it.
+ * Works with both malloc-index and mmap-only modes. */
 static inline const uint8_t *tess_pack_get_gguf_header(const TESS_PackIndex *pi,
                                                         uint64_t *hdr_sz) {
-    for (uint32_t i = 0; i < pi->n_entries; i++) {
-        if (pi->entries[i].capo_id == 0 &&
-            strcmp(pi->entries[i].name, TPAK_GGUF_HEADER_NAME) == 0) {
-            uint64_t off = pi->entries[i].offset;
-            uint32_t sz  = pi->entries[i].size;
-            if (off + sz > pi->file_sz) return NULL;
-            *hdr_sz = sz;
-            return pi->base + off;
+    if (pi->entries) {
+        /* malloc-index mode: linear scan entries array */
+        for (uint32_t i = 0; i < pi->n_entries; i++) {
+            if (pi->entries[i].capo_id == 0 &&
+                strcmp(pi->entries[i].name, TPAK_GGUF_HEADER_NAME) == 0) {
+                uint64_t off = pi->entries[i].offset;
+                uint32_t sz  = pi->entries[i].size;
+                if (off + sz > pi->file_sz) return NULL;
+                *hdr_sz = sz;
+                return pi->base + off;
+            }
+        }
+    } else if (pi->base && pi->index_offset < pi->file_sz) {
+        /* mmap-only mode: walk mmap'd index for __gguf_header__ */
+        const uint8_t *cur = pi->base + pi->index_offset;
+        const uint8_t *end = pi->base + pi->file_sz;
+        uint32_t gname_len = (uint32_t)strlen(TPAK_GGUF_HEADER_NAME);
+        for (uint32_t i = 0; i < pi->n_capos; i++) {
+            if (cur + 1 > end) break;
+            uint8_t name_len = *cur++;
+            if (cur + name_len + 16 > end) break;
+            const uint8_t *name_ptr = cur;
+            cur += name_len;
+            uint32_t cid    = *(const uint32_t *)cur;
+            uint64_t off    = *(const uint64_t *)(cur + 4);
+            uint32_t sz     = *(const uint32_t *)(cur + 12);
+            cur += 16;
+            if (cid == 0 && name_len == (uint8_t)gname_len &&
+                memcmp(name_ptr, TPAK_GGUF_HEADER_NAME, name_len) == 0) {
+                if (off + sz > pi->file_sz) return NULL;
+                *hdr_sz = sz;
+                return pi->base + off;
+            }
         }
     }
     *hdr_sz = 0;
@@ -894,6 +1093,178 @@ static inline int tess_pack_get_capo(TESS_PackIndex *pi, TESS_CapoReader *r,
         }
     }
     return -6;  /* not found */
+}
+
+/* ═══════ ONION lookup (f16/f32 raw contiguous tensors) ═════════════════════
+ * Searches the pack index for a tensor with capo_id == 0xFFFFFFFF (ONION).
+ * Returns pointer to raw data (in mmap) and sets *data_sz to byte count.
+ * Returns 0 on success, negative on error.  Data is valid until tess_pack_close().
+ * ───────────────────────────────────────────────────────────────────────── */
+#define TPAK_ONION_SENTINEL 0xFFFFFFFFu
+
+static inline int tess_pack_find_onion(const TESS_PackIndex *pi,
+                                       const char *tensor_name,
+                                       const uint8_t **data_out,
+                                       uint32_t *data_sz) {
+    if (pi->entries) {
+        /* malloc-index mode */
+        for (uint32_t i = 0; i < pi->n_entries; i++) {
+            if (pi->entries[i].capo_id == TPAK_ONION_SENTINEL &&
+                strcmp(pi->entries[i].name, tensor_name) == 0) {
+                uint64_t off = pi->entries[i].offset;
+                uint32_t sz  = pi->entries[i].size;
+                if (off + sz > pi->file_sz) return -4;
+                *data_out = pi->base + off;
+                *data_sz  = sz;
+                return 0;
+            }
+        }
+    } else if (pi->base && pi->index_offset < pi->file_sz) {
+        /* mmap-only mode: walk index for capo_id == ONION_SENTINEL */
+        const uint8_t *cur = pi->base + pi->index_offset;
+        const uint8_t *end = pi->base + pi->file_sz;
+        uint32_t tname_len = (uint32_t)strlen(tensor_name);
+        for (uint32_t i = 0; i < pi->n_capos; i++) {
+            if (cur + 1 > end) return -6;
+            uint8_t name_len = *cur++;
+            if (cur + name_len + 16 > end) return -6;
+            const uint8_t *name_ptr = cur;
+            cur += name_len;
+            uint32_t cid    = *(const uint32_t *)cur;
+            uint64_t off    = *(const uint64_t *)(cur + 4);
+            uint32_t sz     = *(const uint32_t *)(cur + 12);
+            cur += 16;
+            if (cid == TPAK_ONION_SENTINEL &&
+                name_len == (uint8_t)tname_len &&
+                memcmp(name_ptr, tensor_name, name_len) == 0) {
+                if (off + sz > pi->file_sz) return -4;
+                *data_out = pi->base + off;
+                *data_sz  = sz;
+                return 0;
+            }
+        }
+    }
+    return -6;  /* not found */
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * TESS Residual Region — redirect/transform table for exceptional tensors
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Weight-tying: output.weight phantom → redirect to token_embd.weight
+ * Internal llama tensors: *.scale, *.input_scale → identity (1.0f fill)
+ * No data duplication — table only. Source lives in SCATTER or ONION.
+ *
+ * Version 2 header: hdr[6]=residual_offset, hdr[7]=residual_count
+ */
+
+/* Find a residual redirect for a tensor name.
+ * Returns pointer to residual entry, or NULL if not found. */
+static inline const TESS_ResidualEntry *tess_pack_find_residual(
+        const TESS_PackIndex *pi, const char *tensor_name)
+{
+    if (!pi->residual_data || pi->residual_count == 0) return NULL;
+    uint32_t tname_len = (uint32_t)strlen(tensor_name);
+    const uint8_t *cur = pi->residual_data;
+    const uint8_t *end = cur + (uint64_t)pi->residual_count * sizeof(TESS_ResidualEntry);
+
+    for (uint32_t i = 0; i < pi->residual_count; i++) {
+        if (cur + sizeof(TESS_ResidualEntry) > end) return NULL;
+        uint8_t nl = *cur;
+        if (nl == (uint8_t)tname_len && memcmp(cur + 1, tensor_name, nl) == 0) {
+            return (const TESS_ResidualEntry *)cur;
+        }
+        cur += sizeof(TESS_ResidualEntry);
+    }
+    return NULL;
+}
+
+/* Apply a residual transform: read source data, transform, write to dst.
+ * Returns bytes written, or 0 on error. */
+static inline int tess_pack_apply_residual(
+        const TESS_PackIndex *pi,
+        const TESS_ResidualEntry *re,
+        uint32_t n_elems,
+        void *dst)
+{
+    switch (re->transform) {
+    case TESS_TRANSFORM_ZERO:
+        memset(dst, 0, (size_t)n_elems * ggml_type_size(re->dst_type));
+        return (int)((size_t)n_elems * ggml_type_size(re->dst_type));
+
+    case TESS_TRANSFORM_IDENTITY: {
+        float *f = (float *)dst;
+        for (uint32_t k = 0; k < n_elems; k++) f[k] = 1.0f;
+        return (int)(n_elems * sizeof(float));
+    }
+
+    case TESS_TRANSFORM_NONE:
+    case TESS_TRANSFORM_TYPE_CAST:
+    case TESS_TRANSFORM_FP16_TO_F32: {
+        /* load source tensor data from pack (ONION or SCATTER) */
+        const uint8_t *onion = NULL;
+        uint32_t onion_sz = 0;
+
+        if (tess_pack_find_onion(pi, re->src, &onion, &onion_sz) == 0) {
+            /* ONION source — raw f16 blob */
+            if (re->transform == TESS_TRANSFORM_FP16_TO_F32) {
+                const uint16_t *f16 = (const uint16_t *)onion;
+                float *f32 = (float *)dst;
+                for (uint32_t k = 0; k < n_elems; k++)
+                    f32[k] = fp16_to_float(f16[k]);
+                return (int)(n_elems * sizeof(float));
+            }
+            /* same type: direct copy */
+            uint32_t src_cs = ggml_type_size(re->src_type);
+            uint64_t src_bytes = (uint64_t)n_elems * src_cs;
+            if (onion_sz >= src_bytes) {
+                memcpy(dst, onion, (size_t)src_bytes);
+                return (int)src_bytes;
+            }
+        }
+
+        /* SCATTER source: dequantize via capo reader */
+        if (re->transform == TESS_TRANSFORM_TYPE_CAST &&
+            re->src_type != re->dst_type) {
+            /* Q8_0 → F32 dequantization: read raw Q8_0 blocks, expand to F32 */
+            uint32_t blck = (uint32_t)ggml_blck_size(re->src_type); /* Q8_0=32 */
+            uint32_t cells_per_capo = TESS_TOTAL_SLOTS;
+            uint64_t q8_cells = (uint64_t)n_elems / blck;  /* number of Q8_0 blocks */
+            float *out = (float *)dst;
+
+            for (uint32_t c = 0; q8_cells > 0; c++) {
+                TESS_CapoReader cr;
+                if (tess_pack_get_capo_mmap((TESS_PackIndex *)pi, &cr, re->src, c) != 0)
+                    return 0;
+                uint32_t cells = (q8_cells >= cells_per_capo)
+                               ? cells_per_capo : (uint32_t)q8_cells;
+                uint8_t buf[TESS_TOTAL_SLOTS * 34]; /* raw Q8_0 blocks */
+                uint32_t got = (uint32_t)tess_capo_load_range(&cr, 0, cells, buf);
+                if (got != cells * 34) return 0;
+                /* dequantize Q8_0: 34 bytes per block → 32 floats */
+                const uint8_t *q = buf;
+                for (uint32_t b = 0; b < cells; b++) {
+                    uint16_t s16;
+                    memcpy(&s16, q, sizeof(uint16_t));
+                    float scale = fp16_to_float(s16);
+                    for (int j = 0; j < 32; j++)
+                        *out++ = (float)((int8_t)q[2 + j]) * scale;
+                    q += 34;
+                }
+                q8_cells -= cells;
+            }
+            return (int)(n_elems * sizeof(float));
+        }
+
+        return 0;
+    }
+
+    case TESS_TRANSFORM_F32_TO_FP16:
+        /* pack-time only, not used at load time */
+        return 0;
+
+    default:
+        return 0;
+    }
 }
 
 #endif /* GEO_TESS_CONTAINER_H */

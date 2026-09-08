@@ -6,7 +6,8 @@
 > Naming rule: this map uses **generic placeholders** (`<model>.gguf`, `<model>.tesspack`).
 > Machine-local paths live only in Makefile vars (`LLAMA_GGUF`, `MOE_GGUF`) — never here.
 
-> **SVG renders:** `docs/pipeline-map.svg` (big picture) · `docs/scale-bridge.svg` (BFS⇄tess scale bridge)
+> **Diagrams (Excalidraw masters → SVG renders):** `docs/pipeline-map.excalidraw` · `docs/scale-bridge.excalidraw` · `docs/fan24-gear-wire.excalidraw`
+> **SVG renders** (`docs/*.svg`) are **generated** from the masters — edit the `.excalidraw`, then run `make docs-svg` (`tools/render_excalidraw.py`) so they never drift. Open/edit masters at https://excalidraw.com or with the Excalidraw VS Code extension.
 
 ## 1. Big picture (mermaid)
 
@@ -177,6 +178,8 @@ flowchart TB
 | CPU↔GPU sync | `geo_bfs_hub.h` | gear-lock sync source = **live header scale byte** of the mapped image | 1 byte |
 
 ### Gear wire — the scale-change log (shared with the KIS side)
+
+(editable diagram: `docs/fan24-gear-wire.excalidraw` — ring-24 CRT, event bits, enter-anywhere)
 
 - ring-24 = 8 teeth (KIS cube wheel) × 3 teeth (hyper axis wheel), gcd=1 → **CRT bijection on Z24**;
   Δ = (to−from) mod 144 = 24q + r, each side reads only its own remainder.

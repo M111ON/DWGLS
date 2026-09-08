@@ -8,9 +8,14 @@
 #include "gguf_reader.h"
 #include "geo_tess_container.h"
 
-static const uint32_t GGUF_CELL_SIZE[] = {
-    4, 2, 18, 20, 0, 0, 22, 24, 34, 36, 84, 110, 144, 176, 210, 292,
-};
+static uint32_t gguf_cell_size(uint32_t dtype) {
+    static const uint32_t table[] = {
+        4, 2, 18, 20, 0, 0, 22, 24, 34, 36, 84, 110, 144, 176, 210, 292,
+    };
+    if (dtype < sizeof(table)/sizeof(table[0])) return table[dtype];
+    if (dtype == 41) return 6;   /* Q1_0 */
+    return 0;
+}
 
 int main(int argc, char **argv) {
     if (argc < 3) {
@@ -34,7 +39,7 @@ int main(int argc, char **argv) {
         total++;
 
         uint32_t dtype = gguf.dtypes[i];
-        uint32_t csz = (dtype < 16) ? GGUF_CELL_SIZE[dtype] : 0;
+        uint32_t csz = gguf_cell_size(dtype);
         if (csz == 0) { skipped++; continue; }
 
         uint32_t n_blocks = gguf.sizes[i] / csz;

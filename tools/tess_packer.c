@@ -186,7 +186,11 @@ static int do_unpack(const char *inpath, const char *dir) {
     uint32_t index_offset = header[3];
 
     printf("Unpacking %u capos from %s to %s\n", n_capos, inpath, dir);
+#if defined(_WIN32)
     mkdir(dir);
+#else
+    mkdir(dir, 0755);
+#endif
 
     /* read index */
     fseek(fin, index_offset, SEEK_SET);

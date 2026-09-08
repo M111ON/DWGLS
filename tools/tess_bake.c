@@ -17,24 +17,29 @@
 #include "gguf_reader.h"
 #include "geo_tess_container.h"
 
-/* GGUF type → cell size */
-static const uint32_t GGUF_CELL_SIZE[] = {
-    4,   /* F32  = 0 */
-    2,   /* F16  = 1 */
-    18,  /* Q4_0 = 2 */
-    20,  /* Q4_1 = 3 */
-    0, 0,
-    22,  /* Q5_0 = 6 */
-    24,  /* Q5_1 = 7 */
-    34,  /* Q8_0 = 8 */
-    36,  /* Q8_1 = 9 */
-    84,  /* Q2_K = 10 */
-    110, /* Q3_K = 11 */
-    144, /* Q4_K = 12 */
-    176, /* Q5_K = 13 */
-    210, /* Q6_K = 14 */
-    292, /* Q8_K = 15 */
-};
+/* GGUF type → cell size (block bytes for tess encoding) */
+static uint32_t gguf_cell_size(uint32_t dtype) {
+    static const uint32_t table[] = {
+        4,   /* F32  = 0 */
+        2,   /* F16  = 1 */
+        18,  /* Q4_0 = 2 */
+        20,  /* Q4_1 = 3 */
+        0, 0,
+        22,  /* Q5_0 = 6 */
+        24,  /* Q5_1 = 7 */
+        34,  /* Q8_0 = 8 */
+        36,  /* Q8_1 = 9 */
+        84,  /* Q2_K = 10 */
+        110, /* Q3_K = 11 */
+        144, /* Q4_K = 12 */
+        176, /* Q5_K = 13 */
+        210, /* Q6_K = 14 */
+        292, /* Q8_K = 15 */
+    };
+    if (dtype < sizeof(table)/sizeof(table[0])) return table[dtype];
+    if (dtype == 41) return 6;   /* Q1_0: 2 fp16 + 4 bytes (32×1-bit) */
+    return 0;
+}
 
 static const char *GGUF_TYPE_NAME[] = {
     "F32","F16","Q4_0","Q4_1","rem4","rem5",
@@ -132,7 +137,11 @@ int main(int argc, char **argv) {
     fprintf(stderr, "  Tensors: %u\n", reader.n_tensors);
     fprintf(stderr, "  Output:  %s/\n\n", out_dir);
 
+#if defined(_WIN32)
     mkdir(out_dir);
+#else
+    mkdir(out_dir, 0755);
+#endif
 
     fprintf(stderr, "allocating encode buffer...\n");
     const uint32_t MAX_TENSOR = 32u * 1024 * 1024;
@@ -152,7 +161,7 @@ int main(int argc, char **argv) {
         uint8_t dtype = reader.dtypes[i];
         uint32_t tsize = reader.sizes[i];
 
-        uint32_t csize = (dtype < 16) ? GGUF_CELL_SIZE[dtype] : 0;
+        uint32_t csize = gguf_cell_size(dtype);
         uint64_t n_elems = 1;
         for (uint8_t d = 0; d < reader.n_dims[i]; d++)
             n_elems *= reader.dims[i * 4 + d];

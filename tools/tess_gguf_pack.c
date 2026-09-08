@@ -7,11 +7,17 @@
 #include <string.h>
 #include <stdint.h>
 #include "gguf_reader.h"
+#include "ggml.h"
 #include "geo_tess_container.h"
 
-static const uint32_t GGUF_CELL_SIZE[] = {
-    4, 2, 18, 20, 0, 0, 22, 24, 34, 36, 84, 110, 144, 176, 210, 292,
-};
+static uint32_t gguf_cell_size(uint32_t dtype) {
+    static const uint32_t table[] = {
+        4, 2, 18, 20, 0, 0, 22, 24, 34, 36, 84, 110, 144, 176, 210, 292,
+    };
+    if (dtype < sizeof(table)/sizeof(table[0])) return table[dtype];
+    if (dtype == 41) return 6;   /* Q1_0 */
+    return 0;
+}
 
 #define TPAK_MAGIC 0x5450414Bu
 
@@ -95,19 +101,22 @@ int main(int argc, char **argv) {
     if (!fout) { fprintf(stderr, "Cannot create %s\n", out_path); gguf_close(&gguf); return 1; }
     _fseeki64(fout, 64, SEEK_SET); /* skip header (64 bytes) */
 
-    uint32_t capo_buf_cap = TESS_HEADER_SIZE + TESS_FORMULA_SIZE + TESS_TOTAL_SLOTS * GGUF_CELL_SIZE[12] + TESS_CRC_SIZE;
+    uint32_t capo_buf_cap = TESS_HEADER_SIZE + TESS_FORMULA_SIZE + TESS_TOTAL_SLOTS * gguf_cell_size(12) + TESS_CRC_SIZE;
     uint8_t *capo_buf = (uint8_t *)malloc(capo_buf_cap);
 
     TESSPack_Entry *entries = NULL;
     uint32_t n_entries = 0, entries_cap = 0;
     uint32_t total_capos = 0, filtered = 0;
 
+    uint32_t n_onion = 0;
+    uint64_t onion_data_start = 0, onion_data_end = 0;
+
     for (uint32_t i = 0; i < gguf.n_tensors; i++) {
         if (filter && !strstr(gguf.names[i], filter)) continue;
         filtered++;
 
         uint32_t dtype = gguf.dtypes[i];
-        uint32_t csz = (dtype < 16) ? GGUF_CELL_SIZE[dtype] : 0;
+        uint32_t csz = gguf_cell_size(dtype);
         if (csz == 0) continue;
 
         uint32_t n_blocks = gguf.sizes[i] / csz;
@@ -115,6 +124,35 @@ int main(int argc, char **argv) {
         uint32_t n_capos = (n_blocks + TESS_TOTAL_SLOTS - 1) / TESS_TOTAL_SLOTS;
 
         const uint8_t *tensor_data = gguf.base + gguf.data_offset + gguf.offsets[i];
+
+        /* ── ONION path: f32/f16 → convert to f16 contiguous blob (no scatter) ── */
+        int is_onion = (dtype == 0 || dtype == 1);
+        if (is_onion) {
+            uint32_t n_elems = gguf.sizes[i] / (dtype == 0 ? 4 : 2);
+            fprintf(stderr, "  [%3u] %-40s  ONION  dtype=%u  elems=%u  %u bytes\n",
+                    i, gguf.names[i], dtype, n_elems, gguf.sizes[i]);
+
+            if (n_onion == 0)
+                onion_data_start = (uint64_t)_ftelli64(fout);
+
+            /* Store raw bytes (f32 or f16, no conversion) for bitwise lossless */
+            fwrite(tensor_data, 1, gguf.sizes[i], fout);
+            onion_data_end = (uint64_t)_ftelli64(fout);
+
+            if (n_entries >= entries_cap) {
+                entries_cap = entries_cap ? entries_cap * 2 : 4096;
+                entries = realloc(entries, entries_cap * sizeof(TESSPack_Entry));
+            }
+            TESSPack_Entry *e = &entries[n_entries++];
+            memset(e, 0, sizeof(*e));
+            e->name_len = (uint8_t)strlen(gguf.names[i]);
+            memcpy(e->name, gguf.names[i], e->name_len);
+            e->capo_id = 0xFFFFFFFFu;  /* sentinel: onion entry */
+            e->file_offset = onion_data_end - (uint64_t)gguf.sizes[i];
+            e->capo_size = gguf.sizes[i]; /* raw bytes */
+            n_onion++;
+            continue;
+        }
 
         fprintf(stderr, "  [%3u] %-40s  cell=%3u  blocks=%7u  capos=%u\n",
                 i, gguf.names[i], csz, n_blocks, n_capos);
@@ -131,9 +169,8 @@ int main(int argc, char **argv) {
                 capo_buf = realloc(capo_buf, capo_buf_cap);
             }
 
-            int32_t enc_sz = encode_capo(tensor_data + (uint64_t)off * csz,
-                                          chunk, csz, dtype, c, n_capos,
-                                          capo_buf, capo_buf_cap);
+            int32_t enc_sz = encode_capo(tensor_data + (uint64_t)off * csz, chunk, csz,
+                         dtype, c, n_capos, capo_buf, capo_buf_cap);
             if (enc_sz <= 0) { fprintf(stderr, "    FAIL capo %u\n", c); continue; }
 
             if (n_entries >= entries_cap) {
@@ -152,6 +189,7 @@ int main(int argc, char **argv) {
             total_capos++;
         }
     }
+    fprintf(stderr, "[pack] all %u tensors encoded, %u capos total\n", gguf.n_tensors, total_capos);
 
     /* ── embed GGUF header (0..data_offset) as reserved index entry ── */
     uint64_t gguf_hdr_off = (uint64_t)_ftelli64(fout);
@@ -181,11 +219,62 @@ int main(int argc, char **argv) {
     fwrite(&gguf_hdr_entry.file_offset, 8, 1, fout);
     fwrite(&gguf_hdr_entry.capo_size, 4, 1, fout);
 
+    /* ── auto-detect residual redirects (weight-tying + internal tensors) ── */
+    typedef struct {
+        uint8_t  name_len;
+        char     name[255];
+        uint8_t  src_len;
+        char     src[255];
+        uint8_t  src_type;
+        uint8_t  dst_type;
+        uint8_t  transform;
+        uint8_t  _pad;
+    } ResidEntry;  /* 522 bytes, matches TESS_ResidualEntry */
+
+    ResidEntry residuals[32];
+    uint32_t n_residual = 0;
+
+    /* check for weight-tying: output.weight absent + token_embd.weight present */
+    int has_output_weight = 0, has_token_embd = 0;
+    for (uint32_t i = 0; i < gguf.n_tensors; i++) {
+        if (strcmp(gguf.names[i], "output.weight") == 0) has_output_weight = 1;
+        if (strcmp(gguf.names[i], "token_embd.weight") == 0) has_token_embd = 1;
+    }
+    if (!has_output_weight && has_token_embd && n_residual < 32) {
+        ResidEntry *re = &residuals[n_residual++];
+        memset(re, 0, sizeof(*re));
+        re->name_len = 13; memcpy(re->name, "output.weight", 13);
+        re->src_len  = 18; memcpy(re->src,  "token_embd.weight", 18);
+        re->src_type = 8;   /* Q8_0 */
+        re->dst_type = 0;   /* F32 */
+        re->transform = 1;  /* TYPE_CAST */
+        fprintf(stderr, "  [auto] RESIDUAL: output.weight → token_embd.weight (TYPE_CAST Q8_0→F32)\n");
+    }
+
+    /* write residual entries after index */
+    uint64_t residual_off = 0;
+    if (n_residual > 0) {
+        residual_off = (uint64_t)_ftelli64(fout);
+        for (uint32_t i = 0; i < n_residual; i++)
+            fwrite(&residuals[i], 1, sizeof(ResidEntry), fout);
+    }
+
+    /* ── write header (version 2 if residual present) ── */
+    fflush(fout);
+    fclose(fout);
+
+    fout = fopen(out_path, "r+b");  /* reopen for in-place header write */
+    if (!fout) { fprintf(stderr, "Cannot reopen %s for header\n", out_path); return 1; }
     _fseeki64(fout, 0, SEEK_SET);
     uint32_t hdr[16] = {0};
-    hdr[0] = TPAK_MAGIC; hdr[1] = 1;
-    hdr[2] = total_capos + 1; /* +1 for __gguf_header__ entry */
+    hdr[0] = TPAK_MAGIC;
+    hdr[1] = n_residual > 0 ? 2 : 1;  /* version 2 if residual */
+    hdr[2] = n_entries + 1;  /* +1 for __gguf_header__ entry */
     hdr[3] = (uint32_t)idx_off;
+    hdr[4] = (uint32_t)(onion_data_start ? onion_data_start : 0);
+    hdr[5] = (uint32_t)(onion_data_end - onion_data_start);
+    hdr[6] = (uint32_t)residual_off;
+    hdr[7] = n_residual;
     fwrite(hdr, 1, 64, fout);
     fclose(fout);
 
@@ -193,8 +282,8 @@ int main(int argc, char **argv) {
     fout = fopen(out_path, "rb");
     if (fout) { _fseeki64(fout, 0, SEEK_END); fsize = (long)_ftelli64(fout); fclose(fout); }
 
-    printf("Packed %u tensors, %u capos → %s (%.1f MB)\n",
-           filtered, total_capos, out_path, fsize / (1024.0 * 1024.0));
+    printf("Packed %u tensors, %u capos, %u onion → %s (%.1f MB)\n",
+           filtered, total_capos, n_onion, out_path, fsize / (1024.0 * 1024.0));
 
     free(capo_buf); free(entries);
     gguf_close(&gguf);

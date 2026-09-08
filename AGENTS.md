@@ -1,5 +1,11 @@
 # AGENTS.md — DWGLS (4Dimension Geometry + KIS Timeline)
 
+##Included dir:
+I:\DWGLS-native-fs
+I:\model
+F:\model
+I:\llama
+
 ## Core Architecture
 
 ### Parameterized Geometry Layer (`core/geo_param_grid.h`)
@@ -156,12 +162,14 @@ Action:
 - **Scale bridge**: BFS seeker ⇄ tess gear ring on ONE timeline (1 tooth = 1 semitone = 2^(1/12));
   `core/scale_bridge.h` + `tests/test_scale_bridge.c` 35/35 PASS, TIER1 122/122 → docs/PIPELINE-MAP.md §5 + docs/scale-bridge.svg
 - **Baseline**: TIER1 121/121 PASS, TIER2 4/4 PASS (re-verified 2026-09-05; real-pack verify 44,319 capos 0 fail → docs/PIPELINE-MAP.md)
+- **Multi-format tesspack**: 4/4 models lossless — Kokoro-82M ONNX (0% overhead), Bonsai-4B Q1_0 (36.5%), Qwen3-VL-2B Q4_K_M (24.5%), LFM2.5-8B Q4_K_M (5.4%). Q1_0 (type 41) added to gguf_reader.h tinfo[42] + all 4 tess tools.
+- **tess_scatter_bench v2**: DRamTile zero-copy + GearLock + sig32 XOR-fold CUDA kernel written, blocked on Colab GPU (503).
 
-### Pending (Phase 5 — MoE Next)
-- **Graft OOM fix**: Use `VirtualAlloc(MEM_RESERVE, 3.7GB)` + `MEM_COMMIT` only active regions. Streaming write via mmap.
+### Pending
+- **General .tesspack → GGUF assembler**: current tess_assemble needs GGUF+tess_dir, not .tesspack format. Need general converter to prove end-to-end inference.
+- **GPU scatter bench**: tess_scatter_bench_v2.cu ready, Colab GPU 503. When available: `colab new -s dwgls-gpu5 --gpu T4 && colab exec -s dwgls-gpu5 --timeout 600 -f deploy_v2_scatter.py`
+- **Graft OOM fix**: Use `VirtualAlloc(MEM_RESERVE, 3.7GB)` + `MEM_COMMIT` only active regions.
 - **DLL no_alloc bug**: `llama_model_init_from_user` force-allocates full buffer. Struct layout mismatch suspected.
-- **Pack order ≠ layer order**: Assembled GGUF slower (1.83 vs 2.45 tok/s).
-- **Next**: Fix graft OOM with VirtualAlloc RESERVE + streaming mmap write, then eliminate assemble step.
 
 ### Branches STOCKED (ห้ามเปิดก่อน mainline เสร็จ)
 - docs/ARCHIMEDEAN-STOCK-2026-08-22.md — Hosoya/circle view · snub chiral · Zeckendorf · circle-config catalog
@@ -183,6 +191,7 @@ Action:
 | tess-view | `make tess-view` | .tesspack → assemble + inference verify |
 | tess-breathe | `make tess-breathe` | mmap RSS measurement |
 | scale-follow | `make scale-follow` | sequential vs random page-touch (window memory proof, HDD-bounded) |
+| docs-svg | `make docs-svg` | re-render `docs/*.svg` from `docs/*.excalidraw` masters (never drift) |
 
 ## Build
 
