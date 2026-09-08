@@ -70,3 +70,12 @@ colab-pack/rid_graft_linux
 colab-pack/zeckendorf_probe
 err_*.txt
 geo-views-package.zip
+
+# Generated data (regenerable — never commit)
+*.json
+*.pt
+*.onnx
+wget-log
+embedServer
+py
+tmp_check_gguf.c
