@@ -342,7 +342,7 @@ int main(int argc, char **argv)
     uint32_t magic = *(const uint32_t *)base;
     if (magic != TPAK_MAGIC) { fprintf(stderr, "Bad magic\n"); return 1; }
     uint32_t n_capos = *(const uint32_t *)(base + 8);
-    uint64_t idx_off = *(const uint64_t *)(base + 16);
+    uint32_t idx_off = *(const uint32_t *)(base + 12);
     printf("Header: %u capos, index at offset %lu\n", n_capos, (unsigned long)idx_off);
 
     /* ── Parse index ── */
