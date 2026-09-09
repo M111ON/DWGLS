@@ -35,6 +35,51 @@
 
 #define WIN        20736u
 #define ALIGN      32u
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Large allocation helper — VirtualAlloc on Windows for >100MB buffers
+ * Reserves address space immediately, commits pages on demand.
+ * Prevents OOM on 8GB RAM systems when field_sz > 3GB.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+#define LARGE_ALLOC_THRESHOLD  (100u * 1024u * 1024u)  /* 100 MB */
+
+#ifdef _WIN32
+#include <windows.h>
+
+static void *large_alloc(size_t sz) {
+    if (sz < LARGE_ALLOC_THRESHOLD)
+        return calloc(1, sz);
+    /* Reserve full range (no physical RAM committed yet) */
+    void *p = VirtualAlloc(NULL, sz, MEM_RESERVE, PAGE_READWRITE);
+    if (!p) { fprintf(stderr, "VirtualAlloc RESERVE failed (%Iu bytes)\n", sz); return NULL; }
+    /* Commit first 4KB so the pointer is valid for initial writes */
+    VirtualAlloc(p, 4096, MEM_COMMIT, PAGE_READWRITE);
+    return p;
+}
+
+/* Commit a range before writing — safe to call multiple times */
+static void large_commit_range(void *base, size_t offset, size_t len) {
+    /* Align down to page boundary */
+    size_t page_start = offset & ~(size_t)0xFFF;
+    size_t page_end   = ((offset + len) + 0xFFF) & ~(size_t)0xFFF;
+    if (page_end > page_start)
+        VirtualAlloc((uint8_t *)base + page_start, page_end - page_start, MEM_COMMIT, PAGE_READWRITE);
+}
+
+static void large_free(void *p, size_t sz) {
+    if (!p) return;
+    if (sz < LARGE_ALLOC_THRESHOLD) { free(p); return; }
+    VirtualFree(p, 0, MEM_RELEASE);
+}
+
+#else
+/* POSIX fallback — just use calloc (overcommit handles it on Linux) */
+static void *large_alloc(size_t sz) { return calloc(1, sz); }
+static void large_commit_range(void *base, size_t offset, size_t len) {
+    (void)base; (void)offset; (void)len; /* no-op on POSIX */
+}
+static void large_free(void *p, size_t sz) { (void)sz; free(p); }
+#endif
 #define align32(x) (((x) + (ALIGN - 1)) & ~((uint64_t)(ALIGN - 1)))
 
 static int pass_count = 0, fail_count = 0;
@@ -286,7 +331,7 @@ int main(int argc, char **argv) {
     uint64_t total_bytes = 0;
     for (uint32_t i = 0; i < N; i++) total_bytes += align32(box.entries[i].size);
     uint64_t field_sz = ((total_bytes + tok_total + WIN - 1) / WIN) * WIN;
-    uint8_t *field = (uint8_t *)calloc(1, (size_t)field_sz);
+    uint8_t *field = (uint8_t *)large_alloc((size_t)field_sz);
     if (!field) return 1;
 
     uint64_t cursor = 0;
@@ -294,6 +339,7 @@ int main(int argc, char **argv) {
     for (uint32_t r = 0; r < N; r++) {
         const GGUFBoxEntry *e = &box.entries[order[r]];
         chain_off[r] = cursor;
+        large_commit_range(field, cursor, e->size);
         memcpy(field + cursor, e->data, e->size);
         if (memcmp(field + cursor, e->data, e->size) != 0) lossless = 0;
         cursor += align32(e->size);
@@ -318,6 +364,7 @@ int main(int argc, char **argv) {
                 tok_count[t] = kvs[i].arr_count;
                 tok_type[t] = kvs[i].arr_type;
                 tok_elen[t] = elems_len;
+                large_commit_range(field, cursor, elems_len);
                 cursor = bake_blob(field, cursor, val + 12, elems_len);
                 printf("  %-28s → field win %llu slot %llu (%llu elems, %zu B)\n",
                        tok_names[t],
@@ -482,7 +529,7 @@ int main(int argc, char **argv) {
         size_t arr_hdr = 12; /* u32 type + u64 count per array */
         size_t buf_sz = 24 + small_kv_sz + 3 * arr_hdr + (size_t)(tok_total - 3 * 12)
                       + tinfo_sz + ALIGN + (size_t)cursor;
-        uint8_t *buf = (uint8_t *)calloc(1, buf_sz);
+        uint8_t *buf = (uint8_t *)large_alloc(buf_sz);
         size_t pos = 0;
         uint32_t magic = GGUF_MAGIC, version = 3;
         uint64_t nt = N, nkv_full = n_kv;

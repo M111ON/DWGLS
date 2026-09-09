@@ -98,7 +98,7 @@ int main(int argc, char **argv) {
     const char *prompt = (argc > 2) ? argv[2] : "The capital of France is";
     int n_gen = (argc > 3) ? atoi(argv[3]) : 6;
     llama_backend_init();
-    ggml_backend_load_all_from_path("I:/llama/llama-b9733-bin-win-vulkan-x64");
+    ggml_backend_load_all_from_path(NULL); /* auto-detect from exe path */
     GgufReader r;
     if (gguf_open(gguf, &r) != 0) { printf("open fail\n"); return 1; }
     struct ggml_context *meta_ctx = NULL;
@@ -113,24 +113,15 @@ int main(int argc, char **argv) {
     if (m) {
         const struct llama_vocab *vocab = llama_model_get_vocab(m);
         printf("vocab %d tokens; [0..3] = \"%s\" \"%s\" \"%s\" \"%s\"\n",
-               llama_vocab_n_tokens(vocab), llama_vocab_get_text(vocab, 0),
-               llama_vocab_get_text(vocab, 1), llama_vocab_get_text(vocab, 2),
-               llama_vocab_get_text(vocab, 3));
-        int n1 = 0, n2 = 0;
+               llama_vocab_n_tokens(vocab), llama_vocab_get_text(vocab, 0), llama_vocab_get_text(vocab, 1), llama_vocab_get_text(vocab, 2), llama_vocab_get_text(vocab, 3));
+        int n1 = 0;
         llama_token *a = generate(m, prompt, n_gen, &n1);
+        printf("prompt: \"%s\"\n", prompt);
+        printf("output (%d tokens): \"", n1);
+        for (int i = 0; i < n1; i++) printf("%s", llama_vocab_get_text(vocab, a[i]));
+        printf("\"\n");
+        free(a);
         llama_model_free(m);
-        struct llama_model_params mf = llama_model_default_params();
-        mf.n_gpu_layers = 0;
-        struct llama_model *f = llama_model_load_from_file(gguf, mf);
-        llama_token *b = generate(f, prompt, n_gen, &n2);
-        int ok = (n1 == n2);
-        if (ok) for (int i = 0; i < n1; i++) if (a[i] != b[i]) { ok = 0; break; }
-        printf("user-path vs file-load streams: %s\n", ok ? "IDENTICAL" : "DIFFER");
-        if (!ok) {
-            printf("  user: "); for (int i = 0; i < n1; i++) printf(" %d", a[i]); printf("\n");
-            printf("  file: "); for (int i = 0; i < n2; i++) printf(" %d", b[i]); printf("\n");
-        }
-        free(a); free(b); llama_model_free(f);
     }
     gguf_free(meta);
     llama_backend_free();
