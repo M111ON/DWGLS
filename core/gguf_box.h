@@ -18,6 +18,11 @@
 #include "gguf_reader.h"
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
+
+/* GNN+Fan24 tile connectivity */
+#include "gnn_fan24_model.h"
+#include "hyp_fusion.h"
 
 /* ═══════════════════════════════════════════════════════════════════════════
    BOX ENTRY — maps one tensor to its location
@@ -315,6 +320,140 @@ static inline void gguf_box_stats(const GGUFBox *box) {
         printf("  ... (%u more tensors)\n", box->n_tensors - 30);
 
     printf("===============================================================\n");
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   GNN TENSOR CONNECTIVITY — learned tile routing via gnn_fan24_model.h
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Score connectivity between two tensors: probability [0,1].
+ * direction: 1.0 = top-bottom, 0.0 = left-right.
+ * Uses data offset as proxy for slot position (fast, O(1)). */
+static inline float gguf_box_gnn_score(const GGUFBox *box,
+                                        uint32_t idx_a, uint32_t idx_b,
+                                        float direction)
+{
+    if (!box->is_open || idx_a >= box->n_tensors || idx_b >= box->n_tensors)
+        return 0.0f;
+    uint32_t slot_a = (uint32_t)(box->entries[idx_a].offset / 144);
+    uint32_t slot_b = (uint32_t)(box->entries[idx_b].offset / 144);
+    return hyp_gnn_score_position(slot_a, slot_b);
+}
+
+/* ── fp_rank grid (same as Python gnn_colab_train_fan24.py) ── */
+static inline void gguf_box_fp_rank_grid(const float *vals, int n, float grid[9]) {
+    int idx[81];
+    int count = n < 81 ? n : 81;
+    for (int i = 0; i < count; i++) idx[i] = i;
+    for (int i = 0; i < count - 1; i++) {
+        int mx = i;
+        for (int j = i + 1; j < count; j++)
+            if (vals[idx[j]] > vals[idx[mx]]) mx = j;
+        int tmp = idx[i]; idx[i] = idx[mx]; idx[mx] = tmp;
+    }
+    for (int i = 0; i < 9; i++) {
+        int pos = 0;
+        for (int j = 0; j < count; j++)
+            if (idx[j] == i) { pos = j; break; }
+        grid[i] = (float)(pos + 1);
+    }
+}
+
+/* ── Extract 9 values from tensor data for grid ── */
+static inline int gguf_box_extract_grid(const uint8_t *data, uint32_t size,
+                                         uint8_t dtype, float grid[9])
+{
+    int n = 0;
+    if (dtype == 8) {
+        for (uint32_t off = 2; off + 1 < size && n < 9; off += 34)
+            grid[n++] = (float)(int8_t)data[off];
+    } else if (dtype == 0) {
+        for (uint32_t off = 0; off + 3 < size && n < 9; off += 4) {
+            float v; memcpy(&v, data + off, 4);
+            grid[n++] = v;
+        }
+    } else if (dtype == 1) {
+        for (uint32_t off = 0; off + 1 < size && n < 9; off += 2) {
+            uint16_t h; memcpy(&h, data + off, 2);
+            grid[n++] = (float)(int16_t)h / 256.0f;
+        }
+    }
+    return n;
+}
+
+/* Full GNN scoring with data features (reads tensor bytes) */
+static inline float gguf_box_gnn_score_data(const GGUFBox *box,
+                                             uint32_t idx_a, uint32_t idx_b,
+                                             float direction)
+{
+    if (!box->is_open || idx_a >= box->n_tensors || idx_b >= box->n_tensors)
+        return 0.0f;
+    const GGUFBoxEntry *ea = &box->entries[idx_a];
+    const GGUFBoxEntry *eb = &box->entries[idx_b];
+    float nf_a[108], ev_a[4], nf_b[108], ev_b[4];
+    /* Extract grid → rank → features */
+    float raw_a[81], raw_b[81], grid_a[9], grid_b[9];
+    int na = gguf_box_extract_grid(ea->data, ea->size, ea->dtype, raw_a);
+    int nb = gguf_box_extract_grid(eb->data, eb->size, eb->dtype, raw_b);
+    if (na < 9 || nb < 9) return 0.0f;
+    gguf_box_fp_rank_grid(raw_a, na, grid_a);
+    gguf_box_fp_rank_grid(raw_b, nb, grid_b);
+    /* Line sums */
+    static const int lines[8][3] = {
+        {0,1,2},{3,4,5},{6,7,8},{0,3,6},{1,4,7},{2,5,8},{0,4,8},{2,4,6}
+    };
+    float lsum_a[8], lsum_b[8];
+    for (int l = 0; l < 8; l++) {
+        lsum_a[l] = grid_a[lines[l][0]] + grid_a[lines[l][1]] + grid_a[lines[l][2]];
+        lsum_b[l] = grid_b[lines[l][0]] + grid_b[lines[l][1]] + grid_b[lines[l][2]];
+    }
+    gnn_f24_node_features(grid_a, lsum_a, ea->idx, nf_a);
+    float ev_tmp[4];
+    gnn_f24_edges(lsum_a, ev_tmp);
+    memcpy(ev_a, ev_tmp, 16);
+    gnn_f24_node_features(grid_b, lsum_b, eb->idx, nf_b);
+    gnn_f24_edges(lsum_b, ev_tmp);
+    memcpy(ev_b, ev_tmp, 16);
+    return gnn_f24_tile_connects(nf_a, ev_a, nf_b, ev_b, direction);
+}
+
+/* ── Routing state ── */
+typedef struct {
+    uint32_t  *rank_order;
+    uint32_t   n_ranked;
+} GGUFBoxGNN;
+
+/* Greedy routing: for each tensor, pick highest-scored unvisited neighbor */
+static inline GGUFBoxGNN gguf_box_build_routing_order(const GGUFBox *box) {
+    GGUFBoxGNN gnn = {NULL, 0};
+    if (!box->is_open || box->n_tensors < 2) return gnn;
+    uint32_t n = box->n_tensors;
+    gnn.rank_order = (uint32_t *)malloc(n * sizeof(uint32_t));
+    if (!gnn.rank_order) return gnn;
+    uint8_t *visited = (uint8_t *)calloc(n, 1);
+    gnn.rank_order[0] = 0;
+    visited[0] = 1;
+    gnn.n_ranked = 1;
+    for (uint32_t step = 1; step < n; step++) {
+        uint32_t prev = gnn.rank_order[step - 1];
+        uint32_t best_next = 0;
+        float best_score = -1.0f;
+        for (uint32_t j = 1; j < n; j++) {
+            if (visited[j]) continue;
+            float score = gguf_box_gnn_score(box, prev, j, (step & 1) ? 1.0f : 0.0f);
+            if (score > best_score) { best_score = score; best_next = j; }
+        }
+        gnn.rank_order[step] = best_next;
+        visited[best_next] = 1;
+        gnn.n_ranked = step + 1;
+    }
+    free(visited);
+    return gnn;
+}
+
+static inline void gguf_box_gnn_free(GGUFBoxGNN *g) {
+    if (g->rank_order) { free(g->rank_order); g->rank_order = NULL; }
+    g->n_ranked = 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

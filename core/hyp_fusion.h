@@ -31,6 +31,7 @@
 #include "geo_rdh_addr.h"        /* RDH bond (พิสูจน์แล้ว bijection 2^24)   */
 #include "geo_frame_seek_wang.h" /* wang edge + tamper (FIX แล้ว §15.50)     */
 #include "lc_tantrix.h"          /* tantrix route (fabric switch)            */
+#include "gnn_fan24_model.h"     /* GNN+Fan24 tile connectivity predictor    */
 
 /* ═══════════════════════════════════════════════════════════════════════════
    S1 — ADDRESS
@@ -151,6 +152,91 @@ static inline uint32_t hyp_hosoya(uint32_t n, uint32_t k) {
  * ต่อตำแหน่ง — ใช้ตั้งราคา predict/residual (hex_tile) */
 static inline uint32_t hyp_weight(uint32_t w) {
     return hyp_fibo((w % 12u) + 1u) * (1u + (w / 12u));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   S4 — GNN BRIDGE (Wang hard gate → GNN soft rank → Tantrix route)
+   ═══════════════════════════════════════════════════════════════════════════
+   Architecture:
+     Layer 1: Wang hard gate  — O(1) edge exact match → reject 99.4%
+     Layer 2: GNN+Fan24 rank — 292K params, 12 features/node
+     Layer 3: Edge match      — ground truth confirmation
+
+   Wang = horizontal connectivity (face/edge matching)
+   GNN  = vertical navigation between hierarchical levels
+
+   Usage:
+     HypSeek wg = hyp_gate(wl, enc, incoming);
+     if (wg == HYP_SEEK_OPEN) {
+         float score = hyp_gnn_score(nf_a, ev_a, nf_b, ev_b, 1.0f);
+         if (score < HYP_GNN_THRESHOLD) wg = HYP_SEEK_CLOSED;
+     }
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* GNN connect probability threshold — below this, soft-reject */
+#define HYP_GNN_THRESHOLD 0.5f
+
+/* Score a tile pair via GNN+Fan24 (pre-computed features).
+ * nf_a[108]: 9 tiles × 12 features for tile A's 3×3 grid
+ * ev_a[4]:   edge features for tile A
+ * nf_b[108]: same for tile B
+ * ev_b[4]:   same for tile B
+ * direction: 1.0 = top→bottom, 0.0 = left→right
+ * Returns: probability ∈ [0,1] — higher = more likely to connect */
+static inline float hyp_gnn_score(
+    const float nf_a[108], const float ev_a[4],
+    const float nf_b[108], const float ev_b[4],
+    float direction
+) {
+    return gnn_f24_tile_connects(nf_a, ev_a, nf_b, ev_b, direction);
+}
+
+/* Combined Wang + GNN gate — single decision replacing 2 separate calls.
+ * Returns HYP_SEEK_OPEN only if both Wang AND GNN approve.
+ * GNN feature computation is caller's responsibility (gnn_f24_node_features). */
+static inline HypSeek hyp_gate_fusion(
+    const FrameWangLayer *wl, uint16_t enc, uint8_t incoming_gate,
+    const float nf_a[108], const float ev_a[4],
+    const float nf_b[108], const float ev_b[4]
+) {
+    /* Layer 1: Wang hard gate — reject 99.4% in O(1) */
+    uint16_t win = (enc / WANG_WIN_SIZE) % WANG_WIN_COUNT;
+    if (!fwang_tamper_check(&wl->wins[win]))    return HYP_SEEK_TAMPER;
+    if (_fwang_is_369(enc))                      return HYP_SEEK_SKIP;
+    if (!fwang_edge_valid(wl, win))              return HYP_SEEK_CLOSED;
+
+    /* tantrix entry match */
+    uint8_t entry = (uint8_t)(_fwang_chord_a(enc) & 3u);
+    if (entry != (incoming_gate & 3u))           return HYP_SEEK_CLOSED;
+
+    /* Layer 2: GNN+Fan24 soft rank — score the surviving pair */
+    float score = gnn_f24_tile_connects(nf_a, ev_a, nf_b, ev_b, 1.0f);
+    if (score < HYP_GNN_THRESHOLD)               return HYP_SEEK_CLOSED;
+
+    return HYP_SEEK_OPEN;
+}
+
+/* Quick GNN score from slot positions only (no grid data).
+ * Uses only Fan24 features — less accurate but O(1) with no grid needed.
+ * Use when grid data is unavailable (e.g., pre-filter before loading weights). */
+static inline float hyp_gnn_score_position(uint32_t slot_a, uint32_t slot_b) {
+    /* Identity: same slot = guaranteed same tile (Wang gate already rejects self) */
+    if (slot_a == slot_b) return 1.0f;
+
+    float f24_a[6], f24_b[6];
+    gnn_f24_features(slot_a, f24_a);
+    gnn_f24_features(slot_b, f24_b);
+
+    /* Build minimal node features: only Fan24 features repeated across 9 cells */
+    float nf_a[108] = {0}, nf_b[108] = {0};
+    for (int i = 0; i < 9; i++) {
+        for (int k = 0; k < 6; k++) {
+            nf_a[i*12 + 6 + k] = f24_a[k];
+            nf_b[i*12 + 6 + k] = f24_b[k];
+        }
+    }
+    float ev_a[4] = {0}, ev_b[4] = {0};
+    return gnn_f24_tile_connects(nf_a, ev_a, nf_b, ev_b, 1.0f);
 }
 
 #endif /* HYP_FUSION_H */

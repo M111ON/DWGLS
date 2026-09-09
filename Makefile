@@ -613,6 +613,16 @@ tess-assemble: tess-bake | $(BUILD)
 	$(CC) -O2 -Wall -Wno-unused-parameter -I core -o $(BUILD)/tess_assemble tools/tess_assemble.c -lm
 	./$(BUILD)/tess_assemble "$(TESS_GGUF)" tess_out tess_out/assembled.gguf
 
+# ── Tesspack Assemble: .tesspack → standalone GGUF (no source GGUF needed) ──
+# Usage: make tesspack-assemble TESSPACK=<path> OUTPUT=<path>
+TESSPACK ?= I:/model/qwen3-0.6b-q8_0.tesspack
+TESSPACK_OUT ?= $(BUILD)/assembled_from_pack.gguf
+tesspack-assemble: | $(BUILD)
+	@test -f "$(TESSPACK)" || { echo "  (skip: $(TESSPACK) not found)"; exit 0; }
+	$(CC) -O2 -Wall -I core -o $(BUILD)/tesspack_assemble tools/tesspack_assemble.c -lm
+	./$(BUILD)/tesspack_assemble "$(TESSPACK)" "$(TESSPACK_OUT)"
+	@echo "✅ tesspack_assemble → $(TESSPACK_OUT)"
+
 # ── Tess Stream: .tess capo streaming reader ──
 tess-stream: | $(BUILD)
 	$(CC) -O2 -Wall -I core -I core/infra -o $(BUILD)/tess_stream tools/tess_load_stream.c -lm

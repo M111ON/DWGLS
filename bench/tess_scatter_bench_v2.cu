@@ -262,7 +262,7 @@ __global__ void pull_gearlock_kernel(
         out_ts[i] = clock64();
     }
     /* GearLock: signal batch completion */
-    if (idx == 0) atomicAdd(d_gpu_counter, n_pulls);
+    if (idx == 0) atomicAdd((unsigned long long *)d_gpu_counter, (unsigned long long)n_pulls);
 }
 
 /* D) Compressed path — 8B descriptor (sig32 XOR-fold, GeoPacketSmall) */
@@ -557,7 +557,7 @@ int main(int argc, char **argv)
         cudaEventCreate(&start); cudaEventCreate(&stop);
 
         pull_small_kernel<<<blocks, TPB>>>(d_pinned, d_desc_s, d_lookup, n_pulls, 64, d_ts, d_errors);
-        cudaEventSynchronize();
+        cudaDeviceSynchronize();
 
         cudaEventRecord(start);
         pull_small_kernel<<<blocks, TPB>>>(d_pinned, d_desc_s, d_lookup, n_pulls, 64, d_ts, d_errors);
