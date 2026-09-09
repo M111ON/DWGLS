@@ -129,6 +129,7 @@ TIER1 := \
   test_geo_lblock \
   test_wang_tantrix \
   test_hyp_fusion \
+  test_hyp_fusion_e2e \
   test_ghost_direct \
   test_pair_table \
   test_hybrid_kv \
