@@ -1,10 +1,7 @@
 # AGENTS.md — DWGLS (4Dimension Geometry + KIS Timeline)
 
 ##Included dir:
-I:\DWGLS-native-fs
-I:\model
-F:\model
-I:\llama
+I:\DWGLS-native-fs, I:\model, F:\model, I:\llama
 
 ## Core Architecture
 
@@ -28,7 +25,7 @@ I:\llama
 
 **★ 6ico Compound (GEO_COMPOUND_144) — The Protagonist**
 - V=144 · E=576 · F=576 · C=144
-- "18tes" — 18-triangle tessellation field
+- "18tes" — 18tesseract with triangle tessellation field
 - This is the WORKING field for KIS-timeline
 
 **Mechanism:**
@@ -45,6 +42,7 @@ I:\llama
 ∞ ← contraction ← 0 ← expansion → ∞
                     ↑
               enter anywhere
+**choice:  enter higher benifits more due to compress from breathing file system**
 ```
 
 - **No start, no end, no zero entry point** — enter ANYWHERE
@@ -163,12 +161,11 @@ Action:
   `core/scale_bridge.h` + `tests/test_scale_bridge.c` 35/35 PASS, TIER1 122/122 → docs/PIPELINE-MAP.md §5 + docs/scale-bridge.svg
 - **Baseline**: TIER1 121/121 PASS, TIER2 4/4 PASS (re-verified 2026-09-05; real-pack verify 44,319 capos 0 fail → docs/PIPELINE-MAP.md)
 - **Multi-format tesspack**: 4/4 models lossless — Kokoro-82M ONNX (0% overhead), Bonsai-4B Q1_0 (36.5%), Qwen3-VL-2B Q4_K_M (24.5%), LFM2.5-8B Q4_K_M (5.4%). Q1_0 (type 41) added to gguf_reader.h tinfo[42] + all 4 tess tools.
-- **tess_scatter_bench v2**: DRamTile zero-copy + GearLock + sig32 XOR-fold CUDA kernel written, blocked on Colab GPU (503).
+- **tesspack_assemble**: general .tesspack→GGUF assembler — patches non-sequential header offsets, lossless roundtrip proven.
+- **Graft OOM fix**: VirtualAlloc(MEM_RESERVE) + MEM_COMMIT active regions only (commit 2462bf2).
+- **tess_scatter_bench v2**: DRamTile zero-copy + GearLock + sig32 XOR-fold CUDA kernel — Colab benchmark done.
 
 ### Pending
-- **General .tesspack → GGUF assembler**: current tess_assemble needs GGUF+tess_dir, not .tesspack format. Need general converter to prove end-to-end inference.
-- **GPU scatter bench**: tess_scatter_bench_v2.cu ready, Colab GPU 503. When available: `colab new -s dwgls-gpu5 --gpu T4 && colab exec -s dwgls-gpu5 --timeout 600 -f deploy_v2_scatter.py`
-- **Graft OOM fix**: Use `VirtualAlloc(MEM_RESERVE, 3.7GB)` + `MEM_COMMIT` only active regions.
 - **DLL no_alloc bug**: `llama_model_init_from_user` force-allocates full buffer. Struct layout mismatch suspected.
 
 ### Branches STOCKED (ห้ามเปิดก่อน mainline เสร็จ)
@@ -193,6 +190,8 @@ Action:
 | scale-follow | `make scale-follow` | sequential vs random page-touch (window memory proof, HDD-bounded) |
 | docs-svg | `make docs-svg` | re-render `docs/*.svg` from `docs/*.excalidraw` masters (never drift) |
 
+##etc##
+-some tool located at I:\tools
 ## Build
 
 ```bash
