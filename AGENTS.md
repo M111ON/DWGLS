@@ -164,6 +164,8 @@ Action:
 - **tesspack_assemble**: general .tesspack→GGUF assembler — patches non-sequential header offsets, lossless roundtrip proven.
 - **Graft OOM fix**: VirtualAlloc(MEM_RESERVE) + MEM_COMMIT active regions only (commit 2462bf2).
 - **tess_scatter_bench v2**: DRamTile zero-copy + GearLock + sig32 XOR-fold CUDA kernel — Colab benchmark done.
+  - DRamTile zero-copy: **47 GB/s** (T4, 2048B chunks, no H2D copy)
+  - Compressed 8B descriptors: **63.56 GB/s** (sig32 XOR-fold halves PCIe bandwidth)
 
 ### Pending
 - **DLL no_alloc bug**: `llama_model_init_from_user` force-allocates full buffer. Struct layout mismatch suspected.
