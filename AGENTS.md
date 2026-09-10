@@ -166,9 +166,12 @@ Action:
 - **tess_scatter_bench v2**: DRamTile zero-copy + GearLock + sig32 XOR-fold CUDA kernel — Colab benchmark done.
   - DRamTile zero-copy: **47 GB/s** (T4, 2048B chunks, no H2D copy)
   - Compressed 8B descriptors: **63.56 GB/s** (sig32 XOR-fold halves PCIe bandwidth)
+  - **Real model decode**: Qwen3-0.6B Q8_0 → 18.6M elements, 1771 ms, 358 MB/s decode (12.2 GB/s effective)
 
 ### Pending
-- **GPU scatter decode standalone kernel**: DONE — `bench/tess_scatter_decode.cu` compiled on Colab T4 (sm_75), verified lossless: raw data integrity + CPU/GPU bitwise identical. No llama.cpp dependency. mmap → cudaHostRegister → stride-37 scatter decode on GPU. Small model test (18MB, 145 capos): decode 3ms, sig32 verify 10ms. Needs larger model throughput test (700MB models too large for Colab upload). Deploy script: `colab-pack/deploy_scatter_decode.sh`.
+- **GPU scatter decode standalone kernel**: DONE — `bench/tess_scatter_decode.cu` compiled on Colab T4 (sm_75), verified lossless on **real model**: Qwen3-0.6B Q8_0 (610 MB GGUF, 991 capos, 18.6M elements, 633 MB decode output). No llama.cpp dependency. mmap → cudaHostRegister → stride-37 scatter decode on GPU. Decode: 1771 ms, sig32 integrity: 0/991 mismatch, CPU/GPU bitwise identical. Deploy script: `colab-pack/deploy_scatter_decode.sh`.
+- **sig32 XOR-fold integrity**: Added to `tess_gguf_pack.c` (hdr[8]). Bake on Gemma 4 (601 tensors, 3792 capos, 2921 MB) + Qwen3-0.6B (310 tensors, 991 capos, 672 MB) — sig32 verified on both.
+- **Gemma 4 bake proven**: GGUF v3 (601 tensors, 601 Q4_0 capos + 289 onion). gguf_reader.h handles v3 (u64 fields) natively. No reader changes needed. Ratio 100.7%.
 
 ### Branches STOCKED (ห้ามเปิดก่อน mainline เสร็จ)
 - docs/ARCHIMEDEAN-STOCK-2026-08-22.md — Hosoya/circle view · snub chiral · Zeckendorf · circle-config catalog
