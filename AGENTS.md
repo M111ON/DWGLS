@@ -168,7 +168,7 @@ Action:
   - Compressed 8B descriptors: **63.56 GB/s** (sig32 XOR-fold halves PCIe bandwidth)
 
 ### Pending
-- **GPU zero-copy integration**: CPU zero-copy proven (gguf_lazy_serve.c), GPU scatter bench proven (47 GB/s DRamTile, 63 GB/s compressed). Full llama.cpp+CUDA build on Colab blocked by build time (1-2h). Next: standalone CUDA scatter decode kernel (no llama.cpp dependency).
+- **GPU zero-copy integration**: CPU zero-copy proven (gguf_lazy_serve.c), GPU scatter bench proven (47 GB/s DRamTile, 63 GB/s compressed). llama.cpp+CUDA build proven on Kaggle T4 (136 t/s Qwen3-0.6B Q8_0). Next: standalone CUDA scatter decode kernel (no llama.cpp dependency).
 
 ### Branches STOCKED (ห้ามเปิดก่อน mainline เสร็จ)
 - docs/ARCHIMEDEAN-STOCK-2026-08-22.md — Hosoya/circle view · snub chiral · Zeckendorf · circle-config catalog
