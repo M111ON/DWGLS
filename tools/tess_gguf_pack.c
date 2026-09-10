@@ -110,6 +110,7 @@ int main(int argc, char **argv) {
 
     uint32_t n_onion = 0;
     uint64_t onion_data_start = 0, onion_data_end = 0;
+    uint64_t pack_sig64 = 0;  /* running XOR-fold integrity for all capo data */
 
     for (uint32_t i = 0; i < gguf.n_tensors; i++) {
         if (filter && !strstr(gguf.names[i], filter)) continue;
@@ -138,6 +139,13 @@ int main(int argc, char **argv) {
             /* Store raw bytes (f32 or f16, no conversion) for bitwise lossless */
             fwrite(tensor_data, 1, gguf.sizes[i], fout);
             onion_data_end = (uint64_t)_ftelli64(fout);
+
+            /* sig32: XOR-fold raw tensor data */
+            for (uint64_t b = 0; b + 7 < gguf.sizes[i]; b += 8) {
+                uint64_t v;
+                memcpy(&v, tensor_data + b, 8);
+                pack_sig64 ^= v;
+            }
 
             if (n_entries >= entries_cap) {
                 entries_cap = entries_cap ? entries_cap * 2 : 4096;
@@ -186,6 +194,14 @@ int main(int argc, char **argv) {
             e->capo_size = (uint32_t)enc_sz;
 
             fwrite(capo_buf, 1, (size_t)enc_sz, fout);
+
+            /* sig32: XOR-fold encoded capo bytes */
+            for (uint32_t b = 0; b + 7 < (uint32_t)enc_sz; b += 8) {
+                uint64_t v;
+                memcpy(&v, capo_buf + b, 8);
+                pack_sig64 ^= v;
+            }
+
             total_capos++;
         }
     }
@@ -275,6 +291,7 @@ int main(int argc, char **argv) {
     hdr[5] = (uint32_t)(onion_data_end - onion_data_start);
     hdr[6] = (uint32_t)residual_off;
     hdr[7] = n_residual;
+    hdr[8] = (uint32_t)((pack_sig64 >> 32) ^ (pack_sig64 & 0xFFFFFFFF));  /* sig32 integrity */
     fwrite(hdr, 1, 64, fout);
     fclose(fout);
 
@@ -282,8 +299,9 @@ int main(int argc, char **argv) {
     fout = fopen(out_path, "rb");
     if (fout) { _fseeki64(fout, 0, SEEK_END); fsize = (long)_ftelli64(fout); fclose(fout); }
 
-    printf("Packed %u tensors, %u capos, %u onion → %s (%.1f MB)\n",
-           filtered, total_capos, n_onion, out_path, fsize / (1024.0 * 1024.0));
+    printf("Packed %u tensors, %u capos, %u onion → %s (%.1f MB) sig32=0x%08X\n",
+           filtered, total_capos, n_onion, out_path, fsize / (1024.0 * 1024.0),
+           hdr[8]);
 
     free(capo_buf); free(entries);
     gguf_close(&gguf);

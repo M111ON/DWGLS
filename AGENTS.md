@@ -168,7 +168,7 @@ Action:
   - Compressed 8B descriptors: **63.56 GB/s** (sig32 XOR-fold halves PCIe bandwidth)
 
 ### Pending
-- **GPU zero-copy integration**: CPU zero-copy proven (gguf_lazy_serve.c), GPU scatter bench proven (47 GB/s DRamTile, 63 GB/s compressed). llama.cpp+CUDA build proven on Kaggle T4 (136 t/s Qwen3-0.6B Q8_0). Next: standalone CUDA scatter decode kernel (no llama.cpp dependency).
+- **GPU scatter decode standalone kernel**: DONE — `bench/tess_scatter_decode.cu` compiled on Colab T4 (sm_75), verified lossless: raw data integrity + CPU/GPU bitwise identical. No llama.cpp dependency. mmap → cudaHostRegister → stride-37 scatter decode on GPU. Small model test (18MB, 145 capos): decode 3ms, sig32 verify 10ms. Needs larger model throughput test (700MB models too large for Colab upload). Deploy script: `colab-pack/deploy_scatter_decode.sh`.
 
 ### Branches STOCKED (ห้ามเปิดก่อน mainline เสร็จ)
 - docs/ARCHIMEDEAN-STOCK-2026-08-22.md — Hosoya/circle view · snub chiral · Zeckendorf · circle-config catalog
