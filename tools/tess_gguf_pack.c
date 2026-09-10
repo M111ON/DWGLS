@@ -39,16 +39,21 @@ typedef struct {
 
 static int32_t encode_capo(const void *src, uint32_t n_elems, uint32_t cell_size,
                            uint32_t gguf_type, uint32_t capo_id, uint32_t capo_total,
+                           uint32_t scale_w, uint32_t axis_id, uint32_t axis_position,
                            void *dst, uint32_t dst_cap) {
-    uint32_t cube_bytes = TESS_TOTAL_SLOTS * cell_size;
-    uint32_t payload = TESS_HEADER_SIZE + TESS_FORMULA_SIZE + cube_bytes + TESS_CRC_SIZE;
-    if (dst_cap < payload) return -1;
-
     uint8_t *p = (uint8_t *)dst;
 
     TESS_Header hdr;
     tess_header_init(&hdr, gguf_type, cell_size);
     hdr.scale_factor = 65536u;
+    if (scale_w > 0) {
+        double s = exp2(-(double)scale_w / 12.0);
+        hdr.scale_factor = (uint32_t)(s * 65536.0 + 0.5);
+    }
+    uint32_t eff_slots = tess_effective_slots(&hdr);
+    uint32_t cube_bytes = eff_slots * cell_size;
+    uint32_t payload = TESS_HEADER_SIZE + TESS_FORMULA_SIZE + cube_bytes + TESS_CRC_SIZE;
+    if (dst_cap < payload) return -1;
     hdr.x_slots = TESS_X_SLOTS; hdr.y_slots = TESS_Y_SLOTS; hdr.z_slots = TESS_Z_SLOTS;
     hdr.tensor_count = n_elems;
     memcpy(p, &hdr, TESS_HEADER_SIZE); p += TESS_HEADER_SIZE;
@@ -58,14 +63,15 @@ static int32_t encode_capo(const void *src, uint32_t n_elems, uint32_t cell_size
     fml.mirror_axis_x = hdr.x_slots; fml.mirror_axis_y = hdr.y_slots; fml.mirror_axis_z = hdr.z_slots;
     fml.stride_seed = TESS_STRIDE_37;
     fml.capo_id = capo_id; fml.capo_total = (uint8_t)capo_total;
+    fml.axis_id = (uint8_t)axis_id;
+    fml.axis_position = axis_position;
     memcpy(p, &fml, TESS_FORMULA_SIZE); p += TESS_FORMULA_SIZE;
 
     uint8_t *cube = p;
     memset(cube, 0, cube_bytes);
     const uint8_t *src_b = (const uint8_t *)src;
     for (uint32_t i = 0; i < n_elems; i++) {
-        uint32_t slot = tess_stride_scatter(i);
-        if (slot >= TESS_TOTAL_SLOTS) slot = i % TESS_TOTAL_SLOTS;
+        uint32_t slot = tess_stride_scatter_in(i, eff_slots);
         uint32_t off = slot * cell_size;
         if (off + cell_size <= cube_bytes)
             memcpy(cube + off, src_b + (uint64_t)i * cell_size, cell_size);
@@ -82,12 +88,32 @@ int main(int argc, char **argv) {
     setvbuf(stderr, NULL, _IONBF, 0);
     setvbuf(stdout, NULL, _IONBF, 0);
     if (argc < 3) {
-        fprintf(stderr, "Usage: %s <input.gguf> <output.tesspack> [tensor_filter]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <input.gguf> <output.tesspack> [tensor_filter] [--scale W] [--axis N] [--position P]\n", argv[0]);
         return 1;
     }
     const char *gguf_path = argv[1];
     const char *out_path = argv[2];
-    const char *filter = (argc > 3) ? argv[3] : NULL;
+    const char *filter = NULL;
+    uint32_t scale_w = 0;
+    uint32_t axis_id = 0;       /* default: X axis */
+    uint32_t axis_position = 0;  /* default: position 0 */
+
+    for (int a = 3; a < argc; a++) {
+        if (strcmp(argv[a], "--scale") == 0 && a + 1 < argc) {
+            scale_w = (uint32_t)atoi(argv[a + 1]) % 144;
+            a++;
+        } else if (strcmp(argv[a], "--axis") == 0 && a + 1 < argc) {
+            axis_id = (uint32_t)atoi(argv[a + 1]) % 6;
+            a++;
+        } else if (strcmp(argv[a], "--position") == 0 && a + 1 < argc) {
+            axis_position = (uint32_t)atoi(argv[a + 1]);
+            a++;
+        } else if (!filter) {
+            filter = argv[a];
+        }
+    }
+    fprintf(stderr, "scale W=%u (s=%.4f), axis=%u, position=%u\n",
+            scale_w, exp2(-(double)scale_w / 12.0), axis_id, axis_position);
 
     GgufReader gguf;
     if (gguf_open(gguf_path, &gguf) != 0) {
@@ -178,7 +204,8 @@ int main(int argc, char **argv) {
             }
 
             int32_t enc_sz = encode_capo(tensor_data + (uint64_t)off * csz, chunk, csz,
-                         dtype, c, n_capos, capo_buf, capo_buf_cap);
+                         dtype, c, n_capos, scale_w, axis_id, axis_position,
+                         capo_buf, capo_buf_cap);
             if (enc_sz <= 0) { fprintf(stderr, "    FAIL capo %u\n", c); continue; }
 
             if (n_entries >= entries_cap) {
@@ -275,7 +302,22 @@ int main(int argc, char **argv) {
             fwrite(&residuals[i], 1, sizeof(ResidEntry), fout);
     }
 
-    /* ── write header (version 2 if residual present) ── */
+    /* ── write scale log (if W != 0) ── */
+    uint64_t scale_log_off = 0;
+    uint32_t n_scale_log = 0;
+    typedef struct { uint32_t capo_id; uint16_t old_w; uint16_t new_w; } ScaleLogEntry;
+    ScaleLogEntry slog;
+
+    if (scale_w != 0) {
+        scale_log_off = (uint64_t)_ftelli64(fout);
+        slog.capo_id = 0xFFFFFFFFu;  /* pack-wide event */
+        slog.old_w   = 0;
+        slog.new_w   = (uint16_t)scale_w;
+        fwrite(&slog, 1, sizeof(slog), fout);
+        n_scale_log = 1;
+    }
+
+    /* ── write header (version 3 if scale log, version 2 if residual) ── */
     fflush(fout);
     fclose(fout);
 
@@ -284,7 +326,7 @@ int main(int argc, char **argv) {
     _fseeki64(fout, 0, SEEK_SET);
     uint32_t hdr[16] = {0};
     hdr[0] = TPAK_MAGIC;
-    hdr[1] = n_residual > 0 ? 2 : 1;  /* version 2 if residual */
+    hdr[1] = n_scale_log > 0 ? 3 : (n_residual > 0 ? 2 : 1);  /* version 3 if scale log */
     hdr[2] = n_entries + 1;  /* +1 for __gguf_header__ entry */
     hdr[3] = (uint32_t)idx_off;
     hdr[4] = (uint32_t)(onion_data_start ? onion_data_start : 0);
@@ -292,6 +334,8 @@ int main(int argc, char **argv) {
     hdr[6] = (uint32_t)residual_off;
     hdr[7] = n_residual;
     hdr[8] = (uint32_t)((pack_sig64 >> 32) ^ (pack_sig64 & 0xFFFFFFFF));  /* sig32 integrity */
+    hdr[9] = (uint32_t)scale_log_off;
+    hdr[10] = n_scale_log;
     fwrite(hdr, 1, 64, fout);
     fclose(fout);
 

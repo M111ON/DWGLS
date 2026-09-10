@@ -4,6 +4,10 @@
  *
  * Wraps the existing geo_tess_container.h logic as a DWGLS codec.
  * This is the PRIMARY codec — the one .tess files use.
+ *
+ * NEW: Inter-box addressing via geo_box_axes.h
+ *      Intra-box scatter (stride-37) unchanged.
+ *      Inter-box: axis + position → flat slot address.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 #ifndef CODEC_TESS_H
@@ -15,6 +19,8 @@
 #include <math.h>
 #include "dwgls_codec.h"
 #include "geo_tess_container.h"
+#include "geo_box_axes.h"
+#include "scale_bridge.h"
 
 /* ═══════════════════════════════════════════════════════════════
    TESS CODEC INFO
@@ -29,6 +35,48 @@ static inline DWGLS_CodecInfo tess_info(void)
         .flags = CODEC_FLAG_MMAP_FRIENDLY | CODEC_FLAG_RANDOM_ACCESS
                | CODEC_FLAG_DERIVED_VIEWS,
     };
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   INTER-BOX ADDRESSING
+   ═══════════════════════════════════════════════════════════════ */
+
+/*
+ * Inter-box flat address: converts GBA_Address to flat slot in multi-box field.
+ * flat = (axis * 20736 + position) * 20736 + local
+ *
+ * This addresses a field of 6 axes × N positions × 20736 slots per box.
+ */
+static inline uint64_t tess_gba_to_flat(GBA_Address a, uint32_t box_size)
+{
+    return ((uint64_t)a.axis * box_size + a.position) * box_size + a.local;
+}
+
+/*
+ * Flat → GBA_Address (inverse)
+ * local = flat % box_size
+ * box   = flat / box_size
+ * position = box % max_position
+ * axis    = box / max_position
+ */
+static inline GBA_Address tess_flat_to_gba(uint64_t flat, uint32_t box_size, uint32_t max_position)
+{
+    GBA_Address a;
+    a.local = (uint32_t)(flat % box_size);
+    uint64_t box = flat / box_size;
+    a.position = (uint32_t)(box % max_position);
+    a.axis = (uint32_t)(box / max_position) % GBA_AXIS_COUNT;
+    return a;
+}
+
+/*
+ * Axis-aware stride-37 scatter: same intra-box scatter, different inter-box offset.
+ * The axis/position determine which box, local determines slot within box.
+ */
+static inline uint32_t tess_axis_scatter(GBA_Address a, uint32_t box_size)
+{
+    uint32_t local_slot = tess_stride_scatter_in(a.local, box_size);
+    return local_slot;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -76,13 +124,14 @@ static inline int32_t tess_encode(const void *src, uint32_t n_elems,
     p += TESS_FORMULA_SIZE;
 
     /* ── 3. Scatter raw data through stride-37 into CubeData ── */
+    uint32_t eff_slots = tess_effective_slots(&hdr);
+    uint32_t cube_bytes = eff_slots * cell_size;
     uint8_t *cube_data = p;
     memset(cube_data, 0, cube_bytes);
 
     const uint8_t *src_bytes = (const uint8_t *)src;
     for (uint32_t i = 0; i < n_elems; i++) {
-        uint32_t slot = tess_stride_scatter(i);
-        if (slot >= total_slots) slot = i % total_slots;
+        uint32_t slot = tess_stride_scatter_in(i, eff_slots);
         uint32_t dst_off = slot * cell_size;
         if (dst_off + cell_size <= cube_bytes) {
             memcpy(cube_data + dst_off, src_bytes + i * cell_size, cell_size);
@@ -125,8 +174,8 @@ static inline int32_t tess_decode(const void *src, uint32_t src_len,
     p += TESS_FORMULA_SIZE;
 
     uint32_t cell_size = hdr->cell_size;
-    uint32_t total_slots = hdr->total_slots;
-    uint32_t cube_bytes = total_slots * cell_size;
+    uint32_t eff_slots = tess_effective_slots(hdr);
+    uint32_t cube_bytes = eff_slots * cell_size;
 
     if (src_len < TESS_HEADER_SIZE + TESS_FORMULA_SIZE + cube_bytes + TESS_CRC_SIZE)
         return -2;
@@ -146,8 +195,7 @@ static inline int32_t tess_decode(const void *src, uint32_t src_len,
     uint8_t *dst_bytes = (uint8_t *)dst;
 
     for (uint32_t i = 0; i < n_out; i++) {
-        uint32_t slot = tess_stride_scatter(i);
-        if (slot >= total_slots) slot = i % total_slots;
+        uint32_t slot = tess_stride_scatter_in(i, eff_slots);
         uint32_t src_off = slot * cell_size;
         if (src_off + cell_size <= cube_bytes) {
             memcpy(dst_bytes + i * cell_size, cube_data + src_off, cell_size);
@@ -205,6 +253,16 @@ static inline uint32_t codec_tess_resolve(uint32_t slot, const DWGLS_CodecCtx *c
 {
     (void)ctx;
     return tess_stride_scatter(slot);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TESS INTER-BOX RESOLVE: GBA_Address → slot (axis-aware)
+   ═══════════════════════════════════════════════════════════════ */
+
+static inline uint32_t codec_tess_resolve_axis(GBA_Address a, const DWGLS_CodecCtx *ctx)
+{
+    (void)ctx;
+    return tess_axis_scatter(a, TESS_TOTAL_SLOTS);
 }
 
 /* ═══════════════════════════════════════════════════════════════

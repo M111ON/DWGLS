@@ -148,7 +148,9 @@ typedef struct {
     uint8_t  capo_total;        /* total capos for this tensor   */
     uint8_t  voronoi_cell;      /* Voronoi cell id (0..23)        */
     uint8_t  voronoi_flags;     /* flags: bit0=masked, bit1=frozen */
-    uint8_t  _pad[21];          /* reserved for future LUT       */
+    uint8_t  axis_id;           /* box axis (0-5, GBA_AXIS_*)     */
+    uint32_t axis_position;     /* position on axis (identity)    */
+    uint8_t  _pad[17];          /* reserved for future LUT       */
 } TESS_Formula;                 /* total: 64 bytes               */
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -246,6 +248,29 @@ static inline uint32_t tess_resolve_octant(uint32_t slot, uint8_t octant,
 
 static inline uint32_t tess_stride_scatter(uint32_t weight_idx) {
     return (weight_idx * TESS_STRIDE_37) % TESS_TOTAL_SLOTS;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCALE-DRIVEN SCATTER (Phase 3: KIS-timeline integration)
+   ═══════════════════════════════════════════════════════════════════════════
+   At scale W the effective field shrinks: effective_slots = 20736 * 2^(-W/12).
+   Scatter uses the same stride-37 but modulo effective_slots — different W
+   gives a different scatter pattern (KIS principle: 6 values same position = 6
+   data points from different topology).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Compute effective field size from TESS_Header.scale_factor (uint16.16 fixed-point).
+ * Returns TESS_TOTAL_SLOTS (20736) for W=0 (s=1.0). */
+static inline uint32_t tess_effective_slots(const TESS_Header *h) {
+    if (h->scale_factor >= 65536u) return TESS_TOTAL_SLOTS;
+    return (uint32_t)(((uint64_t)TESS_TOTAL_SLOTS * h->scale_factor + 32768u) >> 16);
+}
+
+/* Scatter into arbitrary effective field size.
+ * stride 37 is prime → coprime with any effective_slots not divisible by 37.
+ * 20736 = 2^8 * 3^4, all powers-of-2 scaled values remain coprime. */
+static inline uint32_t tess_stride_scatter_in(uint32_t weight_idx, uint32_t effective_slots) {
+    return (weight_idx * TESS_STRIDE_37) % effective_slots;
 }
 
 /*
@@ -411,6 +436,35 @@ static inline void tess_formula_init(TESS_Formula *f) {
     f->stride_seed   = TESS_STRIDE_37;
     f->capo_id       = 0;
     f->capo_total    = 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCALE STAMPING (KIS-timeline integration)
+   scale_factor = s × 65536 (uint32_t fixed-point 16.16)
+   W=0 → s=1.0 → scale_factor=65536; W=12 → s=0.5 → scale_factor=32768
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Extract the KIS ring tooth W from a tess header's scale_factor. */
+static inline uint32_t tess_scale_w(const TESS_Header *h) {
+    double s = (double)h->scale_factor / 65536.0;
+    if (s <= 0.0 || s > 1.0) return 0;
+    /* W = round(-12 * log2(s)), wrapped to [0,144) */
+    double teeth = -12.0 * log2(s);
+    long long w = (teeth >= 0.0) ? (long long)(teeth + 0.5) : (long long)(teeth - 0.5);
+    w %= 144;
+    if (w < 0) w += 144;
+    return (uint32_t)w;
+}
+
+/* Set scale_factor from a KIS ring tooth W. */
+static inline void tess_set_scale_w(TESS_Header *h, uint32_t w) {
+    double s = exp2(-(double)(w % 144) / 12.0);
+    h->scale_factor = (uint32_t)(s * 65536.0 + 0.5);
+}
+
+/* Is this capo at the home scale (W=0, s=1.0)? */
+static inline int tess_is_home_scale(const TESS_Header *h) {
+    return h->scale_factor == 65536u || h->scale_factor == 65535u;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -797,6 +851,11 @@ typedef struct {
     /* residual section (version 2+) */
     const uint8_t *residual_data;
     uint32_t       residual_count;
+
+    /* scale log section (version 3+) */
+    const uint8_t *scale_log_data;   /* pointer to first ScaleLogEntry in mmap */
+    uint32_t       scale_log_count;  /* number of entries */
+    uint32_t       pack_version;     /* header version (1, 2, or 3) */
 } TESS_PackIndex;
 
 /* Free resources held by a PackIndex. */
@@ -901,6 +960,17 @@ static inline int tess_pack_open(TESS_PackIndex *pi, const char *pack_path) {
         }
     }
 
+    /* scale log section (version 3+) — hdr[9]=offset, hdr[10]=count */
+    pi->pack_version = hdr[1];
+    {
+        uint32_t sl_off = hdr[9];
+        uint32_t sl_cnt = hdr[10];
+        if (sl_off > 0 && sl_cnt > 0 && sl_off + (uint64_t)sl_cnt * 8 <= pi->file_sz) {
+            pi->scale_log_data  = pi->base + sl_off;
+            pi->scale_log_count = sl_cnt;
+        }
+    }
+
     return 0;
 }
 
@@ -967,7 +1037,37 @@ static inline int tess_pack_open_mmap(TESS_PackIndex *pi, const char *pack_path)
         }
     }
 
+    /* scale log section (version 3+) */
+    pi->pack_version = hdr[1];
+    {
+        uint32_t sl_off = hdr[9];
+        uint32_t sl_cnt = hdr[10];
+        if (sl_off > 0 && sl_cnt > 0 && sl_off + (uint64_t)sl_cnt * 8 <= pi->file_sz) {
+            pi->scale_log_data  = pi->base + sl_off;
+            pi->scale_log_count = sl_cnt;
+        }
+    }
+
     return 0;
+}
+
+/* ═══════ Scale log query ═══════════════════════════════════════════════════
+ * Replay the ΔW scale-change log to find the pack's current scale.
+ * Returns the final W (ring position 0..143) after replaying all events.
+ * If no log exists, returns 0 (home scale, s=1.0).
+ * ═══════════════════════════════════════════════════════════════════════════ */
+static inline uint32_t tess_pack_get_scale_w(const TESS_PackIndex *pi) {
+    uint32_t w = 0;
+    const uint8_t *p = pi->scale_log_data;
+    for (uint32_t i = 0; i < pi->scale_log_count && p; i++) {
+        uint32_t capo_id = *(const uint32_t *)p;
+        uint16_t old_w   = *(const uint16_t *)(p + 4);
+        uint16_t new_w   = *(const uint16_t *)(p + 6);
+        (void)capo_id; (void)old_w;  /* for now: just take the last new_w */
+        w = new_w;
+        p += 8;
+    }
+    return w;
 }
 
 /* Walk mmap'd index to find capo by name + capo_id.

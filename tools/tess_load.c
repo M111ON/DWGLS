@@ -4,11 +4,14 @@
  * linear weight ordering. Verifies CRC-64 integrity.
  * Supports multi-cube capo files (large tensors split across capos).
  *
- * Usage: tess_load <file.tess> [output.bin]
- *   For multi-cube: pass the capo-0 file; remaining capos auto-discovered
- *   No output file: print header info only
+ * Usage:
+ *   tess_load <file.tess> [output.bin]       — decode to file
+ *   tess_load <file.tess> --dram              — decode into DRamTile slots
+ *   tess_load <file.tess>                     — print header info only
  *
- * BUILD: gcc -O2 -Wall -Wno-unused-parameter -Icore -o tess_load tess_load.c -lm
+ * For multi-cube: pass the capo-0 file; remaining capos auto-discovered
+ *
+ * BUILD: gcc -O2 -Wall -Wno-unused-parameter -Icore -Icore/infra -o tess_load tess_load.c -lm
  */
 
 #include <stdio.h>
@@ -16,6 +19,8 @@
 #include <string.h>
 
 #include "geo_tess_container.h"
+#include "dramtile_store.h"
+#include "tess_scatter_gpu.h"
 
 static const char *type_name(uint32_t dtype) {
     switch (dtype) {
@@ -76,15 +81,135 @@ static void capo_path(char *dst, size_t cap, const char *base_path, uint32_t c) 
     }
 }
 
+/* ── DRamTile integration: decode .tess into DRamTile slot region ──
+ * Stores each decoded capo as a named tensor in DRamTile.
+ * Returns DRamTile address for the decoded data (for gguf_box routing).
+ * Uses tess_scatter_gpu.h for dispatch (GPU when available).
+ */
+static uint32_t tess_load_to_dram(const char *tess_path, DRamTileStore *store) {
+    FILE *f = fopen(tess_path, "rb");
+    if (!f) { fprintf(stderr, "ERROR: cannot open %s\n", tess_path); return 0; }
+
+    fseek(f, 0, SEEK_END);
+    long file_sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (file_sz < (long)(TESS_HEADER_SIZE + TESS_FORMULA_SIZE + TESS_CRC_SIZE)) {
+        fprintf(stderr, "ERROR: file too small\n"); fclose(f); return 0;
+    }
+
+    uint8_t *buf = (uint8_t *)malloc((size_t)file_sz);
+    if (!buf) { fclose(f); return 0; }
+    if (fread(buf, 1, (size_t)file_sz, f) != (size_t)file_sz) {
+        free(buf); fclose(f); return 0;
+    }
+    fclose(f);
+
+    const TESS_Header *hdr = (const TESS_Header *)buf;
+    const TESS_Formula *fml = (const TESS_Formula *)(buf + TESS_HEADER_SIZE);
+    if (tess_header_validate(hdr) != 0) {
+        fprintf(stderr, "ERROR: bad header\n"); free(buf); return 0;
+    }
+
+    uint32_t cell_sz = hdr->cell_size;
+    uint32_t cube_bytes = hdr->total_slots * cell_sz;
+    const uint8_t *cube_data = buf + TESS_HEADER_SIZE + TESS_FORMULA_SIZE;
+    uint32_t capo_total = fml->capo_total ? fml->capo_total : 1;
+    uint32_t n_elems_per_capo = hdr->tensor_count ? hdr->tensor_count : hdr->total_slots;
+
+    /* Total decoded size */
+    uint64_t total_elems = (uint64_t)n_elems_per_capo * capo_total;
+    uint64_t total_bytes = total_elems * cell_sz;
+
+    /* Allocate decode buffer */
+    uint8_t *out = (uint8_t *)malloc((size_t)total_bytes);
+    if (!out) { free(buf); return 0; }
+    memset(out, 0, (size_t)total_bytes);
+
+    /* Decode all capos (same logic as file output path) */
+    uint32_t dec_sz = tess_load_decode(cube_data, cube_bytes, cell_sz, n_elems_per_capo,
+                                       out, (uint32_t)(n_elems_per_capo * cell_sz));
+    if (dec_sz <= 0) {
+        fprintf(stderr, "ERROR: capo 0 decode failed\n"); free(out); free(buf); return 0;
+    }
+    uint64_t total_decoded = n_elems_per_capo;
+
+    for (uint32_t c = 1; c < capo_total; c++) {
+        char capo_file[1024];
+        capo_path(capo_file, sizeof(capo_file), tess_path, c);
+        FILE *cf = fopen(capo_file, "rb");
+        if (!cf) continue;
+
+        fseek(cf, 0, SEEK_END);
+        long capo_sz = ftell(cf);
+        fseek(cf, 0, SEEK_SET);
+
+        uint8_t *capo_buf = (uint8_t *)malloc((size_t)capo_sz);
+        if (!capo_buf) { fclose(cf); continue; }
+        if (fread(capo_buf, 1, (size_t)capo_sz, cf) != (size_t)capo_sz) {
+            free(capo_buf); fclose(cf); continue;
+        }
+        fclose(cf);
+
+        const TESS_Header *chdr = (const TESS_Header *)capo_buf;
+        const uint8_t *ccube = capo_buf + TESS_HEADER_SIZE + TESS_FORMULA_SIZE;
+        uint32_t ccube_bytes = chdr->total_slots * chdr->cell_size;
+
+        uint64_t cc_stored, cc_computed;
+        memcpy(&cc_stored, ccube + ccube_bytes, TESS_CRC_SIZE);
+        cc_computed = tess_crc64(ccube, ccube_bytes);
+        if (cc_computed != cc_stored) { free(capo_buf); continue; }
+
+        uint32_t ce = chdr->tensor_count ? chdr->tensor_count : chdr->total_slots;
+        uint8_t *dst = out + total_decoded * cell_sz;
+        dec_sz = tess_load_decode(ccube, ccube_bytes, chdr->cell_size, ce,
+                                   dst, (uint32_t)(ce * chdr->cell_size));
+        free(capo_buf);
+        if (dec_sz > 0) total_decoded += ce;
+    }
+
+    /* Store in DRamTile: tensor name derived from file path */
+    const char *basename = tess_path;
+    for (const char *p = tess_path; *p; p++) {
+        if (*p == '/' || *p == '\\') basename = p + 1;
+    }
+    /* strip .tess extension */
+    char tensor_name[256];
+    strncpy(tensor_name, basename, 255);
+    tensor_name[255] = '\0';
+    size_t nlen = strlen(tensor_name);
+    if (nlen > 5 && strcmp(tensor_name + nlen - 5, ".tess") == 0)
+        tensor_name[nlen - 5] = '\0';
+
+    uint8_t *dram_ptr = dt_put(store, tensor_name, out, (size_t)total_decoded * cell_sz);
+    uint32_t dram_addr = dram_ptr ? dt_name_to_addr(tensor_name) : 0;
+
+    printf("  DRamTile: tensor='%s' addr=%u decoded=%lu bytes ptr=%p\n",
+           tensor_name, dram_addr, (unsigned long)(total_decoded * cell_sz),
+           (void *)dram_ptr);
+
+    free(out);
+    free(buf);
+    return dram_addr;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: tess_load <file.tess> [output.bin]\n");
+        fprintf(stderr, "       tess_load <file.tess> --dram\n");
         fprintf(stderr, "  For multi-cube tensors, pass the capo-0 file.\n");
+        fprintf(stderr, "  --dram: decode into DRamTile slot region (zero-copy)\n");
         return 1;
     }
 
     const char *tess_path = argv[1];
-    const char *out_path = (argc > 2) ? argv[2] : NULL;
+    const char *out_path = NULL;
+    int use_dram = 0;
+
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--dram") == 0) use_dram = 1;
+        else out_path = argv[i];
+    }
 
     /* Load capo-0 file */
     FILE *f = fopen(tess_path, "rb");
@@ -135,6 +260,24 @@ int main(int argc, char **argv) {
 
     if (computed_crc != stored_crc) {
         fprintf(stderr, "\nERROR: CRC-64 mismatch on capo 0!\n"); free(buf); return 1;
+    }
+
+    /* ── DRamTile path: decode into DRamTile slot region ── */
+    if (use_dram) {
+        DRamTileStore store;
+        uint64_t dram_total = (uint64_t)n_elems_per_capo * capo_total;
+        dt_store_init(&store, (size_t)dram_total * cell_sz + 4096);
+
+        printf("\n=== DRamTile Decode ===\n");
+        uint32_t addr = tess_load_to_dram(tess_path, &store);
+        if (addr) {
+            printf("  dram_addr = %u (slot = %u)\n", addr, addr % DT_HASH_SLOTS);
+            printf("  GPU available: %s\n", tess_scatter_has_cuda() ? "YES" : "NO");
+        }
+
+        dt_store_destroy(&store);
+        free(buf);
+        return addr ? 0 : 1;
     }
 
     if (!out_path) {

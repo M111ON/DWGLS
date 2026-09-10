@@ -100,7 +100,16 @@ int main(int argc, char **argv) {
     rc = tess_pack_open(&pi, pack_path);
     CHECK("T2: .tesspack opens (mmap)", rc == 0);
     if (rc != 0) { gguf_close(&gguf); return 1; }
-    printf("  Capos: %u, file: %.1f MB\n", pi.n_entries, (double)pi.file_sz / 1e6);
+    printf("  Capos: %u, file: %.1f MB, version: %u\n", pi.n_entries, (double)pi.file_sz / 1e6, pi.pack_version);
+
+    /* ── scale log: report if present ── */
+    if (pi.scale_log_count > 0) {
+        uint32_t cur_w = tess_pack_get_scale_w(&pi);
+        printf("  Scale log: %u events, current W=%u (s=%.4f)\n",
+               pi.scale_log_count, cur_w, exp2(-(double)cur_w / 12.0));
+    } else {
+        printf("  Scale log: empty (W=0, home scale)\n");
+    }
 
     /* ── T3: match MoE tensors ── */
     uint32_t n_moe = 0, n_match = 0;

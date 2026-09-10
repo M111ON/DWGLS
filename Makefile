@@ -591,12 +591,22 @@ tess-bake: | $(BUILD)
 	./$(BUILD)/tess_bake "$(TESS_GGUF)" tess_out
 
 # ── Tess Load: .tess → raw weights (verify + decode) ──
+#    --dram flag: decode into DRamTile slot region (zero-copy)
 tess-load: | $(BUILD)
 	@ls tess_out/*.tess >/dev/null 2>&1 || { echo "  (skip: no .tess files in tess_out/ — run tess-bake first)"; exit 0; }
-	$(CC) -O2 -Wall -I core -o $(BUILD)/tess_load tools/tess_load.c -lm
+	$(CC) -O2 -Wall -I core -I core/infra -o $(BUILD)/tess_load tools/tess_load.c -lm
 	@for f in tess_out/*.tess; do \
 	    echo "── $$f ──"; \
 	    ./$(BUILD)/tess_load "$$f" "/dev/null" 2>&1 || true; \
+	done
+
+# ── Tess Load DRam: decode .tess → DRamTile slot region ──
+tess-load-dram: | $(BUILD)
+	@ls tess_out/*.tess >/dev/null 2>&1 || { echo "  (skip: no .tess files — run tess-bake first)"; exit 0; }
+	$(CC) -O2 -Wall -I core -I core/infra -o $(BUILD)/tess_load tools/tess_load.c -lm
+	@for f in tess_out/*.tess; do \
+	    echo "── $$f (DRAM) ──"; \
+	    ./$(BUILD)/tess_load "$$f" --dram 2>&1 || true; \
 	done
 
 # ── Tess Roundtrip: bake → load → compare bytes ──

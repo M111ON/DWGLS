@@ -61,11 +61,10 @@ static const char *basename_of(const char *path) {
 static int32_t tess_bake_encode(const void *src, uint32_t n_elems,
                                  uint32_t cell_size, uint32_t gguf_type,
                                  uint32_t capo_id, uint32_t capo_total,
+                                 uint32_t scale_w, uint32_t axis_id, uint32_t axis_position,
                                  void *dst, uint32_t dst_cap)
 {
-    uint32_t cube_bytes = TESS_TOTAL_SLOTS * cell_size;
-    uint32_t payload_size = TESS_HEADER_SIZE + TESS_FORMULA_SIZE + cube_bytes + TESS_CRC_SIZE;
-    if (dst_cap < payload_size) return -1;
+    if (dst_cap < 256) return -1;
 
     uint8_t *p = (uint8_t *)dst;
 
@@ -73,6 +72,10 @@ static int32_t tess_bake_encode(const void *src, uint32_t n_elems,
     TESS_Header hdr;
     tess_header_init(&hdr, gguf_type, cell_size);
     hdr.scale_factor = 65536u;
+    if (scale_w > 0) {
+        double s = exp2(-(double)scale_w / 12.0);
+        hdr.scale_factor = (uint32_t)(s * 65536.0 + 0.5);
+    }
     hdr.x_slots = TESS_X_SLOTS;
     hdr.y_slots = TESS_Y_SLOTS;
     hdr.z_slots = TESS_Z_SLOTS;
@@ -89,16 +92,22 @@ static int32_t tess_bake_encode(const void *src, uint32_t n_elems,
     fml.stride_seed = TESS_STRIDE_37;
     fml.capo_id    = capo_id;
     fml.capo_total = (uint8_t)capo_total;
+    fml.axis_id = (uint8_t)axis_id;
+    fml.axis_position = axis_position;
     memcpy(p, &fml, TESS_FORMULA_SIZE);
     p += TESS_FORMULA_SIZE;
 
-    /* Scatter through stride-37 */
+    /* Scatter through stride-37 (scale-aware) */
+    uint32_t eff_slots = tess_effective_slots(&hdr);
+    uint32_t cube_bytes = eff_slots * cell_size;
+    uint32_t payload_size = TESS_HEADER_SIZE + TESS_FORMULA_SIZE + cube_bytes + TESS_CRC_SIZE;
+    if (dst_cap < payload_size) return -1;
+
     uint8_t *cube_data = p;
     memset(cube_data, 0, cube_bytes);
     const uint8_t *src_bytes = (const uint8_t *)src;
     for (uint32_t i = 0; i < n_elems; i++) {
-        uint32_t slot = tess_stride_scatter(i);
-        if (slot >= TESS_TOTAL_SLOTS) slot = i % TESS_TOTAL_SLOTS;
+        uint32_t slot = tess_stride_scatter_in(i, eff_slots);
         uint32_t off = slot * cell_size;
         if (off + cell_size <= cube_bytes)
             memcpy(cube_data + off, src_bytes + (uint64_t)i * cell_size, cell_size);
@@ -119,12 +128,32 @@ int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     fprintf(stderr, "tess_bake START argc=%d\n", argc);
     if (argc < 2) {
-        fprintf(stderr, "Usage: tess_bake <model.gguf> [output_dir]\n");
+        fprintf(stderr, "Usage: tess_bake <model.gguf> [output_dir] [--scale W] [--axis N] [--position P]\n");
         return 1;
     }
 
     const char *gguf_path = argv[1];
     const char *out_dir = (argc > 2) ? argv[2] : ".";
+    uint32_t scale_w = 0;  /* default: home (W=0, s=1.0) */
+    uint32_t axis_id = 0;  /* default: X axis */
+    uint32_t axis_position = 0;  /* default: position 0 */
+
+    /* Parse optional --scale W, --axis N, --position P */
+    for (int a = 3; a < argc; a++) {
+        if (strcmp(argv[a], "--scale") == 0 && a + 1 < argc) {
+            scale_w = (uint32_t)atoi(argv[a + 1]) % 144;
+            a++;
+        } else if (strcmp(argv[a], "--axis") == 0 && a + 1 < argc) {
+            axis_id = (uint32_t)atoi(argv[a + 1]) % 6;
+            a++;
+        } else if (strcmp(argv[a], "--position") == 0 && a + 1 < argc) {
+            axis_position = (uint32_t)atoi(argv[a + 1]);
+            a++;
+        }
+    }
+
+    fprintf(stderr, "tess_bake: scale W=%u (s=%.4f), axis=%u, position=%u\n", scale_w,
+            exp2(-(double)scale_w / 12.0), axis_id, axis_position);
 
     GgufReader reader;
     fprintf(stderr, "opening %s\n", gguf_path);
@@ -192,7 +221,8 @@ int main(int argc, char **argv) {
 
             int32_t enc_sz = tess_bake_encode(tensor_mmap + (uint64_t)offset * csize,
                                                chunk, csize, dtype,
-                                               c, n_capos,
+                                               c, n_capos, scale_w,
+                                               axis_id, axis_position,
                                                tess_buf, (uint32_t)((uint64_t)MAX_TENSOR + 256*1024));
             fprintf(stderr, "    capo %u/%u: %u blocks, enc_sz=%d\n", c, n_capos, chunk, enc_sz);
             if (enc_sz <= 0) {

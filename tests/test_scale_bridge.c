@@ -18,6 +18,7 @@
 #include <math.h>
 
 #include "scale_bridge.h"
+#include "geo_box_axes.h"
 #include "breathing_fs.h"
 #include "bfs_seek_anchor.h"
 #include "bfs_persist.h"
@@ -229,6 +230,84 @@ static void test_disk_roundtrip(void)
     remove(path);
 }
 
+/* ── 13. axis-aware scale: 6 axes each have W = position mod 144 ───────── */
+static void test_axis_aware_w(void)
+{
+    int all = 1;
+    for (uint32_t axis = 0; axis < GBA_AXIS_COUNT; axis++) {
+        for (uint64_t pos = 0; pos < 300; pos++) {
+            GBA_Address a = gba_make(axis, pos, 0);
+            uint32_t w = sbr_gba_to_w(a);
+            if (w != pos % SBR_RING) { all = 0; break; }
+        }
+    }
+    check(all, "axis-aware: W = position mod 144 for all 6 axes");
+
+    /* Scale is IDENTICAL across axes (exact bijection) */
+    GBA_Address sq = gba_make(GBA_AXIS_X, 12, 0);
+    GBA_Address tr = gba_make(GBA_AXIS_I, 12, 0);
+    double s_sq = sbr_gba_to_scale(sq);
+    double s_tr = sbr_gba_to_scale(tr);
+    check(fabs(s_sq - sbr_w_to_scale(12)) < 1e-15, "square axis X at pos=12 uses standard base (s=0.5)");
+    check(fabs(s_tr - sbr_w_to_scale(12)) < 1e-15, "triangle axis I at pos=12 uses SAME base (exact bijection)");
+}
+
+/* ── 14. axis-aware hyperbolic boundary differs ────────────────────────── */
+static void test_axis_hyperbolic(void)
+{
+    /* Square axis: hyper starts at W=13 */
+    GBA_Address sq_12 = gba_make(GBA_AXIS_X, 12, 0);
+    GBA_Address sq_13 = gba_make(GBA_AXIS_X, 13, 0);
+    check(!sbr_gba_is_hyperbolic(sq_12), "square axis W=12 NOT hyperbolic");
+    check(sbr_gba_is_hyperbolic(sq_13), "square axis W=13 IS hyperbolic");
+
+    /* Triangle axis: hyper starts at W=19 (12+6) */
+    GBA_Address tr_18 = gba_make(GBA_AXIS_I, 18, 0);
+    GBA_Address tr_19 = gba_make(GBA_AXIS_I, 19, 0);
+    check(!sbr_gba_is_hyperbolic(tr_18), "triangle axis W=18 NOT hyperbolic");
+    check(sbr_gba_is_hyperbolic(tr_19), "triangle axis W=19 IS hyperbolic");
+}
+
+/* ── 15. GBA step teeth/ratio ──────────────────────────────────────────── */
+static void test_gba_step(void)
+{
+    GBA_Address a0 = gba_make(GBA_AXIS_X, 0, 0);
+    GBA_Address a1 = gba_make(GBA_AXIS_X, 12, 0);
+    GBA_Address a2 = gba_make(GBA_AXIS_Y, 0, 0);  /* different axis */
+
+    check(sbr_gba_step_teeth(a0, a1) == 12, "gba step same axis X 0→12 = 12 teeth");
+    check(sbr_gba_step_ratio(a0, a1) == 0.5, "gba ratio same axis X 0→12 = 0.5");
+    check(sbr_gba_step_teeth(a0, a2) == SBR_RING, "gba step different axes = max distance");
+    check(sbr_gba_step_ratio(a0, a2) == 0.0, "gba ratio different axes = 0");
+}
+
+/* ── 16. scale_factor axis-aware roundtrip ─────────────────────────────── */
+static void test_axis_scale_factor(void)
+{
+    int all = 1;
+    for (uint32_t axis = 0; axis < GBA_AXIS_COUNT; axis++) {
+        for (uint64_t pos = 0; pos < 200; pos += 13) {
+            GBA_Address a = gba_make(axis, pos, 0);
+            uint32_t sf = sbr_gba_to_scale_factor(a);
+            /* scale_factor encodes the actual scale, not just W */
+            double s = (double)sf / 65536.0;
+            /* scale_factor has limited precision (1/65536) — at very deep scales
+             * it rounds to 0. Only check positions where scale > 1/65536 */
+            if (sbr_gba_to_scale(a) > 1.0/65536.0) {
+                if (s <= 0.0 || s > 1.0) { all = 0; break; }
+            }
+        }
+    }
+    check(all, "axis scale_factor roundtrip: valid for all axes/positions (where precision allows)");
+}
+
+/* ── 17. internal scale_bridge verify ───────────────────────────────────── */
+static void test_internal_verify(void)
+{
+    check(sbr_seeker_verify() == 0, "internal sbr_seeker_verify() passes");
+    check(geo_box_axes_verify() == 1, "internal geo_box_axes_verify() passes");
+}
+
 int main(void)
 {
     printf("Scale bridge — BFS seeker ⇄ tess gear ring (tests/test_scale_bridge.c)\n");
@@ -246,6 +325,11 @@ int main(void)
     test_bfs_integration();
     test_gear_wire();
     test_disk_roundtrip();
+    test_axis_aware_w();
+    test_axis_hyperbolic();
+    test_gba_step();
+    test_axis_scale_factor();
+    test_internal_verify();
 
     printf("───────────────────────────────────────\n");
     printf("PASS: %d  FAIL: %d\n", g_pass, g_fail);
