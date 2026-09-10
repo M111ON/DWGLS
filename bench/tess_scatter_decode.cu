@@ -103,9 +103,10 @@ static inline __host__ __device__ uint32_t sig32_xor_fold(uint64_t sig64) {
 __global__ void scatter_decode_kernel(
     const uint8_t *__restrict__ file_base,  /* mmap base (device ptr via cudaHostRegister) */
     const uint32_t *__restrict__ capo_offsets,  /* byte offsets of each capo's CubeData */
-    const uint32_t *__restrict__ capo_starts,   /* output start index for each capo */
+    const uint32_t *__restrict__ capo_starts,   /* output start element index for each capo */
     const uint32_t *__restrict__ capo_n_elems,  /* elements per capo */
     const uint32_t *__restrict__ capo_cell_sz,  /* cell_size per capo */
+    const uint64_t *__restrict__ capo_out_bytes, /* output byte offset per capo */
     uint32_t n_capos,
     uint8_t *__restrict__ output)
 {
@@ -133,7 +134,7 @@ __global__ void scatter_decode_kernel(
     /* scatter decode: weight_idx → slot → read */
     uint32_t slot = (local_idx * TESS_STRIDE_37) % TESS_TOTAL_SLOTS;
     const uint8_t *src = file_base + capo_offsets[c] + (uint64_t)slot * cell_sz;
-    uint8_t *dst = output + (uint64_t)global_idx * cell_sz;
+    uint8_t *dst = output + capo_out_bytes[c] + (uint64_t)local_idx * cell_sz;
     for (uint32_t b = 0; b < cell_sz; b++) {
         dst[b] = src[b];
     }
@@ -396,15 +397,19 @@ int main(int argc, char **argv)
     uint32_t *h_n_elems = (uint32_t *)malloc(n_valid * sizeof(uint32_t));
     uint32_t *h_cell_sz = (uint32_t *)malloc(n_valid * sizeof(uint32_t));
     uint32_t *h_capo_starts = (uint32_t *)malloc(n_valid * sizeof(uint32_t)); /* capo start offsets (raw) */
+    uint64_t *h_out_bytes = (uint64_t *)malloc(n_valid * sizeof(uint64_t));  /* output byte offset per capo */
 
     uint32_t accum = 0;
+    uint64_t byte_accum = 0;
     for (uint32_t i = 0; i < n_valid; i++) {
         h_offsets[i] = (uint32_t)capos[i].cube_offset;
         h_starts[i] = accum;
         h_n_elems[i] = capos[i].n_elems;
         h_cell_sz[i] = capos[i].cell_size;
         h_capo_starts[i] = (uint32_t)capos[i].capo_start;
+        h_out_bytes[i] = byte_accum;
         accum += capos[i].n_elems;
+        byte_accum += (uint64_t)capos[i].n_elems * capos[i].cell_size;
     }
     h_starts[n_valid] = accum; /* sentinel */
 
@@ -420,12 +425,14 @@ int main(int argc, char **argv)
 
     /* ── GPU allocations ── */
     uint32_t *d_offsets, *d_starts, *d_n_elems, *d_cell_sz, *d_capo_starts;
+    uint64_t *d_out_bytes;
     uint8_t *d_output;
     CUDA_CHECK(cudaMalloc(&d_offsets, n_valid * sizeof(uint32_t)));
     CUDA_CHECK(cudaMalloc(&d_starts, (n_valid + 1) * sizeof(uint32_t)));
     CUDA_CHECK(cudaMalloc(&d_n_elems, n_valid * sizeof(uint32_t)));
     CUDA_CHECK(cudaMalloc(&d_cell_sz, n_valid * sizeof(uint32_t)));
     CUDA_CHECK(cudaMalloc(&d_capo_starts, n_valid * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&d_out_bytes, n_valid * sizeof(uint64_t)));
     CUDA_CHECK(cudaMalloc(&d_output, total_bytes));
 
     CUDA_CHECK(cudaMemcpy(d_offsets, h_offsets, n_valid * sizeof(uint32_t), cudaMemcpyHostToDevice));
@@ -433,6 +440,7 @@ int main(int argc, char **argv)
     CUDA_CHECK(cudaMemcpy(d_n_elems, h_n_elems, n_valid * sizeof(uint32_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_cell_sz, h_cell_sz, n_valid * sizeof(uint32_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_capo_starts, h_capo_starts, n_valid * sizeof(uint32_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_out_bytes, h_out_bytes, n_valid * sizeof(uint64_t), cudaMemcpyHostToDevice));
 
     printf("GPU alloc: %.2f MB output buffer\n\n", total_bytes / 1e6);
 
@@ -447,7 +455,7 @@ int main(int argc, char **argv)
 
     t0 = now_ms();
     scatter_decode_kernel<<<grid_size, block_size>>>(
-        d_pinned, d_offsets, d_starts, d_n_elems, d_cell_sz, n_valid, d_output);
+        d_pinned, d_offsets, d_starts, d_n_elems, d_cell_sz, d_out_bytes, n_valid, d_output);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
     double decode_ms = now_ms() - t0;
@@ -544,6 +552,7 @@ int main(int argc, char **argv)
     cudaFree(d_n_elems);
     cudaFree(d_cell_sz);
     cudaFree(d_capo_starts);
+    cudaFree(d_out_bytes);
     cudaFree(d_output);
     cudaHostUnregister((void *)mmap_base);
     munmap(mmap_base, file_size);
@@ -554,6 +563,7 @@ int main(int argc, char **argv)
     free(h_n_elems);
     free(h_cell_sz);
     free(h_capo_starts);
+    free(h_out_bytes);
 
     printf("Done. All resources freed.\n");
     return 0;
