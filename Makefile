@@ -657,6 +657,30 @@ tess-gguf-pack: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wno-format -I core -I core/infra -o $(BUILD)/tess_gguf_pack tools/tess_gguf_pack.c -lm
 	@echo "✅ tess_gguf_pack ready → ./$(BUILD)/tess_gguf_pack <gguf> <out.tesspack> [filter]"
 
+# ── GGUF Stream Compare: byte-level verify assembled vs original ──
+# Usage: make gguf-compare GGUF_A=<original> GGUF_B=<assembled>
+GGUF_A ?= I:/model/Qwen3-0.6B-Q8_0.gguf
+GGUF_B ?= $(BUILD)/assembled_from_pack.gguf
+gguf-compare: | $(BUILD)
+	$(CC) -O2 -Wall -Wextra -Wno-unused-parameter -I. -Icore -o $(BUILD)/gguf_stream_compare.exe tools/gguf_stream_compare.c -lm
+	./$(BUILD)/gguf_stream_compare.exe "$(GGUF_A)" "$(GGUF_B)"
+
+# ── Full E2E pipeline: GGUF → .tesspack → assemble → byte-verify ──
+# Usage: make tesspack-e2e GGUF=<model.gguf>
+TESSPACK_E2E_GGUF ?= I:/model/Qwen3-0.6B-Q8_0.gguf
+TESSPACK_E2E_LLAMA_INC ?= I:/llama/include
+tesspack-e2e: | $(BUILD)
+	@echo "▶ Step 1: GGUF → .tesspack"
+	$(CC) -O2 -std=c11 -Wno-format -I core -I core/infra -I $(TESSPACK_E2E_LLAMA_INC) -o $(BUILD)/tess_gguf_pack.exe tools/tess_gguf_pack.c -lm
+	./$(BUILD)/tess_gguf_pack.exe "$(TESSPACK_E2E_GGUF)" "$(BUILD)/e2e_test.tesspack"
+	@echo "▶ Step 2: .tesspack → assembled GGUF"
+	$(CC) -O2 -Wall -I core -o $(BUILD)/tesspack_assemble.exe tools/tesspack_assemble.c -lm
+	./$(BUILD)/tesspack_assemble.exe "$(BUILD)/e2e_test.tesspack" "$(BUILD)/e2e_assembled.gguf"
+	@echo "▶ Step 3: Byte-level verify (assembled vs original)"
+	$(CC) -O2 -Wall -Wextra -Wno-unused-parameter -I. -Icore -o $(BUILD)/gguf_stream_compare.exe tools/gguf_stream_compare.c -lm
+	./$(BUILD)/gguf_stream_compare.exe "$(TESSPACK_E2E_GGUF)" "$(BUILD)/e2e_assembled.gguf"
+	@echo "✅ tesspack-e2e complete"
+
 # ── MoE Streaming from .tesspack ──
 moe-stream-pack: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wno-format -I core -I core/infra -o $(BUILD)/moe_stream_pack tools/moe_expert_stream_pack.c -lm
