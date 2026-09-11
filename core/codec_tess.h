@@ -125,22 +125,22 @@ static inline int32_t tess_encode(const void *src, uint32_t n_elems,
 
     /* ── 3. Scatter raw data through stride-37 into CubeData ── */
     uint32_t eff_slots = tess_effective_slots(&hdr);
-    uint32_t cube_bytes = eff_slots * cell_size;
+    uint32_t cube_bytes2 = eff_slots * cell_size;
     uint8_t *cube_data = p;
-    memset(cube_data, 0, cube_bytes);
+    memset(cube_data, 0, cube_bytes2);
 
     const uint8_t *src_bytes = (const uint8_t *)src;
     for (uint32_t i = 0; i < n_elems; i++) {
         uint32_t slot = tess_stride_scatter_in(i, eff_slots);
         uint32_t dst_off = slot * cell_size;
-        if (dst_off + cell_size <= cube_bytes) {
+        if (dst_off + cell_size <= cube_bytes2) {
             memcpy(cube_data + dst_off, src_bytes + i * cell_size, cell_size);
         }
     }
-    p += cube_bytes;
+    p += cube_bytes2;
 
     /* ── 4. Compute and append CRC64 over CubeData ── */
-    uint64_t cube_crc = tess_crc64(cube_data, cube_bytes);
+    uint64_t cube_crc = tess_crc64(cube_data, cube_bytes2);
     memcpy(p, &cube_crc, TESS_CRC_SIZE);
     p += TESS_CRC_SIZE;
 

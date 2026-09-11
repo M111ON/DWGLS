@@ -150,7 +150,7 @@ typedef struct {
     uint8_t  voronoi_flags;     /* flags: bit0=masked, bit1=frozen */
     uint8_t  axis_id;           /* box axis (0-5, GBA_AXIS_*)     */
     uint32_t axis_position;     /* position on axis (identity)    */
-    uint8_t  _pad[17];          /* reserved for future LUT       */
+    uint8_t  _pad[16];          /* reserved for future LUT       */
 } TESS_Formula;                 /* total: 64 bytes               */
 
 /* ═══════════════════════════════════════════════════════════════════════════

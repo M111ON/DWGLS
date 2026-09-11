@@ -259,7 +259,10 @@ int main(int argc, char **argv) {
     CHECK(5, "targeted cuts aggregate field", n_present >= 2 && fopt < fcur);
     CHECK(6, "targeted field fits in a handful of windows (Σ ≤ 64)", n_present >= 2 && fopt <= 64);
 
-    printf("\n════════════════════════════════════════════════════════\n");
-    printf("files present: %u/3 — RESULTS: %d/%d PASS\n", n_present, pass, pass + fail);
+    if (n_present < 2) {
+        printf("\n════════════════════════════════════════════════════════\n");
+        printf("SKIP: only %u/3 safetensors files present (need ≥2)\n", n_present);
+        return 0;
+    }
     return fail ? 1 : 0;
 }
