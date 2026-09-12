@@ -142,6 +142,11 @@ TIER1 := \
   test_tess_stream \
   test_tess_moe_bridge \
   test_tesspack \
+  test_gpu_pipeline \
+  test_d4_linesum_bridge \
+  test_twin_rebalance \
+    test_fractal_addr \
+    test_entropy_quadtree
 
 # ── เทสต์ที่เหลือ (ไม่ได้อยู่ใน TIER1/TIER2) = legacy ประวัติการพัฒนา ──
 # เขียนก่อน rescope 2026-08-14 — เก็บไว้ย้อนดูเท่านั้น ไม่ใช้ยืนยันระบบปัจจุบัน
@@ -161,10 +166,131 @@ TIER2 := \
 # ── Tier 2 include dir (gguf_reader.h moved here) ────
 TIER2_CFLAGS := $(CFLAGS) -Icore
 
+# ── Test Groups (agent workflow: smoke → group → full) ──
+# Usage: make test-smoke        (fast sanity, ~15 tests)
+#        make test-kis          (KIS subsystem only)
+#        make test-<group>      (any group below)
+#        make test              (full TIER1+TIER2)
+#
+# Workflow: start=session→smoke, edit→relevant group, end→full test
+
+# SMOKE: 1 fastest test per subsystem — covers everything in <10s
+SMOKE :=   kis_codec_v6_standalone_test   test_tess_index_frame   test_geo_fs   test_gguf_box   test_bfs_persist   test_cap_account   test_ghost_gear_adapter   test_cube_addr   test_fibo_walk   test_goldberg_decagram   test_hyp_fusion   test_kv_remap   test_scale_bridge   test_tesspack   test_6ico_tesseract
+
+# KIS: codec + timeline + container
+KIS :=   kis_4d_explore   kis_alternating_verify   kis_codec_v6_standalone_test   kis_adaptive_deploy   kis_container_place   kis_birds_eye   kis_multi_container   kis_scale_test   test_v5_collision   test_kis_cube_views
+
+# TESS: tessellation pipeline (biggest group)
+TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   test_tess_scale_dedup   test_tess_scale_log_gear   test_tess_gear_full   test_tess_magnify   test_tess_hex_delta   test_tess_sacred   test_tess_subdivide   test_tess_scale_wire   test_tess_tetra_axis   test_tess_torus   test_tess_tetra_torus   test_tess_12x1728   test_tess_geo_jump_walks   test_tess_full_cycle   test_tess_belt   test_tess_tensor_belt   test_tess_ghost   test_tess_leverage   test_tess_registry_gate   test_tess_trace   test_tess_wiring   test_tess_header   test_tess_stream   test_tess_moe_bridge
+
+# GEO: geometry core + address space + hyperbolic
+GEO :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_mdim   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_geo_bfs_hub   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_goldberg_mmap
+
+# GGUF: model loading + box routing
+GGUF :=   test_gguf_box   test_gguf_window_chain   test_gguf_real_gate   test_gguf_multi_model   test_safetensors_reader   test_ggf_walk   test_ggf_walk_mmap   test_ggf_ckpt_replay   test_ggf_fs
+
+# BFS: breathing filesystem + seek
+BFS :=   test_bfs_persist   test_bfs_stability   test_bfs_seek_anchor   test_bfs_breath   test_breathing_fs   test_geo_hyper_fs   test_geo_hyper_real
+
+# CAP: capacity/accounting + chain
+CAP :=   test_cap_account   test_cap_tune_real   test_cap_tune_safetensors   test_cap_tune_fs   test_cap_chain_roundtrip   test_cap_chain_big   test_cap_scheme
+
+# GHOST: ghost lift + envelope + direct
+GHOST :=   test_ghost_gear_adapter   test_ghost_lift   test_ghost_envelope   test_ghost_direct
+
+# KV: remap + hybrid + rail bridge
+KV :=   test_kv_remap   test_kv_remap_diamond   test_kv_geofs_bridge   test_kv_rail_geofs   test_kv_dramtile   test_hybrid_kv
+
+# 6ICO: compound field + MoE
+SIXICO :=   test_6ico_tesseract   test_18tes_field   test_moe_expert   test_6ico_integration
+
+# FIBO: fibonacci walk + dual rail
+FIBO :=   test_fibo_checkpoint   test_fibo_walk   test_fibo_dual_rail
+
+# WALK: walk/bench/parity/cache
+WALK :=   test_walk_sync   test_walk_bench   test_parity_sector   test_cache_locality
+
+# ── Group runner (generic) ────────────────────────────
+# Usage: make test-group GROUP="kis tess geo"
+define run_group
+	@pass=0; fail=0; skipped=0; \
+	for t in $(1); do \
+	  if [ -f tests/$$t.c ]; then \
+	    if $(CC) $(CFLAGS) -o $(BUILD)/test-$$t tests/$$t.c $(LDFLAGS) 2>/dev/null; then \
+	      if ./$(BUILD)/test-$$t >/dev/null 2>&1; then \
+	        echo "  ✅ $$t"; pass=$$((pass+1)); \
+	      else \
+	        echo "  ❌ $$t (RUN FAIL)"; fail=$$((fail+1)); \
+	      fi; \
+	    else \
+	      echo "  ❌ $$t (BUILD FAIL)"; fail=$$((fail+1)); \
+	    fi; \
+	  else \
+	    echo "  ⚠️  $$t (NOT FOUND, skipped)"; skipped=$$((skipped+1)); \
+	  fi; \
+	done; \
+	echo "───────────────────────────────────────"; \
+	echo "PASS: $$pass  FAIL: $$fail  SKIP: $$skipped"
+endef
+# ── Individual group targets ──────────────────────────
+.PHONY: test-smoke test-kis test-tess test-geo test-gguf test-bfs test-cap test-ghost test-kv test-6ico test-fibo test-walk
+
+test-smoke: | $(BUILD)
+	@echo "══ SMOKE TEST (fast sanity) ══"
+	$(call run_group,$(SMOKE))
+
+test-kis: | $(BUILD)
+	@echo "══ KIS (codec + timeline) ══"
+	$(call run_group,$(KIS))
+
+test-tess: | $(BUILD)
+	@echo "══ TESS (tessellation pipeline) ══"
+	$(call run_group,$(TESS))
+
+test-geo: | $(BUILD)
+	@echo "══ GEO (geometry core + hyperbolic) ══"
+	$(call run_group,$(GEO))
+
+test-gguf: | $(BUILD)
+	@echo "══ GGUF (model loading + box routing) ══"
+	$(call run_group,$(GGUF))
+
+test-bfs: | $(BUILD)
+	@echo "══ BFS (breathing filesystem) ══"
+	$(call run_group,$(BFS))
+
+test-cap: | $(BUILD)
+	@echo "══ CAP (capacity/accounting) ══"
+	$(call run_group,$(CAP))
+
+test-ghost: | $(BUILD)
+	@echo "══ GHOST (ghost lift + envelope) ══"
+	$(call run_group,$(GHOST))
+
+test-kv: | $(BUILD)
+	@echo "══ KV (remap + hybrid + rail) ══"
+	$(call run_group,$(KV))
+
+test-6ico: | $(BUILD)
+	@echo "══ 6ICO (compound field + MoE) ══"
+	$(call run_group,$(SIXICO))
+
+test-fibo: | $(BUILD)
+	@echo "══ FIBO (fibonacci walk) ══"
+	$(call run_group,$(FIBO))
+
+test-walk: | $(BUILD)
+	@echo "══ WALK (walk/bench/parity) ══"
+	$(call run_group,$(WALK))
+
+# ── Multi-group: make test-groups GROUPS="kis tess" ───
+test-groups: | $(BUILD)
+	@for g in $(GROUPS); do 	  $(MAKE) test-$$g; 	done
+
 # ── Build targets ─────────────────────────────────────
 BUILD := build
 
-.PHONY: all test clean list tier1 tier2 help
+.PHONY: all test clean list tier1 tier2 help test-smoke test-kis test-tess test-geo test-gguf test-bfs test-cap test-ghost test-kv test-6ico test-fibo test-walk test-groups
 
 all: test
 
@@ -355,13 +481,18 @@ list:
 	@echo "Tier 2 (need gguf_reader): $(words $(TIER2))"
 
 help:
-	@echo "make test       — compile + run tier-1 tests"
-	@echo "make test-NAME  — run single test (e.g. make test-test_cell_classify)"
-	@echo "make tier2      — list blocked tests"
-	@echo "make vis        — start FGLS_vis visualizer (port 5001)"
-	@echo "make vis GGUF=I:/model/model.gguf — visualizer with model"
-	@echo "make clean      — remove build/"
-	@echo "make list       — list all tests"
+	@echo "make test           — compile + run ALL tests (TIER1+TIER2)"
+	@echo "make test-smoke     — fast sanity (~15 tests, <10s)"
+	@echo "make test-NAME      — run single test"
+	@echo ""
+	@echo "Groups: kis tess geo gguf bfs cap ghost kv 6ico fibo walk"
+	@echo "  make test-kis      — KIS subsystem only"
+	@echo "  make test-tess     — tessellation pipeline"
+	@echo "  make test-groups GROUPS="kis tess" — multi-group"
+	@echo ""
+	@echo "Workflow: smoke→edit→group→full"
+	@echo "make clean          — remove build/"
+	@echo "make list           — list all tests"
 
 # ── GeoFS MDIM CLI ───────────────────────────────────────
 mdim: $(BUILD)/mdim_cli
