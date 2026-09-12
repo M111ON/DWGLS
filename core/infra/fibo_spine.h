@@ -54,8 +54,12 @@
 #define FS_MODE_RESIDENT 2u      /* in residual_space               */
 #define FS_MODE_PERPIPE  4u      /* per-pipe independent ticks      */
 
-/* ── Pipe flags ───────────────────────────────────────── */
-#define PIPE_FLAG_NONE      0x00
+/* ── Pipe flags ─────────────────────────────────────────
+ * NOTE: There is no PIPE_FLAG_NONE bit — 0x00 is not a flag.
+ * Use `flags == 0` to test "no flags set".
+ * Use `flags = 0` to clear all flags.
+ * Never use `flags & 0x00` — that is always false.
+ * ─────────────────────────────────────────────────────── */
 #define PIPE_FLAG_BRIDGED   0x01
 #define PIPE_FLAG_FROZEN    0x02
 #define PIPE_FLAG_RESIDENT  0x04
@@ -117,7 +121,7 @@ static inline void fibo_spine_init(FiboSpine *fs) {
         fs->pipes[p].pipe_id      = p;
         fs->pipes[p].current_tick = 0;
         fs->pipes[p].local_tick   = 0;
-        fs->pipes[p].flags        = PIPE_FLAG_NONE;
+        fs->pipes[p].flags        = 0;
     }
     fs->bridge_state = JB_INACTIVE;
     fs->mode         = FS_MODE_ACTIVE;
@@ -179,9 +183,9 @@ static inline uint8_t fibo_spine_tick(FiboSpine *fs) {
         fs->bridge_state = JB_BRIDGING;
         fs->mode = FS_MODE_BRIDGE;
 
-        /* For each active pipe at tick 11, flag as bridged */
+        /* For each pipe not yet bridged at tick 11, flag as bridged */
         for (uint16_t p = 0; p < FS_PIPES; p++) {
-            if (fs->pipes[p].flags & PIPE_FLAG_NONE) {
+            if (!(fs->pipes[p].flags & PIPE_FLAG_BRIDGED)) {
                 /* This pipe is about to enter residual */
                 fs->pipes[p].flags |= PIPE_FLAG_BRIDGED;
                 fs->pipes[p].current_tick = 0; /* reset on re-entry */

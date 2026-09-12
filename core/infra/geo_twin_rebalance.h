@@ -19,11 +19,11 @@
  *   1. Address mapping between all three views (O(1), no hash)
  *   2. Data redistribution between DRamTile and 144×144 field
  *   3. Verification of lossless roundtrip
- *   4. Composition with iso_rot90 (twin preserves rot90 equivariance)
+ *   4. Composition with iso_hex5 (order-5 generator → order-6 hexagonal)
  *
  * DESIGN:
  *   No malloc. All static inline. Header-only.
- *   C99. Compatible with geo_dram_tile.h, geo_fractal_addr.h, iso_rot90.h.
+ *   C99. Compatible with geo_dram_tile.h, geo_fractal_addr.h, iso_rot90.h (base transpose).
  *
  * DEPENDS: core/geo_dram_tile.h, core/geo_fractal_addr.h
  * ═══════════════════════════════════════════════════════════════════════════

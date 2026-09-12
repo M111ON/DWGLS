@@ -98,9 +98,11 @@ static inline EQNode eq_make_node(uint32_t h, uint32_t x, uint32_t y,
     n.addr = fractal_to_flat(h, x, y);
     n.size = fractal_cell_size(h);
     n.h    = (uint8_t)h;
-    n.entropy = eq_compute_entropy(
-        data ? data + n.addr : NULL,
-        data ? (n.size <= data_len - n.addr ? n.size : 0) : 0);
+    /* Bounds-safe: check addr < data_len BEFORE pointer arithmetic (prevents UB) */
+    uint32_t safe_len = 0;
+    if (data && n.addr < data_len && n.size <= data_len - n.addr)
+        safe_len = n.size;
+    n.entropy = eq_compute_entropy(safe_len ? data + n.addr : NULL, safe_len);
     n.split = eq_split_decision(n.entropy, h);
     n.myelinated = (n.entropy > EQ_THRESHOLD_HIGH) ? 1u : 0u;
     return n;
