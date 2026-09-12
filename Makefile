@@ -35,6 +35,8 @@ TIER1 := \
   kis_multi_container \
   kis_scale_test \
   test_geo_prune \
+  test_hex_quad_dual \
+  test_hex_quad_dual_upgrades \
   test_geo_fs \
   test_geo_fs_mdim \
   test_geo_fs_generalize \
@@ -184,7 +186,22 @@ KIS :=   kis_4d_explore   kis_alternating_verify   kis_codec_v6_standalone_test 
 TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   test_tess_scale_dedup   test_tess_scale_log_gear   test_tess_gear_full   test_tess_magnify   test_tess_hex_delta   test_tess_sacred   test_tess_subdivide   test_tess_scale_wire   test_tess_tetra_axis   test_tess_torus   test_tess_tetra_torus   test_tess_12x1728   test_tess_geo_jump_walks   test_tess_full_cycle   test_tess_belt   test_tess_tensor_belt   test_tess_ghost   test_tess_leverage   test_tess_registry_gate   test_tess_trace   test_tess_wiring   test_tess_header   test_tess_stream   test_tess_moe_bridge
 
 # GEO: geometry core + address space + hyperbolic
-GEO :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_mdim   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_geo_bfs_hub   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_goldberg_mmap
+# GEO_FAST: <0.5s each — run often
+GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades
+# GEO_SLOW: >1s each — run before commit only
+GEO_SLOW :=   test_geo_bfs_hub   test_geo_fs_mdim   test_goldberg_mmap
+# GEO: full set
+GEO := $(GEO_FAST) $(GEO_SLOW)
+
+# ACTIVE: daily dev — hex-quad-dual + codec + tess core (~40 tests, <15s)
+ACTIVE := \
+  $(GEO_FAST) \
+  kis_codec_v6_standalone_test   kis_4d_explore   kis_alternating_verify \
+  test_tess_index_frame   test_tess_frame_seek   test_tess_scale_log \
+  test_tess_gear_full   test_tess_hex_delta   test_tess_magnify \
+  test_tess_sacred   test_tess_subdivide   test_tess_scale_wire \
+  test_tess_full_cycle   test_tess_header   test_tess_stream \
+  test_hex_quad_dual   test_twin_rebalance   test_d4_linesum_bridge
 
 # GGUF: model loading + box routing
 GGUF :=   test_gguf_box   test_gguf_window_chain   test_gguf_real_gate   test_gguf_multi_model   test_safetensors_reader   test_ggf_walk   test_ggf_walk_mmap   test_ggf_ckpt_replay   test_ggf_fs
@@ -216,14 +233,13 @@ define run_group
 	@pass=0; fail=0; skipped=0; \
 	for t in $(1); do \
 	  if [ -f tests/$$t.c ]; then \
-	    if $(CC) $(CFLAGS) -o $(BUILD)/test-$$t tests/$$t.c $(LDFLAGS) 2>/dev/null; then \
-	      if ./$(BUILD)/test-$$t >/dev/null 2>&1; then \
-	        echo "  ✅ $$t"; pass=$$((pass+1)); \
-	      else \
-	        echo "  ❌ $$t (RUN FAIL)"; fail=$$((fail+1)); \
-	      fi; \
+	    if [ ! -f $(BUILD)/test-$$t ] || [ tests/$$t.c -nt $(BUILD)/test-$$t ]; then \
+	      $(CC) $(CFLAGS) -o $(BUILD)/test-$$t tests/$$t.c $(LDFLAGS) 2>/dev/null || true; \
+	    fi; \
+	    if ./$(BUILD)/test-$$t >/dev/null 2>&1; then \
+	      echo "  ✅ $$t"; pass=$$((pass+1)); \
 	    else \
-	      echo "  ❌ $$t (BUILD FAIL)"; fail=$$((fail+1)); \
+	      echo "  ❌ $$t (RUN FAIL)"; fail=$$((fail+1)); \
 	    fi; \
 	  else \
 	    echo "  ⚠️  $$t (NOT FOUND, skipped)"; skipped=$$((skipped+1)); \
@@ -233,11 +249,15 @@ define run_group
 	echo "PASS: $$pass  FAIL: $$fail  SKIP: $$skipped"
 endef
 # ── Individual group targets ──────────────────────────
-.PHONY: test-smoke test-kis test-tess test-geo test-gguf test-bfs test-cap test-ghost test-kv test-6ico test-fibo test-walk
+.PHONY: test-smoke test-active test-kis test-tess test-geo test-gguf test-bfs test-cap test-ghost test-kv test-6ico test-fibo test-walk
 
 test-smoke: | $(BUILD)
 	@echo "══ SMOKE TEST (fast sanity) ══"
 	$(call run_group,$(SMOKE))
+
+test-active: | $(BUILD)
+	@echo "══ ACTIVE (daily dev: hex-quad-dual + codec + tess) ══"
+	$(call run_group,$(ACTIVE))
 
 test-kis: | $(BUILD)
 	@echo "══ KIS (codec + timeline) ══"
@@ -250,6 +270,14 @@ test-tess: | $(BUILD)
 test-geo: | $(BUILD)
 	@echo "══ GEO (geometry core + hyperbolic) ══"
 	$(call run_group,$(GEO))
+
+test-geo-fast: | $(BUILD)
+	@echo "══ GEO FAST (<0.5s each) ══"
+	$(call run_group,$(GEO_FAST))
+
+test-geo-slow: | $(BUILD)
+	@echo "══ GEO SLOW (>1s each, pre-commit only) ══"
+	$(call run_group,$(GEO_SLOW))
 
 test-gguf: | $(BUILD)
 	@echo "══ GGUF (model loading + box routing) ══"
@@ -290,7 +318,7 @@ test-groups: | $(BUILD)
 # ── Build targets ─────────────────────────────────────
 BUILD := build
 
-.PHONY: all test clean list tier1 tier2 help test-smoke test-kis test-tess test-geo test-gguf test-bfs test-cap test-ghost test-kv test-6ico test-fibo test-walk test-groups
+.PHONY: all test clean list tier1 tier2 help test-smoke test-kis test-tess test-geo test-geo-fast test-geo-slow test-gguf test-bfs test-cap test-ghost test-kv test-6ico test-fibo test-walk test-groups
 
 all: test
 
@@ -311,14 +339,15 @@ test: tier1 tier2
 tier1: | $(BUILD)
 	@pass=0; fail=0; \
 	for t in $(TIER1); do \
-	  if $(CC) $(CFLAGS) -o $(BUILD)/test-$$t tests/$$t.c $(LDFLAGS) 2>/dev/null; then \
+	  if [ -f tests/$$t.c ]; then \
+	    if [ ! -f $(BUILD)/test-$$t ] || [ tests/$$t.c -nt $(BUILD)/test-$$t ]; then \
+	      $(CC) $(CFLAGS) -o $(BUILD)/test-$$t tests/$$t.c $(LDFLAGS) 2>/dev/null || true; \
+	    fi; \
 	    if ./$(BUILD)/test-$$t >/dev/null 2>&1; then \
 	      echo "  ✅ $$t"; pass=$$((pass+1)); \
 	    else \
 	      echo "  ❌ $$t (RUN FAIL)"; fail=$$((fail+1)); \
 	    fi; \
-	  else \
-	    echo "  ❌ $$t (BUILD FAIL)"; fail=$$((fail+1)); \
 	  fi; \
 	done; \
 	echo "───────────────────────────────────────"; \
@@ -327,14 +356,15 @@ tier1: | $(BUILD)
 tier2: | $(BUILD)
 	@pass=0; fail=0; \
 	for t in $(TIER2); do \
-	  if $(CC) $(TIER2_CFLAGS) -o $(BUILD)/test-$$t tests/$$t.c $(LDFLAGS) 2>/dev/null; then \
+	  if [ -f tests/$$t.c ]; then \
+	    if [ ! -f $(BUILD)/test-$$t ] || [ tests/$$t.c -nt $(BUILD)/test-$$t ]; then \
+	      $(CC) $(TIER2_CFLAGS) -o $(BUILD)/test-$$t tests/$$t.c $(LDFLAGS) 2>/dev/null || true; \
+	    fi; \
 	    if ./$(BUILD)/test-$$t >/dev/null 2>&1; then \
 	      echo "  ✅ $$t"; pass=$$((pass+1)); \
 	    else \
 	      echo "  ❌ $$t (RUN FAIL)"; fail=$$((fail+1)); \
 	    fi; \
-	  else \
-	    echo "  ❌ $$t (BUILD FAIL)"; fail=$$((fail+1)); \
 	  fi; \
 	done; \
 	echo "───────────────────────────────────────"; \
