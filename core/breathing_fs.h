@@ -320,7 +320,6 @@ static inline int bfs_delete(BreathingFS *fs, const char *name)
     return 0;
 }
 
-/* ═══════════════ DELTA OPS ═══════════════ */
 static inline void bfs_move_seeker(BreathingFS *fs, double new_scale) {
     if (!fs) return;
     uint32_t old_pos = fs->seeker.current_pos;
@@ -394,6 +393,45 @@ static inline int bfs_verify_file(const BreathingFS *fs, const char *name,
     int match = (memcmp(original, recon, size) == 0);
     free(recon);
     return match ? 0 : -7;
+}
+
+/* ═══════════════ MIGRATE (wrap-relocate, not delete-destroy) ═══════════════
+ * Model surgery primitive: read file LOSSLESS from src, write to dst (new
+ * planets born watching), verify dst bytes == src bytes, then retire+free
+ * src (tombs archived, blocks reusable). The old world keeps the graves;
+ * the new world gets the living data with fresh watchers. Time stays
+ * frozen throughout (no ticks inside) — the wrap is static by #849.
+ * Returns 0 ok, -1 args, -2 src missing, -3 src==dst, -4 dst name taken,
+ * -5 dst write failed, -6 dst verify mismatch (dst may hold a partial —
+ * caller deletes it; fail-closed, never silent). Placed after VERIFY +
+ * DELETE (uses both). */
+static inline int bfs_migrate(BreathingFS *src, BreathingFS *dst, const char *name)
+{
+    if (!src || !dst || !name) return -1;
+    if (src == dst) return -3;
+    uint32_t size = 0;
+    for (uint32_t i = 0; i < src->n_files; i++) {
+        if (src->files[i].valid && strcmp(src->files[i].name, name) == 0) {
+            size = src->files[i].total_bytes;
+            break;
+        }
+    }
+    if (size == 0) return -2;
+    for (uint32_t i = 0; i < dst->n_files; i++) {
+        if (dst->files[i].valid && strcmp(dst->files[i].name, name) == 0)
+            return -4;
+    }
+    int8_t *buf = (int8_t *)malloc(size);
+    if (!buf) return -1;
+    uint32_t act = 0;
+    int rc = bfs_read(src, name, buf, size, &act);
+    if (rc != 0 || act != size) { free(buf); return -2; }
+    rc = bfs_write(dst, name, buf, size);
+    if (rc != 0) { free(buf); return -5; }
+    int ok = (bfs_verify_file(dst, name, buf, size) == 0);
+    free(buf);
+    if (!ok) return -6;
+    return bfs_delete(src, name);   /* retire-then-free: graves stay in src */
 }
 
 /* ═══════════════ PRINT ═══════════════ */
