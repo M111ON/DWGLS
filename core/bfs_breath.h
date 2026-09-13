@@ -142,6 +142,16 @@ static inline void bfs_breath_tick(BFSBreath *b)
 
         uint32_t ad = (uint32_t)(d < 0 ? -d : d);
         if (ad > b->peak_delta) b->peak_delta = ad;
+
+        /* watcher: idle-zero integrity over the ENCODED bytes (what reads
+         * consume). Healthy ticks cost one digest and change nothing;
+         * trouble collects into the block's own tail and opens its gate
+         * (rc 1/2 counted; -1 unborn/-2 retired ignored). Read path stays
+         * const/pure — the breath watches, not the read. */
+        int prc = planet_verify(&b->fs->planets[i],
+                                (const int8_t *)b->fs->block_encoded[i],
+                                b->fs->block_encoded_size[i]);
+        if (prc == 1 || prc == 2) b->fs->planet_mismatch++;
     }
 }
 

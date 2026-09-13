@@ -19,6 +19,7 @@
 #include "bfs_v6b_adapter.h"
 #include "bfs_magnify.h"
 #include "bfs_fan24.h"
+#include "geo_planet.h"   /* per-block watcher: birth at write, verify in tick */
 
 #define BFS_MAGIC          0x42524548u
 #define BFS_VERSION        1u
@@ -118,6 +119,11 @@ typedef struct {
     uint32_t delta_log[256];
     uint32_t delta_count;
     FGXLog   fg_log;        /* fan24 gear events (8-bit, replaces delta_log future) */
+    Planet   planets[BFS_BLOCKS]; /* watcher per block (in-memory; restart reborn).
+                                   * +~37KB. No delete path exists in v1, so no
+                                   * retire hook — planets live with their blocks. */
+    uint32_t planet_mismatch;     /* cumulative block mismatches seen by ticks
+                                   * (rc 1 or 2). Caller resets manually. */
 } BreathingFS;
 
 /* ═══════════════ INIT ═══════════════ */
@@ -198,6 +204,14 @@ static inline int bfs_write(BreathingFS *fs, const char *name,
         }
 
         fs->block_owner[bi] = fs->n_files;
+        /* watcher birth: block id = bi (stable: no delete path, no reuse).
+         * Watches block_ENCODED (the bytes reads consume — block_data is
+         * write-staging nobody re-reads; decode never checks its checksum,
+         * so this planet is the only integrity layer). W=0 = full-field
+         * frame (v1: write-scale refinement YAGNI until a reader needs it). */
+        planet_birth(&fs->planets[bi], bi, 0u, bi,
+                     (const int8_t *)fs->block_encoded[bi],
+                     fs->block_encoded_size[bi]);
         seeker_advance(&fs->seeker);
     }
 
