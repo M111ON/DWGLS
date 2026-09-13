@@ -37,6 +37,13 @@
 #define PLANET_LINK_MASK  8u            /* voronoi radius: replay walks <= 8 events */
 #define PLANET_LINK_CLOSE_AFTER_CLEAN 3u /* training wheels off: shut + drop
                                           * tail after 3 consecutive clean */
+#define PLANET_EPOCH_CAP  4u            /* contraction journal (ring): last 4
+                                         * reanchor epochs. The hyperbolic-side
+                                         * log: tail records expansion-side
+                                         * trouble (mismatch vs baseline);
+                                         * epochs record contraction-side
+                                         * adoptions (baseline moved). Twins
+                                         * like kis/hyper, per planet. */
 
 /* error record: collected ONLY on verify mismatch (idle = nothing) */
 typedef struct {
@@ -44,6 +51,12 @@ typedef struct {
     uint64_t expected;   /* baseline key */
     uint64_t observed;   /* recomputed key */
 } PlanetErr;
+
+/* contraction record: one adopted baseline (hyperbolic-side history) */
+typedef struct {
+    uint32_t w;          /* W tooth at adoption */
+    uint64_t digest;     /* adopted baseline key */
+} PlanetEpoch;
 
 /* tombstone plate: 40 bytes, written once on retire */
 typedef struct {
@@ -76,6 +89,9 @@ typedef struct {
                             * the blast radius). Shuts itself after
                             * PLANET_LINK_CLOSE_AFTER_CLEAN clean. */
     uint32_t clean_streak; /* consecutive clean verifies */
+    uint32_t epoch_n;      /* contraction epochs stored (<= cap; ring) */
+    uint32_t epoch_head;   /* next write slot (ring) */
+    PlanetEpoch epochs[PLANET_EPOCH_CAP];
     PlanetErr tail[PLANET_TAIL_CAP];
     PlanetTomb tomb;     /* valid after retire */
 } Planet;
@@ -105,6 +121,8 @@ static inline void planet_birth(Planet *p, uint32_t id, uint32_t w,
     p->reanchors = 0u;
     p->link_open = 0u;
     p->clean_streak = 0u;
+    p->epoch_n = 0u;
+    p->epoch_head = 0u;
     p->tomb.magic = 0u;
 }
 
@@ -139,6 +157,11 @@ static inline int planet_verify(Planet *p, const int8_t *d, uint32_t n) {
     p->tail_n = 0u;
     p->tail_overflow = 1u;
     p->reanchors++;
+    /* contraction journal: record the adoption (ring, last 4 kept) */
+    p->epochs[p->epoch_head].w = p->cur_w;
+    p->epochs[p->epoch_head].digest = obs;
+    p->epoch_head = (p->epoch_head + 1u) % PLANET_EPOCH_CAP;
+    if (p->epoch_n < PLANET_EPOCH_CAP) p->epoch_n++;
     return 2;
 }
 
@@ -193,6 +216,8 @@ static inline int planet_restore(Planet *p, const PlanetTomb *t,
     p->reanchors = 0u;
     p->link_open = 0u;      /* new life, gate shut until trouble */
     p->clean_streak = 0u;
+    p->epoch_n = 0u;        /* new life, no contractions yet */
+    p->epoch_head = 0u;
     p->tomb.magic = 0u;
     return 0;
 }
@@ -211,6 +236,20 @@ static inline int planet_replay(const Planet *p, const FGGearEv *ev,
     for (uint32_t i = 0; i < n_ev; i++)
         w = (w + (uint32_t)ev[i].q * FG_RING + fg_crt(ev[i].dc, ev[i].dx)) % FG_LOCAL;
     return (w == (main_w_now % FG_LOCAL)) ? 0 : 1;
+}
+
+/* audit the contraction journal: 0 sound (last epoch == current baseline;
+ * pre-wrap count matches reanchors), 1 broken/empty-with-reanchors, -1 bad.
+ * Runtime diagnostics like tails — tombs stay THE cross-restart audit. */
+static inline int planet_epoch_audit(const Planet *p, uint32_t *out_n) {
+    if (!p || p->magic != PLANET_MAGIC) return -1;
+    if (out_n) *out_n = p->epoch_n;
+    if (p->epoch_n == 0u) return (p->reanchors == 0u) ? 0 : 1;
+    uint32_t oldest = (p->epoch_n < PLANET_EPOCH_CAP) ? 0u : p->epoch_head;
+    uint32_t last = (oldest + p->epoch_n - 1u) % PLANET_EPOCH_CAP;
+    if (p->epochs[last].digest != p->digest) return 1;
+    if (p->epoch_n < PLANET_EPOCH_CAP && p->epoch_n != p->reanchors) return 1;
+    return 0;
 }
 
 /* thaw (fail-closed keyed read): returns d iff key matches baseline AND

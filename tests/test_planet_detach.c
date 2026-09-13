@@ -281,6 +281,28 @@ int main(void) {
               opened && live == 0 && grave == -3 && d.link_open == 0u);
     }
 
+    /* ── T14: contraction journal — reanchors recorded, ring keeps last 4 ── */
+    {
+        Planet j;
+        planet_birth(&j, 53u, 5u, 800u, buf, 432);
+        int8_t ep[432];
+        uint32_t audit_n = 99u;
+        int audit_empty = planet_epoch_audit(&j, &audit_n);
+        for (int k = 0; k < 6; k++) {   /* 6 epochs: 8 collects + reanchor each */
+            for (int m = 0; m < 9; m++) {
+                memcpy(ep, buf, 432);
+                ep[(k * 16 + m) % 432] ^= (int8_t)(k * 9 + m + 1);
+                planet_verify(&j, ep, 432);
+            }
+        }
+        /* NOTE: each round corrupts FRESH bytes (9th differs from adopted),
+         * so every round reanchors exactly once -> 6 epochs, ring holds 4 */
+        int audit_full = planet_epoch_audit(&j, &audit_n);
+        CHECK("T14: 6 reanchors journaled (ring 4), audit sound, endpoints meet",
+              audit_empty == 0 && audit_n == 4u && j.reanchors == 6u &&
+              j.epoch_n == 4u && audit_full == 0);
+    }
+
     printf("═ RESULT: %d pass, %d fail ═\n", pass_count, fail_count);
     return fail_count ? 1 : 0;
 }
