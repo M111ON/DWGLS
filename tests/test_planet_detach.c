@@ -201,6 +201,27 @@ int main(void) {
               ok_key && bad_key && bad_bytes && retired);
     }
 
+    /* ── T11: W-fold pins (v2 folds every entry % 144) ──────────────
+     * Hand arithmetic (144*694 = 99936):
+     *   100000-99936 = 64 | 100064-99936 = 128 | 99937-99936 = 1
+     *   100010-99936 = 74. If any entry drops its fold, these go red. */
+    {
+        Planet p;
+        planet_birth(&p, 41u, 100000u, 400u, buf, 432);
+        int born_folded = (p.birth_w == 64u && p.cur_w == 64u);
+        int ok_wide = (planet_shrink(&p, 100064u) == 0 && p.cur_w == 128u);
+        int rej_narrow = (planet_shrink(&p, 99937u) == -1);
+        static const FGGearEv ev0[1] = {{0u, 0u, 0u}}; /* Δ=0: stays 64 */
+        int rep_fold = planet_replay(&p, ev0, 1, 100000u); /* folds to 64 */
+        int rep_div = planet_replay(&p, ev0, 1, 65u);
+        int rep_null = planet_replay(&p, 0, 1, 64u);   /* no tail: -1 */
+        planet_retire(&p, 100010u);
+        int tomb_folded = (p.tomb.death_w == 74u);
+        CHECK("T11: large-W folded at birth/shrink/retire/replay",
+              born_folded && ok_wide && rej_narrow &&
+              rep_fold == 0 && rep_div == 1 && rep_null == -1 && tomb_folded);
+    }
+
     printf("═ RESULT: %d pass, %d fail ═\n", pass_count, fail_count);
     return fail_count ? 1 : 0;
 }
