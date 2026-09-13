@@ -144,4 +144,38 @@ static inline int planet_replay(const Planet *p, const FGGearEv *ev,
     return (w == (main_w_now % FG_LOCAL)) ? 0 : 1;
 }
 
+/* ═══════════════ 12-PENTAGON REGISTRY (face-spawn system) ═══════════════
+ * One planet per pentagon face (faces 0..11, shared numbering with
+ * geo_goldberg_frame.h): home = face*128 (face base in flat field).
+ * Isolated sites -> independent frames; hex bulk stays on main field.
+ * Additive only — single-planet API above untouched. */
+#define PLANET_SYS_N 12u
+
+typedef struct {
+    Planet p[PLANET_SYS_N];
+} PlanetSys;
+
+/* birth all 12 over caller buffers d[i] (len n each), ids base_id+i */
+static inline void planetsys_birth(PlanetSys *s, uint32_t base_id, uint32_t w,
+                                   const int8_t **d, uint32_t n) {
+    if (!s) return;
+    for (uint32_t f = 0; f < PLANET_SYS_N; f++)
+        planet_birth(&s->p[f], base_id + f, w, f * 128u, d ? d[f] : 0, n);
+}
+
+/* verify all: returns mismatches found (each collects into own tail) */
+static inline uint32_t planetsys_verify(PlanetSys *s, const int8_t **d, uint32_t n) {
+    uint32_t bad = 0;
+    if (!s) return 0;
+    for (uint32_t f = 0; f < PLANET_SYS_N; f++)
+        if (planet_verify(&s->p[f], d ? d[f] : 0, n) > 0) bad++;
+    return bad;
+}
+
+/* retire all at death_w (12 tombstones) */
+static inline void planetsys_retire(PlanetSys *s, uint32_t death_w) {
+    if (!s) return;
+    for (uint32_t f = 0; f < PLANET_SYS_N; f++) planet_retire(&s->p[f], death_w);
+}
+
 #endif /* GEO_PLANET_H */
