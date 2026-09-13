@@ -116,6 +116,28 @@ int main(void) {
         CHECK("P6b: all severed after retire", sev);
     }
 
+    /* ── P7: shared bytes are detected, never silent ──────────────
+     * Two planets watching the SAME buffer (caller misconfiguration):
+     * both collect independently. Rule (same as dead KV slots #231):
+     * main must not write watched ranges; violations surface as planet
+     * errors, never silent corruption. */
+    {
+        static int8_t shared[432];
+        for (uint32_t i = 0; i < 432u; i++)
+            shared[i] = (int8_t)((i * 3u + 1u) & 0xFFu);
+        Planet a, b;
+        planet_birth(&a, 91u, 5u, 1000u, shared, 432);
+        planet_birth(&b, 92u, 5u, 2000u, shared, 432);
+        int8_t save = shared[50];
+        shared[50] ^= 0x04;
+        int ra = planet_verify(&a, shared, 432);
+        int rb = planet_verify(&b, shared, 432);
+        shared[50] = save;
+        CHECK("P7: shared-buffer write collected by BOTH, independently",
+              ra == 1 && rb == 1 && a.tail_n == 1u && b.tail_n == 1u &&
+              a.digest == b.digest);
+    }
+
     printf("═ RESULT: %d pass, %d fail ═\n", pass_count, fail_count);
     return fail_count ? 1 : 0;
 }
