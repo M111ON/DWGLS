@@ -159,6 +159,30 @@ int main(void) {
               agree == 0 && div == 1 && planet_replay(&p2, 0, 3, w) == -1);
     }
 
+    /* ── T9: restore from tombstone (deposit path) ─────────────── */
+    {
+        Planet r;
+        planet_birth(&r, 21u, 6u, 300u, buf, 432);
+        planet_retire(&r, 9u);
+        PlanetTomb plate = r.tomb;   /* copy: restore spends the original */
+        int ok = planet_restore(&r, &plate, 9u, buf, 432);
+        int same = (r.id == 21u && r.home == 300u && r.birth_w == 6u &&
+                    r.cur_w == 9u && r.digest == plate.digest &&
+                    r.tail_n == 0u && !r.retired);
+        int8_t bad[432];
+        memcpy(bad, buf, 432);
+        bad[7] ^= 0x08;
+        int changed = planet_restore(&r, &plate, 9u, bad, 432);
+        int shrink_violation = planet_restore(&r, &plate, 4u, buf, 432);
+        PlanetTomb fake = plate;
+        fake.magic = 0u;
+        int badtomb = planet_restore(&r, &fake, 9u, buf, 432);
+        int relive = planet_verify(&r, bad, 432);
+        CHECK("T9: restore ok + soul intact, body-change -2, scale -3, bad tomb -1",
+              ok == 0 && same && changed == -2 && shrink_violation == -3 &&
+              badtomb == -1 && relive == 1 && r.tail_n == 1u);
+    }
+
     printf("═ RESULT: %d pass, %d fail ═\n", pass_count, fail_count);
     return fail_count ? 1 : 0;
 }

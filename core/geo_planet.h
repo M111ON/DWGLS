@@ -133,6 +133,33 @@ static inline void planet_retire(Planet *p, uint32_t death_w) {
     p->retired = 1u;
 }
 
+/* restore (deposit path): re-birth from a tombstone plate. Same soul
+ * (id/home/digest), original max (birth_w) preserved. Strict continuity:
+ *   -1 bad tomb/args, -2 body-changed (bytes differ from tomb digest:
+ *      make a NEW planet instead), -3 scale violation (w_now < birth_w).
+ * Fresh counters, tomb cleared (new life, old plate spent). */
+static inline int planet_restore(Planet *p, const PlanetTomb *t,
+                                 uint32_t w_now, const int8_t *d, uint32_t n) {
+    if (!p || !t || t->magic != PLANET_TOMB_MAGIC) return -1;
+    w_now %= FG_LOCAL;
+    if (w_now < t->birth_w) return -3;
+    uint32_t obs = d ? planet_digest(d, n) : 0u;
+    if (obs != t->digest) return -2;
+    p->magic = PLANET_MAGIC;
+    p->id = t->id;
+    p->home = t->final_home;
+    p->birth_w = t->birth_w;
+    p->cur_w = w_now;
+    p->digest = obs;
+    p->violations = 0u;
+    p->retired = 0u;
+    p->tail_n = 0u;
+    p->tail_overflow = 0u;
+    p->reanchors = 0u;
+    p->tomb.magic = 0u;
+    return 0;
+}
+
 /* replay: walk main's FGLog tail from birth; 0 agrees with main_W_now,
  * 1 diverged, -1 no usable tail. Entangle read — on demand only. */
 static inline int planet_replay(const Planet *p, const FGGearEv *ev,
