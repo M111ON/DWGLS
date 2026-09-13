@@ -41,10 +41,25 @@ static const int32_t C_PE[24] = {
     1,2,2,1,  3,3,1,0,  2,3,1,1
 };
 
+/* ── dodeca closed: derived from outward-oriented faces (dodeca verts
+ * (±1,±1,±1)+(0,±φ,±1/φ)+cyc, face normals = icosa verts, cyclic order by
+ * angle around outward normal; 12 coplanar pentagons, 30 shared edges) ── */
+static const uint32_t D_SIDES[12] = { 5,5,5,5,5,5,5,5,5,5,5,5 };
+static const int32_t D_PF[60] = {
+    6,9,2,8,4,  10,3,11,6,4,  8,0,9,7,5,  7,11,1,10,5,
+    0,8,10,1,6,  3,10,8,2,7,  1,11,9,0,4,  2,9,11,3,5,
+    2,5,10,4,0,  6,11,7,2,0,  4,8,5,3,1,  3,7,9,6,1
+};
+static const int32_t D_PE[60] = {
+    3,4,1,4,0,  4,2,4,0,3,  0,2,3,0,3,  3,0,1,3,0,
+    4,3,0,4,4,  4,2,1,4,4,  3,3,0,0,4,  3,2,1,0,4,
+    0,2,1,1,3,  2,2,1,2,1,  2,2,1,3,0,  1,2,1,1,2
+};
+
 int main(void) {
     printf("═ NET WALK — committed graph only ═\n");
-    uint8_t vis[8];
-    int32_t par[24];
+    uint8_t vis[12];
+    int32_t par[60];
 
     /* ── tetra closed: V=4 E=6 F=4 Euler=2 ── */
     CHECK("W1: tetra gluing reciprocal", nw_reciprocal(4, 3, T_SIDES, T_PF, T_PE) == -1);
@@ -75,6 +90,16 @@ int main(void) {
         CHECK("W8: cube walk=6 V=8 E=12 Euler=2",
               nw_walk(6, 4, C_SIDES, C_PF, vis) == 6 && V == 8u && E == 12u &&
               V - E + 6u == 2u);
+    }
+
+    /* ── dodeca closed: V=20 E=30 F=12 Euler=2 (paper Fig.18 class) ── */
+    CHECK("W9: dodeca gluing reciprocal", nw_reciprocal(12, 5, D_SIDES, D_PF, D_PE) == -1);
+    {
+        uint32_t V = nw_count_vertices(12, 5, D_SIDES, D_PF, D_PE, par);
+        uint32_t E = nw_count_edges(12, 5, D_SIDES, D_PF);
+        CHECK("W10: dodeca walk=12 V=20 E=30 Euler=2",
+              nw_walk(12, 5, D_SIDES, D_PF, vis) == 12 && V == 20u && E == 30u &&
+              V - E + 12u == 2u);
     }
 
     printf("═ RESULT: %d pass, %d fail ═\n", pass_count, fail_count);
