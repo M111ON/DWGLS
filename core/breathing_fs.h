@@ -125,6 +125,10 @@ typedef struct {
     uint32_t planet_mismatch;     /* cumulative block mismatches seen by ticks
                                    * (rc 1 or 2). Caller resets manually. */
     uint32_t fold_count;          /* explicit folds performed (bfs_fold.h) */
+    PlanetTomb tombs[BFS_BLOCKS]; /* retired-planet archive: latest tomb per
+                                   * block id (overwritten on next retire of
+                                   * the same block). tomb.magic==0 = none. */
+    uint32_t tomb_count;          /* cumulative retires (audit) */
 } BreathingFS;
 
 /* ═══════════════ INIT ═══════════════ */
@@ -262,6 +266,53 @@ static inline int bfs_read(const BreathingFS *fs, const char *name,
         if (rc != 0) return -5;
         memcpy(out + offset, dec, bsz);
     }
+    return 0;
+}
+
+/* ═══════════════ DELETE (retire-then-free) ═══════════════
+ * Lifecycle close: every block's planet is retired (tomb archived, gate
+ * shut at death per T13) BEFORE the block is freed — the grave cannot be
+ * reused while alive. death W=0 v1 (same YAGNI as birth W; refine when a
+ * reader needs it). Returns 0 ok, -1 args, -2 not found. */
+static inline int bfs_delete(BreathingFS *fs, const char *name)
+{
+    if (!fs || !name) return -1;
+    int file_idx = -1;
+    for (uint32_t i = 0; i < fs->n_files; i++) {
+        if (fs->files[i].valid && strcmp(fs->files[i].name, name) == 0) {
+            file_idx = (int)i;
+            break;
+        }
+    }
+    if (file_idx < 0) return -2;
+
+    BFSFileEntry *fe = &fs->files[file_idx];
+    for (uint32_t b = 0; b < fe->n_blocks; b++) {
+        uint32_t bi = fe->home_block + b;
+        if (bi >= BFS_BLOCKS) continue;
+        if (fs->planets[bi].magic == PLANET_MAGIC && !fs->planets[bi].retired) {
+            planet_retire(&fs->planets[bi], 0u);
+            fs->tombs[bi] = fs->planets[bi].tomb;
+            fs->tomb_count++;
+        }
+        fs->block_owner[bi] = 0xFFFFFFFF;
+        memset(&fs->block_meta[bi], 0, sizeof(fs->block_meta[bi]));
+    }
+    fs->n_blocks_used -= fe->n_blocks;
+    fs->total_bytes -= fe->total_bytes;
+    /* compact file slots (swap-with-last) so deletes really free; blocks
+     * point at file indices, so repoint the moved file's blocks. */
+    uint32_t last = fs->n_files - 1u;
+    if ((uint32_t)file_idx != last) {
+        fs->files[file_idx] = fs->files[last];
+        BFSFileEntry *mv = &fs->files[file_idx];
+        for (uint32_t b = 0; b < mv->n_blocks; b++) {
+            uint32_t bi = mv->home_block + b;
+            if (bi < BFS_BLOCKS) fs->block_owner[bi] = (uint32_t)file_idx;
+        }
+    }
+    memset(&fs->files[last], 0, sizeof(fs->files[last]));  /* valid=0 */
+    fs->n_files--;
     return 0;
 }
 
