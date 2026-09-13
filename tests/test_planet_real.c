@@ -103,6 +103,26 @@ int main(int argc, char **argv) {
               agree == 0 && (n1 == n0 || div == 1));
     }
 
+    /* ── R7: fan12-as-view over the REAL log (no new storage) ── */
+    {
+        /* r12 = r24 % 12; quad = dc % 4; axis = dx.
+         * Oracle: projected teeth must recover D%12 for every real event. */
+        int ok = (n1 > n0);
+        for (uint32_t i = n0; ok && i < n1; i++) {
+            FGGearEv s = fs.fg_log.ev[i];
+            uint32_t r24 = (uint32_t)s.q * FG_RING + fg_crt(s.dc, s.dx);
+            uint32_t d_full = r24 % FG_FULL;
+            uint32_t r12 = r24 % 12u;
+            uint32_t quad = (uint32_t)s.dc % 4u;
+            /* cross-check: dc/dx decode back to r24 (self-consistency),
+             * and r12 matches d_full % 12 (projection correctness) */
+            if (fg_crt(s.dc, s.dx) != (r24 % FG_RING)) ok = 0;
+            if (r12 != (d_full % 12u)) ok = 0;
+            if (quad != ((r24 % FG_RING) % 4u)) ok = 0;
+        }
+        CHECK("R7: fan12 view derivable from every real fan24 event", ok);
+    }
+
     /* ── real corruption collect + tombstone ── */
     {
         int8_t save = slice[123456];
