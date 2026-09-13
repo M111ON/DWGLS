@@ -19,9 +19,9 @@ static int pass_count = 0, fail_count = 0;
     else      { fail_count++; printf("  T: FAIL — %s\n", desc); } \
 } while (0)
 
-/* independent ref digest (own loop, same spec: h=5381,h=h*33+b) */
-static uint32_t ref_digest(const int8_t *d, uint32_t n) {
-    uint32_t h = 5381u;
+/* independent ref digest (own loop, same spec: h=5381,h=h*33+b, u64) */
+static uint64_t ref_digest(const int8_t *d, uint32_t n) {
+    uint64_t h = 5381u;
     const int8_t *q = d, *end = d + n;
     for (; q < end; q++) h = h * 33u + (uint8_t)*q;
     return h;
@@ -105,7 +105,7 @@ int main(void) {
          * baseline=last observed, tail cleared, scar + epoch counted */
         memcpy(epoch, buf, 432);
         epoch[8] ^= 9;
-        uint32_t last_obs = ref_digest(epoch, 432);
+        uint64_t last_obs = ref_digest(epoch, 432);
         int ok = (rcs[7] == 1 && rcs[8] == 2 && q.tail_n == 0u &&
                   q.reanchors == 1u && q.tail_overflow == 1u &&
                   q.digest == last_obs);
@@ -132,11 +132,12 @@ int main(void) {
     /* ── T7: tombstone on retire, severed after ────────────────── */
     {
         planet_retire(&p1, 9u);
-        CHECK("T7: tombstone plate exact",
+        CHECK("T7: tombstone plate exact (+origin audit)",
               p1.tomb.magic == PLANET_TOMB_MAGIC && p1.tomb.id == 11u &&
               p1.tomb.birth_w == 5u && p1.tomb.death_w == 9u &&
               p1.tomb.final_home == 900u &&
-              p1.tomb.digest == ref_digest(buf, 432));
+              p1.tomb.digest == ref_digest(buf, 432) &&
+              p1.tomb.origin == ref_digest(buf, 432));
         CHECK("T7b: severed — verify=-2, shrink=-1 after retire",
               planet_verify(&p1, buf, 432) == -2 && planet_shrink(&p1, 9u) == -1);
     }
@@ -181,6 +182,23 @@ int main(void) {
         CHECK("T9: restore ok + soul intact, body-change -2, scale -3, bad tomb -1",
               ok == 0 && same && changed == -2 && shrink_violation == -3 &&
               badtomb == -1 && relive == 1 && r.tail_n == 1u);
+    }
+
+    /* ── T10: thaw — fail-closed keyed read ─────────────────────── */
+    {
+        Planet w;
+        planet_birth(&w, 31u, 5u, 400u, buf, 432);
+        uint64_t key = w.digest;
+        int8_t bad[432];
+        memcpy(bad, buf, 432);
+        bad[3] ^= 0x02;
+        int ok_key = (planet_thaw(&w, key, buf, 432) == buf);
+        int bad_key = (planet_thaw(&w, key ^ 1u, buf, 432) == 0);
+        int bad_bytes = (planet_thaw(&w, key, bad, 432) == 0);
+        planet_retire(&w, 9u);
+        int retired = (planet_thaw(&w, key, buf, 432) == 0);
+        CHECK("T10: thaw returns buf on key+bytes, NULL on wrong key/bytes/retired",
+              ok_key && bad_key && bad_bytes && retired);
     }
 
     printf("═ RESULT: %d pass, %d fail ═\n", pass_count, fail_count);

@@ -13,9 +13,13 @@
  *   (adopt current bytes as new baseline, tail cleared, reanchors++,
  *   overflow scar persists). Mirrors breath-engine precedent (anchor
  *   follows data); audit preserved via counters, not silent.
- * TOMBSTONE: one 24B plate on retire {id,birth,death,home,digest} —
+ * TOMBSTONE: one 32B plate on retire {id,birth,death,home,origin,digest}
+ *   (origin = birth key, digest = final key: audit across reanchor epochs) —
  *   region becomes self-describing (deposit vs graveyard = caller's call;
  *   default severed: reads after retire return -2).
+ * V2 (RDH blueprint): 64-bit capture keys (bond-key shape), origin/final
+ *   tomb pair (RDH origin_key precedent), fail-closed keyed thaw; policies
+ *   (birth-max, idle-zero, detach, replay) unchanged.
  *
  * Scale unit = fan24 W tooth [0,144) (int-only, s = 2^(-W/12), W=0 full).
  * Header-only, int-only, no malloc. Owns no bytes (caller passes buffers).
@@ -34,18 +38,20 @@
 /* error record: collected ONLY on verify mismatch (idle = nothing) */
 typedef struct {
     uint32_t w;          /* W tooth at detection */
-    uint32_t expected;   /* birth digest */
-    uint32_t observed;   /* recomputed digest */
+    uint64_t expected;   /* baseline key */
+    uint64_t observed;   /* recomputed key */
 } PlanetErr;
 
-/* tombstone plate: 24 bytes, written once on retire */
+/* tombstone plate: 32 bytes, written once on retire */
 typedef struct {
     uint32_t magic;      /* PLANET_TOMB_MAGIC */
     uint32_t id;
     uint32_t birth_w;
     uint32_t death_w;
     uint32_t final_home;
-    uint32_t digest;
+    uint32_t reserved;
+    uint64_t origin;     /* birth key (never moves) */
+    uint64_t digest;     /* final key at retire */
 } PlanetTomb;
 
 typedef struct {
@@ -54,7 +60,8 @@ typedef struct {
     uint32_t home;       /* anchor in planet frame */
     uint32_t birth_w;    /* max scale point (W=0 full); W_now >= birth_W */
     uint32_t cur_w;      /* current W tooth */
-    uint32_t digest;     /* birth digest of watched bytes */
+    uint64_t origin;     /* birth key (audit across epochs) */
+    uint64_t digest;     /* current baseline key */
     uint32_t violations; /* rejected expansions beyond birth */
     uint32_t retired;    /* 1 after planet_retire */
     uint32_t tail_n;     /* error records stored (0 while healthy) */
@@ -64,9 +71,9 @@ typedef struct {
     PlanetTomb tomb;     /* valid after retire */
 } Planet;
 
-/* djb2-style int-only digest (birth fingerprint of watched bytes) */
-static inline uint32_t planet_digest(const int8_t *d, uint32_t n) {
-    uint32_t h = 5381u;
+/* djb2-64 capture key (birth fingerprint of watched bytes, RDH shape) */
+static inline uint64_t planet_digest(const int8_t *d, uint32_t n) {
+    uint64_t h = 5381u;
     for (uint32_t i = 0; i < n; i++) h = h * 33u + (uint8_t)d[i];
     return h;
 }
@@ -80,7 +87,8 @@ static inline void planet_birth(Planet *p, uint32_t id, uint32_t w,
     p->home = home;
     p->birth_w = w % FG_LOCAL;
     p->cur_w = p->birth_w;
-    p->digest = d ? planet_digest(d, n) : 0u;
+    p->origin = d ? planet_digest(d, n) : 0u;
+    p->digest = p->origin;
     p->violations = 0u;
     p->retired = 0u;
     p->tail_n = 0u;
@@ -95,7 +103,7 @@ static inline void planet_birth(Planet *p, uint32_t id, uint32_t w,
 static inline int planet_verify(Planet *p, const int8_t *d, uint32_t n) {
     if (!p || p->magic != PLANET_MAGIC) return -1;
     if (p->retired) return -2;
-    uint32_t obs = d ? planet_digest(d, n) : 0u;
+    uint64_t obs = d ? planet_digest(d, n) : 0u;
     if (obs == p->digest) return 0;
     if (p->tail_n < PLANET_TAIL_CAP) {
         p->tail[p->tail_n].w = p->cur_w;
@@ -129,6 +137,7 @@ static inline void planet_retire(Planet *p, uint32_t death_w) {
     p->tomb.birth_w = p->birth_w;
     p->tomb.death_w = death_w % FG_LOCAL;
     p->tomb.final_home = p->home;
+    p->tomb.origin = p->origin;
     p->tomb.digest = p->digest;
     p->retired = 1u;
 }
@@ -143,13 +152,14 @@ static inline int planet_restore(Planet *p, const PlanetTomb *t,
     if (!p || !t || t->magic != PLANET_TOMB_MAGIC) return -1;
     w_now %= FG_LOCAL;
     if (w_now < t->birth_w) return -3;
-    uint32_t obs = d ? planet_digest(d, n) : 0u;
+    uint64_t obs = d ? planet_digest(d, n) : 0u;
     if (obs != t->digest) return -2;
     p->magic = PLANET_MAGIC;
     p->id = t->id;
     p->home = t->final_home;
     p->birth_w = t->birth_w;
     p->cur_w = w_now;
+    p->origin = t->origin;
     p->digest = obs;
     p->violations = 0u;
     p->retired = 0u;
@@ -169,6 +179,17 @@ static inline int planet_replay(const Planet *p, const FGGearEv *ev,
     for (uint32_t i = 0; i < n_ev; i++)
         w = (w + (uint32_t)ev[i].q * FG_RING + fg_crt(ev[i].dc, ev[i].dx)) % FG_LOCAL;
     return (w == (main_w_now % FG_LOCAL)) ? 0 : 1;
+}
+
+/* thaw (fail-closed keyed read): returns d iff key matches baseline AND
+ * bytes recompute to it; NULL otherwise (retired, wrong key, corruption).
+ * The read that refuses to lie — residual freeze/thaw shape. */
+static inline const int8_t *planet_thaw(const Planet *p, uint64_t key,
+                                        const int8_t *d, uint32_t n) {
+    if (!p || p->magic != PLANET_MAGIC || p->retired) return 0;
+    if (key != p->digest) return 0;
+    if (!d || planet_digest(d, n) != p->digest) return 0;
+    return d;
 }
 
 /* ═══════════════ 12-PENTAGON REGISTRY (face-spawn system) ═══════════════

@@ -27,8 +27,8 @@ static int pass_count = 0, fail_count = 0;
     else      { fail_count++; printf("  T: FAIL — %s\n", desc); } \
 } while (0)
 
-static uint32_t ref_digest(const int8_t *d, uint32_t n) {
-    uint32_t h = 5381u;
+static uint64_t ref_digest(const int8_t *d, uint32_t n) {
+    uint64_t h = 5381u;
     const int8_t *q = d, *end = d + n;
     for (; q < end; q++) h = h * 33u + (uint8_t)*q;
     return h;
@@ -47,7 +47,11 @@ int main(int argc, char **argv) {
     size_t got = fread(slice, 1, REAL_SLICE_LEN, f);
     fclose(f);
     if (got != REAL_SLICE_LEN) { free(slice); printf("  SKIP — short read\n"); return 0; }
-    printf("  slice: 4.0 MB @+1MB, digest=%08x\n", ref_digest(slice, REAL_SLICE_LEN));
+    {
+        uint64_t dg = ref_digest(slice, REAL_SLICE_LEN);
+        printf("  slice: 4.0 MB @+1MB, digest=%08x%08x\n",
+               (uint32_t)(dg >> 32), (uint32_t)(dg & 0xFFFFFFFFu));
+    }
 
     /* ── real churn beside the planet ── */
     BreathingFS fs;
