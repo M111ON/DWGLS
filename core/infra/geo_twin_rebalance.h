@@ -342,4 +342,140 @@ static inline int tw_verify_data_roundtrip(const uint8_t *src)
     return 0;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   D4 TRIALITY BRIDGE
+   ═══════════════════════════════════════════════════════════════════════════
+   D4 has a unique automorphism called "triality" (order 3) that permutes
+   the three 8-dimensional representations.
+   
+   In our system:
+     View A: Hardware (128 × 162) — DRamTile layout
+     View B: Natural (144 × 144) — field layout
+     View C: Flat (20736)        — common address
+   
+   Triality connects these three views as orbits of D4 automorphism.
+   The three views are NOT independent transforms — they are related
+   by a single D4 triality cycle.
+   
+   flat → (hard) → (nat) → flat is ONE triality orbit.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+typedef enum {
+    TW_VIEW_HARD  = 0,   /* Hardware: 128 × 162 (DRamTile) */
+    TW_VIEW_NAT   = 1,   /* Natural:  144 × 144 (field) */
+    TW_VIEW_FLAT  = 2,   /* Flat:     20736 (common) */
+    TW_VIEW_COUNT = 3
+} TW_ViewID;
+
+/*
+ * tw_triality_cycle — apply one triality step
+ * Cycles: HARD → NAT → FLAT → HARD
+ *
+ * This is NOT a data transform — it's a VIEW TRANSFORM.
+ * The same byte at flat offset F is interpreted differently:
+ *   HARD view: F = anchor × 128 + local
+ *   NAT view:  F = row × 144 + col
+ *   FLAT view: F = offset (no decomposition)
+ */
+static inline TW_ViewID tw_triality_cycle(TW_ViewID v)
+{
+    return (TW_ViewID)((v + 1u) % TW_VIEW_COUNT);
+}
+
+/*
+ * tw_triality_inverse — apply inverse triality step
+ * Cycles: HARD ← NAT ← FLAT ← HARD
+ */
+static inline TW_ViewID tw_triality_inverse(TW_ViewID v)
+{
+    return (TW_ViewID)((v + 2u) % TW_VIEW_COUNT);
+}
+
+/*
+ * tw_triality_apply — apply N triality steps to a view
+ */
+static inline TW_ViewID tw_triality_apply(TW_ViewID v, uint32_t n)
+{
+    return (TW_ViewID)((v + n) % TW_VIEW_COUNT);
+}
+
+/*
+ * tw_triality_flat_to_view — given flat address, get position in target view
+ *
+ * Returns position as a uint32_t[2] pair:
+ *   HARD view: [anchor, local]
+ *   NAT view:  [row, col]
+ *   FLAT view: [offset, 0]
+ */
+typedef struct {
+    uint32_t coord[2];  /* view-specific coordinates */
+    TW_ViewID view;
+} TW_ViewPos;
+
+static inline TW_ViewPos tw_triality_at(uint32_t flat, TW_ViewID view)
+{
+    TW_ViewPos p;
+    p.view = view;
+
+    switch (view) {
+    case TW_VIEW_HARD: {
+        TW_HardAddr h = tw_flat_to_hard(flat);
+        p.coord[0] = h.anchor;
+        p.coord[1] = h.local;
+        break;
+    }
+    case TW_VIEW_NAT: {
+        TW_NatAddr n = tw_flat_to_nat(flat);
+        p.coord[0] = n.row;
+        p.coord[1] = n.col;
+        break;
+    }
+    case TW_VIEW_FLAT:
+    default:
+        p.coord[0] = flat;
+        p.coord[1] = 0;
+        break;
+    }
+    return p;
+}
+
+/*
+ * tw_triality_verify — verify triality cycle consistency
+ *
+ * For all flat addresses, verify:
+ *   flat → HARD → NAT → FLAT = identity
+ *   (3 triality steps return to original)
+ *
+ * Returns 0 on success.
+ */
+static inline int tw_triality_verify(void)
+{
+    for (uint32_t flat = 0; flat < TW_TOTAL; flat++) {
+        /* 3-step cycle: flat → hard → nat → flat */
+        TW_HardAddr h = tw_flat_to_hard(flat);
+        TW_NatAddr  n = tw_hard_to_nat(h);
+        uint32_t    back = tw_nat_to_flat(n);
+        if (back != flat) return -1;
+
+        /* Verify triality_apply consistency */
+        TW_ViewPos ph = tw_triality_at(flat, TW_VIEW_HARD);
+        TW_ViewPos pn = tw_triality_at(flat, TW_VIEW_NAT);
+        TW_ViewPos pf = tw_triality_at(flat, TW_VIEW_FLAT);
+
+        if (ph.coord[0] != h.anchor || ph.coord[1] != h.local) return -2;
+        if (pn.coord[0] != n.row    || pn.coord[1] != n.col)   return -3;
+        if (pf.coord[0] != flat)                                return -4;
+
+        /* Cycle consistency: HARD → NAT → FLAT → HARD */
+        TW_ViewID v = TW_VIEW_HARD;
+        v = tw_triality_cycle(v);   /* → NAT */
+        if (v != TW_VIEW_NAT) return -5;
+        v = tw_triality_cycle(v);   /* → FLAT */
+        if (v != TW_VIEW_FLAT) return -6;
+        v = tw_triality_cycle(v);   /* → HARD */
+        if (v != TW_VIEW_HARD) return -7;
+    }
+    return 0;
+}
+
 #endif /* GEO_TWIN_REBALANCE_H */

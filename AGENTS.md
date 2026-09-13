@@ -63,6 +63,11 @@ I:\DWGLS-native-fs, I:\model, F:\model, I:\llama
 > **MAP not COMPRESS** — Geometry IS the address space.
 > Coordinate = data. No hash, no collision, no lookup table.
 
+## Magic Context (Cross-Platform Memory)
+OpenCode/Pi sessions store learned facts in `~/.local/share/cortexkit/magic-context/context.db`.
+Hermes can read AND write via MCP tools: `magic_search`, `magic_probe`, `magic_remember`, etc.
+**Rule:** Before starting DWGLS/FGLS work, `magic_search` with relevant keywords to check if OpenCode already learned something about this topic. Use `magic_remember` to save important findings back so both platforms share knowledge.
+
 ## Working Rules
 
 ### Geometry Constants (Sacred)

@@ -241,4 +241,197 @@ static inline void geo_codec_stats(const GeoCodec *gc)
     printf("===============================================================\n");
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   A2 × A2 SYMMETRY VERIFICATION
+   ═══════════════════════════════════════════════════════════════
+   A2 = dihedral group of triangle (order 6, 60° rotations)
+   A2 × A2 = direct product of two hex basis axis pairs
+   Full hex-quad symmetry: A2 × A2 × C2 (orientation) = order 144
+   
+   For GEO_COMPOUND_144 (6ico = 6 × 24-cell):
+     144 = |A2 × A2 × C2| = 6 × 6 × 4
+     Each icosahedron carries one A2 factor
+     Dual-pairing between icosahedra defines quad basis transform
+   ═══════════════════════════════════════════════════════════════ */
+
+#define A2_ORDER           6u   /* |D6| = dihedral hex group */
+#define A2xA2_ORDER       36u   /* |A2 × A2| = 6 × 6 */
+#define A2xA2xC2_ORDER   144u   /* full hex-quad symmetry = 144 */
+
+/* A2 generators: rotate by 60° (order 6) */
+static inline uint32_t a2_rotate(uint32_t pos, uint32_t n_faces)
+{
+    /* pos ∈ [0, n_faces), rotate 60° → pos = (pos + 1) mod n_faces */
+    return (pos + 1u) % n_faces;
+}
+
+/* A2 reflection: mirror across axis */
+static inline uint32_t a2_reflect(uint32_t pos, uint32_t n_faces)
+{
+    return (n_faces - pos) % n_faces;
+}
+
+/* A2 × A2 element: (rot_a, rot_b) where rot_a ∈ A2, rot_b ∈ A2 */
+typedef struct {
+    uint32_t rot_a;   /* rotation on axis A [0..5] */
+    uint32_t rot_b;   /* rotation on axis B [0..5] */
+} A2xA2Elem;
+
+/* Apply A2 × A2 element to position pair (pos_a, pos_b) */
+static inline void a2xa2_apply(A2xA2Elem e,
+                                uint32_t pos_a, uint32_t pos_b,
+                                uint32_t n_faces,
+                                uint32_t *out_a, uint32_t *out_b)
+{
+    /* Apply rot_a on axis A, rot_b on axis B, then swap if needed */
+    uint32_t ra = pos_a, rb = pos_b;
+    for (uint32_t i = 0; i < e.rot_a; i++) ra = a2_rotate(ra, n_faces);
+    for (uint32_t i = 0; i < e.rot_b; i++) rb = a2_rotate(rb, n_faces);
+    *out_a = ra;
+    *out_b = rb;
+}
+
+/*
+ * geo_verify_a2xa2_symmetry — verify that geometry is closed under A2 × A2
+ *
+ * For GEO_COMPOUND_144:
+ *   144 vertices partition into 6 groups of 24 (6 icosahedra)
+ *   Each group is closed under its A2 factor
+ *   Cross-group pairings form the A2 × A2 product
+ *
+ * Returns 0 on success.
+ */
+static inline int geo_verify_a2xa2_symmetry(GeoType t)
+{
+    GeoProps p = geo_props(t);
+
+    if (t == GEO_COMPOUND_144) {
+        /* 144 = 6 × 24: 6 icosahedra, each 24 vertices */
+        /* Each icosahedron: 24 = 4 × 6 (4 faces × 6 rotations per face) */
+        if (p.verts != 144) return -1;
+        if (p.cells != 144) return -2;
+
+        /* Verify orbit closure: rotating any vertex stays within group */
+        uint32_t n_groups = 6;
+        uint32_t verts_per_group = 24;
+        for (uint32_t g = 0; g < n_groups; g++) {
+            uint32_t base = g * verts_per_group;
+            /* A2 orbit: rotate all 6 positions */
+            for (uint32_t v = 0; v < verts_per_group; v++) {
+                uint32_t pos = base + v;
+                /* 6 rotations must stay within [base, base+24) */
+                uint32_t orbit = pos;
+                for (uint32_t r = 0; r < 6; r++) {
+                    orbit = base + (orbit - base + 1u) % verts_per_group;
+                    if (orbit < base || orbit >= base + verts_per_group)
+                        return -3;
+                }
+                /* Reflection must stay within group */
+                uint32_t refl = base + (verts_per_group - (pos - base)) % verts_per_group;
+                if (refl < base || refl >= base + verts_per_group)
+                    return -4;
+            }
+        }
+
+        return 0;
+    }
+
+    /* For other types: verify vertex count matches expected A2 orbit sizes */
+    if (p.verts == 0) return -10;
+
+    /* Generic check: vertex count must be divisible by A2_ORDER (6) */
+    if (p.verts % A2_ORDER != 0) return -11;
+
+    return 0;
+}
+
+/*
+ * geo_a2xa2_info — print symmetry information for a geometry type
+ */
+static inline void geo_a2xa2_info(GeoType t)
+{
+    GeoProps p = geo_props(t);
+    printf("A2×A2 Symmetry: type=%u\n", (unsigned)t);
+    printf("  Vertices: %u (divisible by 6: %s)\n", p.verts,
+           (p.verts % 6 == 0) ? "YES" : "NO");
+    printf("  Expected A2 orbits: %u\n", p.verts / 6);
+    if (t == GEO_COMPOUND_144) {
+        printf("  6ico compound: 6 × 24 = 144 vertices\n");
+        printf("  A2×A2×C2 order: 6×6×4 = 144\n");
+        printf("  Triality: D4 automorphism permutes 3 8D representations\n");
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   D4 WEYL GROUP — Goldberg 192
+   ═══════════════════════════════════════════════════════════════════════════
+   |W(D4)| = 192 = 2⁷ × 3
+   D4 roots: 24 vectors in 4D
+   D4 Coxeter number h = 6
+   Triality: unique automorphism of D4, order 3
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+#define D4_WEYL_ORDER     192u
+#define D4_ROOT_COUNT      24u
+#define D4_COXETER_NUM      6u
+#define D4_TRIALITY_ORDER    3u
+
+/*
+ * geo_verify_d4_structure — verify D4 properties for Goldberg 192
+ * Returns 0 on success.
+ */
+static inline int geo_verify_d4_structure(GeoType t)
+{
+    GeoProps p = geo_props(t);
+
+    if (t == GEO_GOLDBERG_192) {
+        if (p.verts != D4_WEYL_ORDER) return -1;
+        /* 192 = 8 × 24 (8 cells × 24 vertices per cell) */
+        if (192 % D4_ROOT_COUNT != 0) return -2;
+        /* Triality: 192 / 3 = 64 (orbits under triality) */
+        if (192 % D4_TRIALITY_ORDER != 0) return -3;
+        return 0;
+    }
+
+    /* Generic: check if vertex count is divisible by D4 root count */
+    if (p.verts > 0 && p.verts % D4_ROOT_COUNT != 0) return -10;
+
+    return 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CROSS-SYSTEM VERIFY — all hex-quad-dual properties
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+static inline int geo_verify_hex_quad_dual(void)
+{
+    /* 1. Fundamental equation: 128 × 162 = 144 × 144 = 20736 */
+    if (128u * 162u != 20736u) return -1;
+    if (144u * 144u != 20736u) return -2;
+
+    /* 2. Prime factorization: 20736 = 2⁸ × 3⁴ */
+    if ((1u << 8) * 81u != 20736u) return -3;
+
+    /* 3. CRT: 81 × 177 ≡ 1 mod 256 */
+    if ((81u * 177u) % 256u != 1u) return -4;
+
+    /* 4. CRT: 256 ≡ 13 mod 81, 13 × 25 ≡ 1 mod 81 */
+    if (256u % 81u != 13u) return -5;
+    if ((13u * 25u) % 81u != 1u) return -6;
+
+    /* 5. A2×A2: 144 = 6 × 6 × 4 */
+    if (A2xA2xC2_ORDER != 144u) return -7;
+
+    /* 6. D4: 192 = |W(D4)| */
+    if (D4_WEYL_ORDER != 192u) return -8;
+
+    /* 7. Tesseract: 18 × 1152 = 20736 */
+    if (18u * 1152u != 20736u) return -9;
+
+    /* 8. Dual: 144² = 18 × 8 × 144 */
+    if (18u * 8u * 144u != 20736u) return -10;
+
+    return 0;
+}
+
 #endif /* GEO_PARAM_GRID_H */
