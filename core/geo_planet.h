@@ -9,6 +9,10 @@
  * BIRTH-MAX: planet is born at its biggest (birth_W = main W at birth);
  *   W_now >= birth_W forever. Shrink/re-widen within bounds OK; expansion
  *   beyond birth REJECTED. Need bigger? Spawn, don't stretch.
+ * OVERFLOW LIFECYCLE: tail full (8) + new mismatch -> AUTO-REANCHOR
+ *   (adopt current bytes as new baseline, tail cleared, reanchors++,
+ *   overflow scar persists). Mirrors breath-engine precedent (anchor
+ *   follows data); audit preserved via counters, not silent.
  * TOMBSTONE: one 24B plate on retire {id,birth,death,home,digest} —
  *   region becomes self-describing (deposit vs graveyard = caller's call;
  *   default severed: reads after retire return -2).
@@ -55,6 +59,7 @@ typedef struct {
     uint32_t retired;    /* 1 after planet_retire */
     uint32_t tail_n;     /* error records stored (0 while healthy) */
     uint32_t tail_overflow;
+    uint32_t reanchors;    /* auto-reanchor epochs (tail-full adoptions) */
     PlanetErr tail[PLANET_TAIL_CAP];
     PlanetTomb tomb;     /* valid after retire */
 } Planet;
@@ -80,10 +85,13 @@ static inline void planet_birth(Planet *p, uint32_t id, uint32_t w,
     p->retired = 0u;
     p->tail_n = 0u;
     p->tail_overflow = 0u;
+    p->reanchors = 0u;
     p->tomb.magic = 0u;
 }
 
-/* verify: 0 ok (tail untouched), 1 mismatch (collected), -2 retired */
+/* verify: 0 ok (tail untouched), 1 mismatch (collected),
+ * 2 auto-reanchored (tail was full: baseline moved to current),
+ * -2 retired */
 static inline int planet_verify(Planet *p, const int8_t *d, uint32_t n) {
     if (!p || p->magic != PLANET_MAGIC) return -1;
     if (p->retired) return -2;
@@ -94,10 +102,14 @@ static inline int planet_verify(Planet *p, const int8_t *d, uint32_t n) {
         p->tail[p->tail_n].expected = p->digest;
         p->tail[p->tail_n].observed = obs;
         p->tail_n++;
-    } else {
-        p->tail_overflow = 1u;
+        return 1;
     }
-    return 1;
+    /* tail full -> adopt current as new baseline (fresh epoch) */
+    p->digest = obs;
+    p->tail_n = 0u;
+    p->tail_overflow = 1u;
+    p->reanchors++;
+    return 2;
 }
 
 /* shrink/re-widen within bounds: W_new >= birth_W. Beyond birth: reject. */

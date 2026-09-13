@@ -90,16 +90,31 @@ int main(void) {
               planet_verify(&p1, buf, 432) == 0 && p1.tail_n == 1u);
     }
 
-    /* ── T5: tail overflow flag (9 errors, cap 8) ──────────────── */
+    /* ── T5: tail full -> AUTO-REANCHOR (fresh epoch, scar kept) ── */
     {
+        Planet q;
+        planet_birth(&q, 14u, 5u, 200u, buf, 432);
+        int8_t epoch[432];
+        int rcs[9];
         for (int k = 0; k < 9; k++) {
-            int8_t bad[432];
-            memcpy(bad, buf, 432);
-            bad[k] ^= (int8_t)(k + 1);
-            planet_verify(&p1, bad, 432);
+            memcpy(epoch, buf, 432);
+            epoch[k] ^= (int8_t)(k + 1);
+            rcs[k] = planet_verify(&q, epoch, 432);
         }
-        CHECK("T5: tail caps at 8 + overflow flag (nothing silently dropped)",
-              p1.tail_n == 8u && p1.tail_overflow == 1u);
+        /* first 8 collected (rc=1), 9th triggers reanchor (rc=2):
+         * baseline=last observed, tail cleared, scar + epoch counted */
+        memcpy(epoch, buf, 432);
+        epoch[8] ^= 9;
+        uint32_t last_obs = ref_digest(epoch, 432);
+        int ok = (rcs[7] == 1 && rcs[8] == 2 && q.tail_n == 0u &&
+                  q.reanchors == 1u && q.tail_overflow == 1u &&
+                  q.digest == last_obs);
+        /* new baseline reads clean; next divergence collects again */
+        int clean = planet_verify(&q, epoch, 432);
+        epoch[9] ^= 0x11;
+        int again = planet_verify(&q, epoch, 432);
+        CHECK("T5: 8 collected, 9th reanchors (rc=2, fresh epoch, scar kept)",
+              ok && clean == 0 && again == 1 && q.tail_n == 1u);
     }
 
     /* ── T6: birth-max — shrink ok, expansion beyond birth rejected ── */
