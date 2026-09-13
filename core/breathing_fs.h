@@ -124,6 +124,7 @@ typedef struct {
                                    * retire hook — planets live with their blocks. */
     uint32_t planet_mismatch;     /* cumulative block mismatches seen by ticks
                                    * (rc 1 or 2). Caller resets manually. */
+    uint32_t fold_count;          /* explicit folds performed (bfs_fold.h) */
 } BreathingFS;
 
 /* ═══════════════ INIT ═══════════════ */
