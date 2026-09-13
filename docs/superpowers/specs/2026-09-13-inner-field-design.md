@@ -20,12 +20,26 @@ Totals: `20736 x 8 cubes x 18 tess = 2,985,984 = 144^3`; one level deeper
   `inner = Q*81+L in [0,20736)` — same shape as `th_node(hi,lo)`.
   Outer slot is the coarse prefix; inner is the full field.
 - L2: `(X,Y,Z)` triple of L1 addresses (one per KIS axis) = `20736^3`.
+  SCOPE: L2 is total across the system, not per cube — cube/tess identity
+  lives inside each axis coordinate (every X/Y/Z resolves via the
+  existing `flat_to_tess`).
 
 ## 3. Code (`core/geo_inner_field.h`, header-only, int-only)
 
+STATUS: L1/L2 are a naming scheme (views of L0 addressing), not new
+storage layers — no group action claimed. Fold (future) will split
+through this address structure; it is specified before fold deliberately.
+
+USE CASE: L1 enables sub-slot addressing — point at 1/144 of a cube's
+inner field independently (partial load / sparse write without
+materializing the cube). L2 is the coordinate frame fold will need.
+
 - `inner_from_outer(q,l,q2,l2) -> inner` (O(1), no lookup)
 - `inner_split(inner, &Q, &L)` / `inner_coarse(inner, &q, &l)`
-- `inner_parent(inner) -> slot` (drop fine digits; lossless inverse of prefix)
+- `inner_parent(inner) -> slot` (LOSSY projection: drops fine digits,
+  144:1 — many inner addresses share one parent; refinement is injective
+  per coarse prefix. Roundtrip holds coarse-side only:
+  `parent(child)==prefix` exact, `child(parent)!=identity` by design.)
 - No storage, no malloc, no float. Reuses `th_node` representation;
   does not modify `tri_hex_tess.h` or `geo_tess_wiring.h`.
 
@@ -35,6 +49,10 @@ Totals: `20736 x 8 cubes x 18 tess = 2,985,984 = 144^3`; one level deeper
   roundtrip all; test oracle = independently written brute-force digit
   formula (never calls impl); mutation check (e.g. `16->15` must go red).
 - L2: sampling + roundtrip (8.9T not exhaustible — stated, not hidden).
+- COMPOSITION (required, not just isolated parent/child):
+  `parent(from_outer(tess,cube,slot,fine)) == slot` checked THROUGH
+  `tess_to_flat`/`flat_to_tess`, i.e.
+  `flat_to_tess(tess_to_flat(tess,cube,parent)) == (tess,cube,slot)`.
 - Tautology guard: parent/child must move digits (identity impl rejected).
 
 ## 5. Scope (honest)
