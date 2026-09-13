@@ -89,6 +89,13 @@ int main(void) {
 
     /* ── P5: replay per planet over real fg_enc chain ── */
     {
+        /* trouble round: every gate opens itself (replay-after-trouble
+         * is the designed path); bytes restored pristine after */
+        for (uint32_t f = 0; f < 12u; f++) buf[f][0] ^= (int8_t)(f + 1u);
+        uint32_t opened_bad = planetsys_verify(&s, bp, P12_N);
+        for (uint32_t f = 0; f < 12u; f++) buf[f][0] ^= (int8_t)(f + 1u);
+        uint32_t gates = 0;
+        for (uint32_t f = 0; f < 12u; f++) gates += s.p[f].link_open;
         FGGearEv ev[2];
         uint32_t w = 5u, targets[2] = { 40u, 99u };
         for (int i = 0; i < 2; i++) {
@@ -98,7 +105,8 @@ int main(void) {
         int ok = 1;
         for (uint32_t f = 0; f < 12u; f++)
             if (planet_replay(&s.p[f], ev, 2, w) != 0) { ok = 0; break; }
-        CHECK("P5: all 12 replay same tail from shared birth (agree)", ok);
+        CHECK("P5: all 12 replay same tail from shared birth (agree)",
+              opened_bad == 12u && gates == 12u && ok);
     }
 
     /* ── P6: retire-all → 12 exact tombstones, all severed ── */

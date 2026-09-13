@@ -34,6 +34,9 @@
 #define PLANET_MAGIC      0x504C4E54u   /* "PLNT" */
 #define PLANET_TOMB_MAGIC 0x544F4D42u   /* "TOMB" */
 #define PLANET_TAIL_CAP   8u            /* error records max, then overflow flag */
+#define PLANET_LINK_MASK  8u            /* voronoi radius: replay walks <= 8 events */
+#define PLANET_LINK_CLOSE_AFTER_CLEAN 3u /* training wheels off: shut + drop
+                                          * tail after 3 consecutive clean */
 
 /* error record: collected ONLY on verify mismatch (idle = nothing) */
 typedef struct {
@@ -67,6 +70,12 @@ typedef struct {
     uint32_t tail_n;     /* error records stored (0 while healthy) */
     uint32_t tail_overflow;
     uint32_t reanchors;    /* auto-reanchor epochs (tail-full adoptions) */
+    uint32_t link_open;    /* entangle gate: 0 shut (default), 1 open.
+                            * Opens ITSELF on mismatch (trouble = pointer
+                            * lands, voronoi mask PLANET_LINK_MASK bounds
+                            * the blast radius). Shuts itself after
+                            * PLANET_LINK_CLOSE_AFTER_CLEAN clean. */
+    uint32_t clean_streak; /* consecutive clean verifies */
     PlanetErr tail[PLANET_TAIL_CAP];
     PlanetTomb tomb;     /* valid after retire */
 } Planet;
@@ -94,17 +103,30 @@ static inline void planet_birth(Planet *p, uint32_t id, uint32_t w,
     p->tail_n = 0u;
     p->tail_overflow = 0u;
     p->reanchors = 0u;
+    p->link_open = 0u;
+    p->clean_streak = 0u;
     p->tomb.magic = 0u;
 }
 
-/* verify: 0 ok (tail untouched), 1 mismatch (collected),
- * 2 auto-reanchored (tail was full: baseline moved to current),
- * -2 retired */
+/* verify: 0 ok (tail untouched), 1 mismatch (collected + link OPENS
+ * itself), 2 auto-reanchored (tail was full: baseline moved to current,
+ * link open), -2 retired */
 static inline int planet_verify(Planet *p, const int8_t *d, uint32_t n) {
     if (!p || p->magic != PLANET_MAGIC) return -1;
     if (p->retired) return -2;
     uint64_t obs = d ? planet_digest(d, n) : 0u;
-    if (obs == p->digest) return 0;
+    if (obs == p->digest) {
+        /* clean: streak toward auto-close (training wheels off) */
+        p->clean_streak++;
+        if (p->clean_streak >= PLANET_LINK_CLOSE_AFTER_CLEAN) {
+            p->link_open = 0u;
+            p->tail_n = 0u;   /* drop tail, keep overflow scar for audit */
+        }
+        return 0;
+    }
+    /* trouble: pointer lands — gate opens itself, streak resets */
+    p->link_open = 1u;
+    p->clean_streak = 0u;
     if (p->tail_n < PLANET_TAIL_CAP) {
         p->tail[p->tail_n].w = p->cur_w;
         p->tail[p->tail_n].expected = p->digest;
@@ -166,15 +188,22 @@ static inline int planet_restore(Planet *p, const PlanetTomb *t,
     p->tail_n = 0u;
     p->tail_overflow = 0u;
     p->reanchors = 0u;
+    p->link_open = 0u;      /* new life, gate shut until trouble */
+    p->clean_streak = 0u;
     p->tomb.magic = 0u;
     return 0;
 }
 
 /* replay: walk main's FGLog tail from birth; 0 agrees with main_W_now,
- * 1 diverged, -1 no usable tail. Entangle read — on demand only. */
+ * 1 diverged, -1 no usable tail, -3 link shut (no trouble = no entry:
+ * replay is the open gate's business only). Mask: walks at most
+ * PLANET_LINK_MASK events from birth (voronoi radius — planet sees a
+ * bounded window even when open). */
 static inline int planet_replay(const Planet *p, const FGGearEv *ev,
                                 uint32_t n_ev, uint32_t main_w_now) {
     if (!p || p->magic != PLANET_MAGIC || !ev) return -1;
+    if (!p->link_open) return -3;
+    if (n_ev > PLANET_LINK_MASK) n_ev = PLANET_LINK_MASK;
     uint32_t w = p->birth_w;
     for (uint32_t i = 0; i < n_ev; i++)
         w = (w + (uint32_t)ev[i].q * FG_RING + fg_crt(ev[i].dc, ev[i].dx)) % FG_LOCAL;

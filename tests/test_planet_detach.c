@@ -146,6 +146,14 @@ int main(void) {
     {
         Planet p2;
         planet_birth(&p2, 13u, 10u, 50u, buf, 432);
+        /* gate shut at birth: replay refuses until trouble opens it */
+        FGGearEv ev0_[1] = {{0u, 0u, 0u}};
+        int shut = planet_replay(&p2, ev0_, 1, 10u);
+        /* trouble round: mismatch on a copy opens the gate, bytes pristine */
+        int8_t tmpb[432];
+        memcpy(tmpb, buf, 432);
+        tmpb[0] ^= 0x01;
+        int opened = (planet_verify(&p2, tmpb, 432) == 1 && p2.link_open == 1u);
         /* build real chain 10 ->..-> w3 with fg_enc (independent path) */
         FGGearEv ev[3];
         uint32_t w = 10u, targets[3] = { 30u, 61u, 100u };
@@ -157,7 +165,8 @@ int main(void) {
         ev[1].dc ^= 1u;   /* tamper one tooth */
         int div = planet_replay(&p2, ev, 3, w);
         CHECK("T8: replay agrees on true tail, diverges on tamper, -1 on NULL",
-              agree == 0 && div == 1 && planet_replay(&p2, 0, 3, w) == -1);
+              shut == -3 && opened && agree == 0 && div == 1 &&
+              planet_replay(&p2, 0, 3, w) == -1);
     }
 
     /* ── T9: restore from tombstone (deposit path) ─────────────── */
@@ -211,6 +220,10 @@ int main(void) {
         int born_folded = (p.birth_w == 64u && p.cur_w == 64u);
         int ok_wide = (planet_shrink(&p, 100064u) == 0 && p.cur_w == 128u);
         int rej_narrow = (planet_shrink(&p, 99937u) == -1);
+        int8_t tmpc[432];   /* trouble round opens the gate (bytes pristine) */
+        memcpy(tmpc, buf, 432);
+        tmpc[1] ^= 0x02;
+        int opened = (planet_verify(&p, tmpc, 432) == 1 && p.link_open == 1u);
         static const FGGearEv ev0[1] = {{0u, 0u, 0u}}; /* Δ=0: stays 64 */
         int rep_fold = planet_replay(&p, ev0, 1, 100000u); /* folds to 64 */
         int rep_div = planet_replay(&p, ev0, 1, 65u);
@@ -218,8 +231,38 @@ int main(void) {
         planet_retire(&p, 100010u);
         int tomb_folded = (p.tomb.death_w == 74u);
         CHECK("T11: large-W folded at birth/shrink/retire/replay",
-              born_folded && ok_wide && rej_narrow &&
+              born_folded && ok_wide && rej_narrow && opened &&
               rep_fold == 0 && rep_div == 1 && rep_null == -1 && tomb_folded);
+    }
+
+    /* ── T12: gate lifecycle — shut birth, self-open, mask, self-close ── */
+    {
+        Planet g;
+        planet_birth(&g, 51u, 0u, 600u, buf, 432);
+        static const FGGearEv z[1] = {{0u, 0u, 0u}};
+        int shut_birth = (planet_replay(&g, z, 1, 0u) == -3);
+        int8_t tmpg[432];
+        memcpy(tmpg, buf, 432);
+        tmpg[2] ^= 0x04;
+        int self_open = (planet_verify(&g, tmpg, 432) == 1 &&
+                         g.link_open == 1u && g.clean_streak == 0u &&
+                         planet_replay(&g, z, 1, 0u) == 0);
+        /* mask proof: 10 events, first 8 Δ=0, last 2 Δ=+10 ({0,2,1}:
+         * crt(2,1)=10). Full walk ends 20 (diverge); masked walk ends 0. */
+        static const FGGearEv ten[10] = {
+            {0u,0u,0u},{0u,0u,0u},{0u,0u,0u},{0u,0u,0u},{0u,0u,0u},
+            {0u,0u,0u},{0u,0u,0u},{0u,0u,0u},{0u,2u,1u},{0u,2u,1u}
+        };
+        int masked = (planet_replay(&g, ten, 10, 0u) == 0);
+        /* 3 consecutive cleans: gate shuts itself, tail dropped, scar kept */
+        int c1 = planet_verify(&g, buf, 432);
+        int c2 = planet_verify(&g, buf, 432);
+        int c3 = planet_verify(&g, buf, 432);
+        int self_close = (c1 == 0 && c2 == 0 && c3 == 0 &&
+                          g.link_open == 0u && g.tail_n == 0u &&
+                          planet_replay(&g, z, 1, 0u) == -3);
+        CHECK("T12: shut at birth, opens on trouble, mask=8, closes after 3 clean",
+              shut_birth && self_open && masked && self_close);
     }
 
     printf("═ RESULT: %d pass, %d fail ═\n", pass_count, fail_count);

@@ -92,19 +92,39 @@ int main(int argc, char **argv) {
     }
     CHECK("R3: real FGXLog self-consistent (reconstruct+enc, all events)", consistent);
 
-    /* ── real replay: late-join planet at chain head (local projection) ── */
+    /* ── real replay: late-join planet at chain head (local projection) ──
+     * Sight rule (mask=8): a planet sees <=8 events from its birth frame.
+     * Short tail (born 8 back): agrees. Long tail (born 256 back):
+     * diverges HONESTLY — rule is re-birth closer, not blind trust. */
     {
         Planet late;
         uint32_t head_local = chain[n0] % FG_LOCAL;
         planet_birth(&late, 22u, head_local, 1u, slice, REAL_SLICE_LEN);
+        /* trouble round in place: gate opens, bytes restored after */
+        slice[999] ^= 0x08;
+        int opened = (planet_verify(&late, slice, REAL_SLICE_LEN) == 1 &&
+                      late.link_open == 1u);
+        slice[999] ^= 0x08;
         /* walk ONLY the new events with the real ev structs */
         int agree = planet_replay(&late, &fs.fg_log.ev[n0], n1 - n0, cur_last % FG_LOCAL);
         FGGearEv tmp[FG_LOG_CAP];
         memcpy(tmp, &fs.fg_log.ev[n0], (n1 - n0) * sizeof(FGGearEv));
         if (n1 - n0 > 0) tmp[0].dc ^= 1u;
         int div = planet_replay(&late, tmp, n1 - n0, cur_last % FG_LOCAL);
-        CHECK("R4: late-join replay agrees on real tail, diverges on tamper",
-              agree == 0 && (n1 == n0 || div == 1));
+        uint32_t tail_len = n1 - n0;
+        /* short-tail proof: born within sight, walks the last <=8 events */
+        Planet near;
+        uint32_t nk = tail_len < 8u ? tail_len : 8u;
+        uint32_t nnear = n1 - nk;
+        planet_birth(&near, 23u, chain[nnear] % FG_LOCAL, 2u, slice, REAL_SLICE_LEN);
+        slice[999] ^= 0x08;
+        int nopened = (planet_verify(&near, slice, REAL_SLICE_LEN) == 1);
+        slice[999] ^= 0x08;
+        int nagree = planet_replay(&near, &fs.fg_log.ev[nnear], nk, cur_last % FG_LOCAL);
+        CHECK("R4: gate opens; short tail agrees; long tail diverges honestly (mask)",
+              opened && nopened && nagree == 0 &&
+              (tail_len <= 8u ? (agree == 0 && (tail_len == 0 || div == 1))
+                              : (agree == 1 && div == 1)));
     }
 
     /* ── R7: fan12-as-view over the REAL log (no new storage) ── */
