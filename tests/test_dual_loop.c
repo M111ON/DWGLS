@@ -93,6 +93,22 @@ int main(void) {
         CHECK("L6: NULL tolerated", 1);
     }
 
+    /* ── L7: 32-unit view — hand boundaries + exhaustive roundtrip ──
+     * flat 20735: face = 31 (31x648 = 20088), local 647 = 7x81 + 80. */
+    {
+        int ends = (d32_face(0) == 0u && d32_wheel(0) == 0u &&
+                    d32_ladder(0) == 0u && d32_face(20735u) == 31u &&
+                    d32_wheel(20735u) == 7u && d32_ladder(20735u) == 80u &&
+                    d32_flat(31u, 7u, 80u) == 20735u);
+        int ok = ends;
+        for (uint32_t f = 0; ok && f < 20736u; f++) {
+            uint32_t fa = d32_face(f), w = d32_wheel(f), l = d32_ladder(f);
+            if (fa >= 32u || w >= 8u || l >= 81u) { ok = 0; break; }
+            if (d32_flat(fa, w, l) != f) { ok = 0; break; }
+        }
+        CHECK("L7: 32x(8x81) view exhaustive (20736/20736, bounds hold)", ok);
+    }
+
     printf("═ RESULT: %d pass, %d fail ═\n", pass_count, fail_count);
     return fail_count ? 1 : 0;
 }

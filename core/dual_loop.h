@@ -74,4 +74,27 @@ static inline void dual_home_to_seed(const uint32_t homes[DUAL_HOMES],
     }
 }
 
+/* ═══════════════ 32-UNIT FIELD VIEW (20+12 summed) ═══════════════
+ * 20 faces + 12 vertices = 32 = the whole icosahedron counted at once
+ * (V+F = 12+20; Euler 12-30+20=2). 32 x 648 = 20736 is a Goldberg level;
+ * each unit splits 648 = 8 x 81 = KIS wheel x Peano ladder (the dual-rail
+ * skeleton #141, per unit). So the loop's two phases summed ARE a field
+ * tiling whose cells carry the dual rail. View only — moves no data. */
+#define DUAL32_UNITS 32u
+#define DUAL32_SLOTS 648u
+#define DUAL32_WHEEL 8u
+#define DUAL32_LADDER 81u
+
+static inline uint32_t d32_face(uint32_t flat) { return flat / DUAL32_SLOTS; }
+static inline uint32_t d32_local(uint32_t flat) { return flat % DUAL32_SLOTS; }
+static inline uint32_t d32_wheel(uint32_t flat) {
+    return d32_local(flat) / DUAL32_LADDER;
+}
+static inline uint32_t d32_ladder(uint32_t flat) {
+    return d32_local(flat) % DUAL32_LADDER;
+}
+static inline uint32_t d32_flat(uint32_t face, uint32_t wheel, uint32_t ladder) {
+    return face * DUAL32_SLOTS + wheel * DUAL32_LADDER + ladder;
+}
+
 #endif /* DUAL_LOOP_H */
