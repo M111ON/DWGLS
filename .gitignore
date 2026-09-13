@@ -1,5 +1,6 @@
 # Build
 build/
+build_arm/
 *.exe
 *.o
 *.obj
@@ -79,3 +80,4 @@ wget-log
 embedServer
 py
 tmp_check_gguf.c
+cookies.txt

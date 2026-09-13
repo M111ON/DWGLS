@@ -50,14 +50,16 @@ static void seed_fs(BreathingFS *fs, int8_t d0[144], int8_t d1[432]) {
     bfs_write(fs, "b.bin", d1, 432);
 }
 
-/* closed metric + tick: identical to the closed probe (folded solid). */
+/* closed metric + tick: identical to the closed probe (folded solid).
+ * Both cur and home mapped onto the ring (home_r = home % space). */
 static int32_t closed_delta_at(uint32_t home_pos, double scale) {
     if (home_pos >= BFS_TOTAL_SLOTS) return 0;
     double shifted = (double)home_pos * scale;
     uint32_t space = (uint32_t)(BFS_TOTAL_SLOTS * scale);
     if (space < 1) space = 1;
     uint32_t cur = ((uint32_t)shifted) % space;
-    int32_t d = (int32_t)cur - (int32_t)home_pos;
+    uint32_t home_r = home_pos % space;
+    int32_t d = (int32_t)cur - (int32_t)home_r;
     int32_t half = (int32_t)(space / 2u);
     if (d > half) d -= (int32_t)space;
     else if (d < -half) d += (int32_t)space;
