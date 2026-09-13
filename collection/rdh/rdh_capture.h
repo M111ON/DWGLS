@@ -58,30 +58,31 @@ extern "C" {
    Path length = fuse length (data determines when it reaches home).
    ═══════════════════════════════════════════════════════════════════════════ */
 
-/* Walk stride directions encoded in data bytes.
- * Each byte's low 4 bits = direction on 12-gon.
+/* Walk stride directions encoded in data nibbles.
+ * hi=0: low 4 bits (original fuse); hi!=0: high 4 bits (twin fuse).
  * Accumulates (dx, dy) steps regardless of data length.
  *
  * This is the ONLY function that touches data bytes.
  * Everything downstream works from the integer result.
  *
  * Returns flat key via RDH config. */
-static inline int64_t rdh_capture(const uint8_t *data, size_t len,
-                                  const RDHConfig *cfg)
+static inline int64_t rdh_capture_nib(const uint8_t *data, size_t len,
+                                      const RDHConfig *cfg, int hi)
 {
     int32_t field_w = (int32_t)cfg->n_wedges;
     int32_t field_h = (int32_t)cfg->n_rings;
-    
+
     int64_t acc_x = 0, acc_y = 0;
-    
+
     /* Walk — fold every 4096 steps to prevent int64_t overflow on huge files.
      * Periodic fold keeps accumulator bounded to O(field_size + 4096).
-     * Minimum walk = 48 (GEO_BLOCK, atomic unit). Shorter data auto-cycles. */
+     * Minimum walk = 48 (GEO_BLOCK, atomic unit). Shorter data auto-cycles.
+     * NOTE: len==0 divides by zero (pre-existing; callers pass len>=1). */
     size_t steps = (len < 48) ? 48 : len;
-    
+
     for (size_t i = 0; i < steps; i++) {
         uint32_t b = data[i % len];
-        uint32_t dir = b & 0x0F;
+        uint32_t dir = hi ? ((b >> 4) & 0x0F) : (b & 0x0F);
         
         switch (dir) {
             case 0:  acc_x++;                  break;
@@ -115,12 +116,40 @@ static inline int64_t rdh_capture(const uint8_t *data, size_t len,
     return rdh_key(cfg, ring, wedge, 0, 0, 0);
 }
 
+/* Original entry point: low-nibble fuse (behavior unchanged). */
+static inline int64_t rdh_capture(const uint8_t *data, size_t len,
+                                  const RDHConfig *cfg)
+{
+    return rdh_capture_nib(data, len, cfg, 0);
+}
+
+/* TWIN: two independent addresses per datum (multi-view consensus +
+ * restore path, house philosophy #196). k1 = low-nibble walk, k2 =
+ * high-nibble walk — same engine, independent fuses. A datum tampered
+ * in one nibble plane moves one key, not the other (proved in test).
+ * Placement of the two keys is downstream's business (capture returns
+ * keys; it does not place them). */
+static inline void rdh_capture_twin(const uint8_t *data, size_t len,
+                                    const RDHConfig *cfg,
+                                    int64_t *k1, int64_t *k2)
+{
+    int64_t a = rdh_capture_nib(data, len, cfg, 0);
+    int64_t b = rdh_capture_nib(data, len, cfg, 1);
+    if (k1) *k1 = a;
+    if (k2) *k2 = b;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    PRESETS — RDH configs for common enclosure fields
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /* 144×144 field (base enclosure) → 20,736 unique addresses */
 #define RDH_CAPTURE_144    ((RDHConfig){ 144, 144, 1, 1, 1 })
+
+/* TWIN field: 64 rings × 81 wedges = 5184 = K (quarter field).
+ * One twin key lives here; the pair covers half a field. Named per the
+ * 64×81 formula (World-A square × World-B square). */
+#define RDH_TWIN_64x81     ((RDHConfig){ 64, 81, 1, 1, 1 })
 
 /* Scaled field = 144×S by 144×S, capacity = (144×S)² 
  * Scale 49 → 1,016,064 ≈ 1M unique addresses */
