@@ -26,7 +26,11 @@
 #define BFS_TOTAL_SLOTS    20736u
 #define BFS_BLOCKS         144u
 #define BFS_SLOTS_BLOCK    144u
-#define BFS_SEEKER_K       5184u
+#define BFS_SEEKER_K       ((8u*9u)*(8u*9u)) /* 5184 = 72^2 = 64*81
+                                              * (interaction plane squared =
+                                              * binary-square x ternary-square
+                                              * = quarter field). Derived,
+                                              * not magic. */
 #define BFS_MAX_FILES      64u
 #define BFS_MAX_NAME       32u
 
