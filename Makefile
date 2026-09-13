@@ -147,6 +147,9 @@ TIER1 := \
   test_gpu_pipeline \
   test_d4_linesum_bridge \
   test_twin_rebalance \
+  test_triality_serve \
+  test_lblock_bridge \
+  test_rr_gate \
     test_fractal_addr \
     test_entropy_quadtree
 

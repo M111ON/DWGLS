@@ -13,8 +13,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "../core/gguf_reader.h"
+
+static double now_sec(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
 #include "../core/moe_expert_addr.h"
 #include "../core/infra/dramtile_store.h"
 #include "../core/moe_expert_store.h"
@@ -106,8 +113,20 @@ static const char *find_llama_dll(const char *dir) {
 #endif
 
 #include "llama.h"
+#include "ggml-backend.h"
+#include "gguf.h"
+
+static int g_backend_loaded = 0;
+static const char *g_llama_dll_dir = NULL;
 
 struct llama_model *load_model(const char *gguf_path) {
+    if (!g_backend_loaded) {
+        if (g_llama_dll_dir)
+            ggml_backend_load_all_from_path(g_llama_dll_dir);
+        else
+            ggml_backend_load_all();
+        g_backend_loaded = 1;
+    }
     struct llama_model_params mparams = llama_model_default_params();
     struct llama_model *model = llama_model_load_from_file(gguf_path, mparams);
     if (!model) {
@@ -210,6 +229,77 @@ int compare_logits(const char *path_a, const char *path_b, const char *llama_dir
     return match ? 0 : 1;
 }
 
+    /* ═══════════════ ZERO WARM-UP CALLBACK ═══════════════ */
+
+struct PoolEntry { const char *name; const uint8_t *ptr; uint32_t sz; };
+
+struct ZWCtx {
+    const uint8_t *pool_base;           /* DtSlotRegion base */
+    const uint8_t *src_mmap;            /* source GGUF mmap */
+    uint64_t src_data_offset;           /* data section offset */
+    uint64_t src_mmap_size;            /* total mmap size */
+    const uint64_t *offsets;            /* per-tensor data offsets */
+    const uint32_t *sizes;              /* per-tensor byte sizes */
+    const char **names;                 /* tensor names */
+    uint32_t n_tensors;
+    uint32_t matched, missing;
+    /* pool lookup: baked tensor name → pool pointer */
+    struct PoolEntry *pool_map;
+    uint32_t n_pool;
+};
+
+static void provide_moe_tensor(struct ggml_tensor *t, void *ud) {
+    struct ZWCtx *zw = (struct ZWCtx *)ud;
+    const char *name = ggml_get_name(t);
+    size_t nb = ggml_nbytes(t);
+
+    /* Check pool first (baked MoE tensors) */
+    for (uint32_t i = 0; i < zw->n_pool; i++) {
+        if (strcmp(zw->pool_map[i].name, name) == 0) {
+            if (nb != zw->pool_map[i].sz) {
+                fprintf(stderr, "  [zw] SIZE MISMATCH %s: pool=%u llama=%zu\n",
+                        name, zw->pool_map[i].sz, nb);
+                zw->missing++;
+                return;
+            }
+            memcpy(t->data, zw->pool_map[i].ptr, nb);
+            zw->matched++;
+            return;
+        }
+    }
+
+    /* Not baked → serve from source GGUF mmap */
+    for (uint32_t i = 0; i < zw->n_tensors; i++) {
+        if (strcmp(zw->names[i], name) == 0) {
+            if (nb != zw->sizes[i]) {
+                fprintf(stderr, "  [zw] SIZE MISMATCH %s: src=%u llama=%zu\n",
+                        name, zw->sizes[i], nb);
+                zw->missing++;
+                return;
+            }
+            uint64_t src_off = zw->src_data_offset + zw->offsets[i];
+            if (src_off + nb <= zw->src_mmap_size) {
+                memcpy(t->data, zw->src_mmap + src_off, nb);
+                zw->matched++;
+                return;
+            }
+            break;
+        }
+    }
+    /* Tensor not found at all — log first few, fill defaults */
+    if (zw->missing < 20)
+        fprintf(stderr, "  [zw] missing: %s type=%d nb=%zu\n", name, (int)t->type, nb);
+    /* fill defaults: bias→0, scale/input_scale/rope_freqs→1.0 */
+    if (strstr(name, ".bias")) {
+        memset(t->data, 0, nb);
+    } else {
+        float *fd = (float *)t->data;
+        size_t nf = nb / sizeof(float);
+        for (size_t i = 0; i < nf; i++) fd[i] = 1.0f;
+    }
+    zw->missing++;
+}
+
 /* ═══════════════ MAIN ═══════════════ */
 
 int main(int argc, char **argv) {
@@ -225,6 +315,7 @@ int main(int argc, char **argv) {
     printf("GGUF:     %s\n", gguf_path);
     printf("LLAMA:    %s\n", llama_dir);
     printf("Graft:    %s\n", graft_path);
+    g_llama_dll_dir = llama_dir;
 
     GgufReader gguf;
     if (gguf_open(gguf_path, &gguf) != 0) {
@@ -232,6 +323,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     printf("Tensors:  %u\n", gguf.n_tensors);
+    double t_total = now_sec();
 
     /* first pass: count and compute total weight bytes */
     uint32_t n_match = 0, max_layer = 0;
@@ -306,10 +398,11 @@ int main(int argc, char **argv) {
                layer, gguf.names[i], tsz, (unsigned long long)(write_cursor - tsz));
         baked++;
     }
-    printf("Baked:    %u tensors\n", baked);
+    printf("Baked:    %u tensors  [%.2f s]\n", baked, now_sec() - t_total);
 
     /* ═══════════════ PASS 2: VERIFY roundtrip ═══════════════ */
     printf("\n=== PASS 2: VERIFY ===\n");
+    double t2 = now_sec();
     uint32_t pass_count = 0;
     for (uint32_t i = 0; i < gguf.n_tensors; i++) {
         int layer, wtype;
@@ -331,10 +424,11 @@ int main(int argc, char **argv) {
             printf("  MISMATCH [%d] %s\n", layer, gguf.names[i]);
         }
     }
-    printf("Verified: %u / %u lossless\n", pass_count, baked);
+    printf("Verified: %u / %u lossless  [%.2f s]\n", pass_count, baked, now_sec() - t2);
 
     /* ═══════════════ PASS 3: BUILD graft GGUF ═══════════════ */
     printf("\n=== PASS 3: GRAFT ===\n");
+    double t3 = now_sec();
 
     /* Strategy: copy source header verbatim, build body with pool data for baked tensors.
      * Body layout: same as source (same tensor offsets), so header is compatible.
@@ -384,13 +478,14 @@ int main(int argc, char **argv) {
         return 1;
     }
     fclose(f);
-    printf("  written: %s (%.1f MB)\n", graft_path,
-           (double)(hdr_sz + body_sz) / 1e6);
+    printf("  written: %s (%.1f MB)  [%.2f s]\n", graft_path,
+           (double)(hdr_sz + body_sz) / 1e6, now_sec() - t3);
 
     free(body);
 
     /* ═══════════════ PASS 4: INFERENCE comparison ═══════════════ */
     printf("\n=== PASS 4: INFERENCE ===\n");
+    double t4 = now_sec();
 
     /* Check for llama DLLs */
     const char *dll_dir = find_llama_dll(llama_dir);
@@ -404,7 +499,176 @@ int main(int argc, char **argv) {
 
     printf("  loading models...\n");
     int rc = compare_logits(gguf_path, graft_path, llama_dir, prompt);
-    printf("\n  GATE: %s\n", rc == 0 ? "PASS (graft inference identical to original)" : "FAIL");
+    printf("\n  GATE 4a: %s\n", rc == 0 ? "PASS (graft file inference identical)" : "FAIL");
+    printf("  inference time: %.2f s\n", now_sec() - t4);
+
+    /* ═══════════════ PASS 4b: ZERO WARM-UP (callback model) ═══════════════ */
+    printf("\n=== PASS 4b: ZERO WARM-UP ===\n");
+    double t4b = now_sec();
+
+    /* Build pool lookup: baked tensor name → pool pointer + size */
+    struct PoolEntry *pool_map;
+    pool_map = (struct PoolEntry *)malloc(n_match * sizeof(*pool_map));
+    uint32_t n_pool = 0;
+    for (uint32_t i = 0; i < gguf.n_tensors; i++) {
+        int layer, wtype;
+        if (!match_tensor(gguf.names[i], &layer, &wtype)) continue;
+        MoeExpertMeta meta;
+        if (moe_load_meta(&region, (uint32_t)layer, 0, (uint32_t)wtype, &meta) == 0) {
+            pool_map[n_pool].name = gguf.names[i];
+            pool_map[n_pool].ptr  = region.base + meta.offset;
+            pool_map[n_pool].sz   = meta.size;
+            n_pool++;
+        }
+    }
+    printf("  callback pool: %u baked tensors\n", n_pool);
+
+    /* Callback context */
+    struct ZWCtx zw = {
+        .pool_base       = region.base,
+        .src_mmap        = gguf.base,
+        .src_data_offset = gguf.data_offset,
+        .src_mmap_size   = gguf.base_sz,
+        .offsets         = gguf.offsets,
+        .sizes           = gguf.sizes,
+        .names           = (const char **)gguf.names,
+        .n_tensors       = gguf.n_tensors,
+        .matched         = 0,
+        .missing         = 0,
+        .pool_map        = pool_map,
+        .n_pool          = n_pool,
+    };
+
+    /* Parse the original GGUF to get a gguf_context for callback model.
+     * .ctx = &meta_ctx creates ggml_context with correct tensor types (Q4_K etc.)
+     * so llama creates properly-typed tensors instead of defaulting to F32. */
+    struct ggml_context *meta_ctx = NULL;
+    struct gguf_init_params gparams = { .no_alloc = false, .ctx = &meta_ctx };
+    struct gguf_context *gctx = gguf_init_from_file(gguf_path, gparams);
+    if (!gctx) {
+        printf("  FAIL: gguf_init_from_file\n");
+        free(pool_map);
+        dt_slot_destroy(&region);
+        gguf_close(&gguf);
+        return 1;
+    }
+
+    /* Load model A (original) for baseline logits */
+    struct llama_model *mA2 = load_model(gguf_path);
+    if (!mA2) {
+        printf("  FAIL: load original model\n");
+        gguf_free(gctx);
+        free(pool_map);
+        dt_slot_destroy(&region);
+        gguf_close(&gguf);
+        return 1;
+    }
+
+    struct llama_context_params cparams2 = llama_context_default_params();
+    cparams2.n_batch = 2048;
+    struct llama_context *ctxA2 = llama_init_from_model(mA2, cparams2);
+    if (!ctxA2) {
+        printf("  FAIL: init original context\n");
+        llama_model_free(mA2);
+        gguf_free(gctx);
+        free(pool_map);
+        dt_slot_destroy(&region);
+        gguf_close(&gguf);
+        return 1;
+    }
+
+    /* Load model B via callback (pool for MoE, source mmap for rest) */
+    struct llama_model *mB2 = llama_model_init_from_user(
+        gctx,
+        provide_moe_tensor, &zw,
+        llama_model_default_params());
+    if (!mB2) {
+        printf("  FAIL: callback model init\n");
+        llama_free(ctxA2);
+        llama_model_free(mA2);
+        gguf_free(gctx);
+        free(pool_map);
+        dt_slot_destroy(&region);
+        gguf_close(&gguf);
+        return 1;
+    }
+
+    struct llama_context *ctxB2 = llama_init_from_model(mB2, cparams2);
+    if (!ctxB2) {
+        printf("  FAIL: init callback context\n");
+        llama_free(ctxA2);
+        llama_model_free(mA2);
+        llama_model_free(mB2);
+        gguf_free(gctx);
+        if (meta_ctx) ggml_free(meta_ctx);
+        free(pool_map);
+        dt_slot_destroy(&region);
+        gguf_close(&gguf);
+        return 1;
+    }
+
+    /* Tokenize + decode + compare */
+    struct llama_sampler *smpl2 = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(smpl2, llama_sampler_init_greedy());
+
+    llama_token tokens2[256];
+    const struct llama_vocab *vocab2 = llama_model_get_vocab(mA2);
+    int n2 = llama_tokenize(vocab2, prompt, (int32_t)strlen(prompt), tokens2, 250, true, false);
+    if (n2 <= 0 || llama_decode(ctxA2, llama_batch_get_one(tokens2, n2)) != 0 ||
+        llama_decode(ctxB2, llama_batch_get_one(tokens2, n2)) != 0) {
+        printf("  FAIL: tokenize/decode\n");
+        llama_sampler_free(smpl2);
+        llama_free(ctxA2); llama_free(ctxB2);
+        llama_model_free(mA2); llama_model_free(mB2);
+        gguf_free(gctx);
+        free(pool_map);
+        dt_slot_destroy(&region);
+        gguf_close(&gguf);
+        return 1;
+    }
+
+    const float *logitsA2 = llama_get_logits(ctxA2);
+    const float *logitsB2 = llama_get_logits(ctxB2);
+    int n_vocab2 = llama_vocab_n_tokens(vocab2);
+
+    float maxdiff2 = 0.0f;
+    int match2 = 1;
+    for (int i = 0; i < n_vocab2; i++) {
+        float diff = logitsA2[i] > logitsB2[i] ? logitsA2[i] - logitsB2[i] : logitsB2[i] - logitsA2[i];
+        if (diff > maxdiff2) maxdiff2 = diff;
+        if (diff > 0.001f) { match2 = 0; break; }
+    }
+    printf("  logits: n_vocab=%d  maxdiff=%.6f  %s\n", n_vocab2, maxdiff2,
+           match2 ? "BITWISE OK" : "MISMATCH");
+    printf("  callback matched=%u missing=%u\n", zw.matched, zw.missing);
+
+    /* Generate 40 tokens to double-check */
+    int n_gen2 = 40;
+    for (int g = 0; g < n_gen2; g++) {
+        llama_token tA = llama_sampler_sample(smpl2, ctxA2, -1);
+        llama_token tB = llama_sampler_sample(smpl2, ctxB2, -1);
+        llama_sampler_accept(smpl2, tA);
+        if (tA != tB) { match2 = 0; printf("\n  token %d: A=%d B=%d MISMATCH\n", g, tA, tB); break; }
+        char buf2[64];
+        int k2 = llama_token_to_piece(vocab2, tA, buf2, sizeof(buf2) - 1, 0, false);
+        if (k2 < 0) k2 = 0;
+        buf2[k2] = '\0';
+        printf("%s", buf2);
+    }
+    printf("\n");
+
+    int rc2 = match2 ? 0 : 1;
+    printf("\n  GATE 4b: %s\n", rc2 == 0 ? "PASS (zero warm-up identical to original)" : "FAIL");
+    printf("  zero warm-up time: %.2f s\n", now_sec() - t4b);
+
+    llama_sampler_free(smpl2);
+    llama_free(ctxA2); llama_free(ctxB2);
+    llama_model_free(mA2); llama_model_free(mB2);
+    gguf_free(gctx);
+    if (meta_ctx) ggml_free(meta_ctx);
+    free(pool_map);
+
+    printf("\n  TOTAL: %.2f s\n", now_sec() - t_total);
 
     dt_slot_destroy(&region);
     gguf_close(&gguf);

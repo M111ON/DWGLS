@@ -47,10 +47,11 @@ static int test_cell_boundary(void) {
 }
 
 static int test_masked_seek(void) {
+    Spotlight s = vm_spotlight_make(0, VM_SPOTLIGHT_RADIUS);
     for (uint32_t cell = 0; cell < VM_CELLS; cell++) {
         MaskedPointer p = vm_seed_pointer(cell);
         for (int32_t d = -200; d <= 200; d++) {
-            MaskedPointer q = vm_masked_seek(p, d);
+            MaskedPointer q = vm_masked_seek(p, d, &s);
             if (q.cell_id != p.cell_id) {
                 printf("  FAIL: cell %u seek %d → cell %u (overflow)\n", cell, d, q.cell_id);
                 return 0;
@@ -92,7 +93,8 @@ static int test_masked_rw(void) {
 
 static int test_overflow_seek(void) {
     MaskedPointer p = vm_mask(100); /* cell 0, local 100 */
-    MaskedPointer q = vm_masked_seek_overflow(p, 900); /* should cross to cell 1 */
+    Spotlight s = vm_spotlight_make(p.local, VM_SPOTLIGHT_RADIUS);
+    MaskedPointer q = vm_masked_seek_overflow(p, 900, &s); /* should cross to cell 1 */
 
     if (q.cell_id == p.cell_id) {
         printf("  FAIL: overflow seek didn't cross cell boundary\n");

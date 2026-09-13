@@ -30,6 +30,8 @@ typedef SOCKET sock_t;
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <fcntl.h>
 typedef int sock_t;
 #define SOCK_INVALID (-1)
 #define sock_close(s) close(s)
@@ -122,63 +124,32 @@ static int load_pack_tensor(TensorHook *h, const char *name, uint32_t cell_size,
     return (cells_left == 0) ? (int)capo_count : -4;
 }
 
-static void provide_tensor(struct ggml_tensor *t, void *ud) {
-    TensorHook *h = (TensorHook *)ud;
-    const char *name = ggml_get_name(t);
-    size_t need = (size_t)ggml_nbytes(t);
-    uint8_t *dst = (uint8_t *)t->data;
-
-    if (!name || name[0] == '\0' || need == 0) {
-        if (dst && need) memset(dst, 0, need);
-        h->n_zero++;
-        return;
-    }
-
-    uint32_t csz = cell_size_of(t->type);
-    uint64_t total_cells = (csz == 0) ? 0
-        : (uint64_t)ggml_nelements(t) / ggml_blck_size(t->type);
-    if (csz != 0 && total_cells * csz == need) {
-        double t0 = now_ms();
-        int rc = load_pack_tensor(h, name, csz, total_cells, dst);
-        h->ms_pack += now_ms() - t0;
-        if (rc > 0) { h->n_pack++; h->b_pack += need; return; }
-        if (rc != -1)
-            fprintf(stderr, "  [server] PACK-FAIL %s rc=%d\n", name, rc);
-    }
-
-    memset(dst, 0, need);
-
-    size_t nm_len = strlen(name);
-    if ((nm_len >= 6 && strcmp(name + nm_len - 6, ".scale") == 0) ||
-        (nm_len >= 13 && strcmp(name + nm_len - 13, ".input_scale") == 0)) {
-        for (size_t k = 0; k + 4 <= need; k += 4)
-            *(float *)(dst + k) = 1.0f;
-    }
-
-    h->n_zero++;
-}
-
 /* ── llama CPU backend loader ── */
 static void register_cpu_backend(const char *dir) {
-    static const char *cpu_plugins[] = {
-        "ggml-cpu-zen4.dll", "ggml-cpu-alderlake.dll",
-        "ggml-cpu-icelake.dll", "ggml-cpu-sapphirerapids.dll",
-        "ggml-cpu-haswell.dll", "ggml-cpu-cannonlake.dll",
-        "ggml-cpu-cooperlake.dll", "ggml-cpu-skylakex.dll",
-        "ggml-cpu-cascadelake.dll", "ggml-cpu-piledriver.dll",
-        "ggml-cpu-ivybridge.dll", "ggml-cpu-sandybridge.dll",
-        "ggml-cpu-sse42.dll", NULL
-    };
-    char dll_path[MAX_PATH];
-    int loaded = 0;
-    for (int i = 0; cpu_plugins[i]; i++) {
-        snprintf(dll_path, sizeof(dll_path), "%s\\%s", dir, cpu_plugins[i]);
-        if (ggml_backend_load(dll_path)) { loaded = 1; fprintf(stderr, "  loaded %s\n", cpu_plugins[i]); break; }
+    char dll_path[1024];
+    fprintf(stderr, "Loading backends from: %s\n", dir);
+
+    /* Try loading CPU backends explicitly */
+    const char *cpu_names[] = {"ggml-cpu.dll", "ggml-cpu-x64.dll", NULL};
+    for (int i = 0; cpu_names[i]; i++) {
+        snprintf(dll_path, sizeof(dll_path), "%s\\%s", dir, cpu_names[i]);
+        ggml_backend_t b = ggml_backend_load(dll_path);
+        fprintf(stderr, "  load %s: %s\n", cpu_names[i], b ? "OK" : "FAIL");
     }
-    if (!loaded) {
-        fprintf(stderr, "  (CPU-only load failed, falling back to load-all)\n");
-        ggml_backend_load_all_from_path(dir);
+
+    /* Try Vulkan */
+    snprintf(dll_path, sizeof(dll_path), "%s\\ggml-vulkan.dll", dir);
+    ggml_backend_t b = ggml_backend_load(dll_path);
+    fprintf(stderr, "  load ggml-vulkan.dll: %s\n", b ? "OK" : "FAIL");
+
+    int nvulkan = 0, ncpu = 0;
+    for (size_t i = 0; i < ggml_backend_reg_count(); i++) {
+        const char *name = ggml_backend_reg_name(ggml_backend_reg_get(i));
+        fprintf(stderr, "  backend[%zu]: %s\n", i, name);
+        if (strstr(name, "vulkan") || strstr(name, "Vulkan")) nvulkan++;
+        else ncpu++;
     }
+    fprintf(stderr, "Backends: %d CPU, %d Vulkan\n", ncpu, nvulkan);
 }
 
 /* ── simple JSON string escaping for HTTP responses ── */
@@ -357,14 +328,15 @@ static char *extract_messages_content(const char *json, char *buf, int cap) {
 }
 
 int main(int argc, char **argv) {
-    const char *pack_path = (argc > 1) ? argv[1] : NULL;
-    int port = (argc > 2) ? atoi(argv[2]) : 0;
-    const char *dll_dir   = (argc > 3) ? argv[3] : "I:\\llama\\llama-v040-bin-win-vulkan-x64";
+    const char *pack_path  = (argc > 1) ? argv[1] : NULL;
+    int port               = (argc > 2) ? atoi(argv[2]) : 0;
+    const char *dll_dir    = (argc > 3) ? argv[3] : "I:\\llama\\llama-v040-bin-win-vulkan-x64";
+    const char *src_gguf   = (argc > 4) ? argv[4] : NULL;
     if (!port) { const char *ep = getenv("TESS_PORT"); port = ep ? atoi(ep) : 8080; }
     if (port < 1 || port > 65535) port = 8080;
     int n_gpu = 0;
     { const char *eg = getenv("TESS_NGPU"); if (eg) n_gpu = atoi(eg); }
-    if (!pack_path) { fprintf(stderr, "Usage: tesspack_server <tesspack> [port] [dll_dir]\n"); return 1; }
+    if (!pack_path) { fprintf(stderr, "Usage: tesspack_server <tesspack> [port] [dll_dir] [source_gguf]\n"); return 1; }
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
@@ -385,7 +357,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Pack: %s (%u capos, %.1f MB)\n",
             pack_path, pi.n_capos, (double)pi.file_sz / 1e6);
 
-    /* ── extract embedded GGUF header → sparse temp file ── */
+    /* ── extract embedded GGUF header ── */
     uint64_t hdr_sz = 0;
     const uint8_t *hdr_bytes = tess_pack_get_gguf_header(&pi, &hdr_sz);
     if (!hdr_bytes || hdr_sz == 0) {
@@ -394,49 +366,136 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr, "Embedded header: %llu bytes\n", (unsigned long long)hdr_sz);
 
+    /* ── parse header to get tensor metadata ── */
     char tmp_gguf[MAX_PATH];
-    snprintf(tmp_gguf, sizeof(tmp_gguf), "%s\\tesspack_server_hdr.tmp",
+    snprintf(tmp_gguf, sizeof(tmp_gguf), "%s\\tesspack_server.tmp",
              getenv("TEMP") ? getenv("TEMP") : ".");
     FILE *tf = fopen(tmp_gguf, "wb");
     if (!tf) { fprintf(stderr, "FAIL: tmp create\n"); tess_pack_close(&pi); return 1; }
     fwrite(hdr_bytes, 1, (size_t)hdr_sz, tf);
-    uint64_t pad_to = hdr_sz + (1024ULL * 1024 * 1024);
-    _fseeki64(tf, (long)(pad_to - 1), SEEK_SET);
-    fputc(0, tf);
     fclose(tf);
 
     struct gguf_init_params gip = { /*.no_alloc =*/ true, /*.ctx =*/ NULL };
     struct gguf_context *meta = gguf_init_from_file(tmp_gguf, gip);
     if (!meta) {
-        fprintf(stderr, "FAIL: gguf_init_from_file on sparse tmp\n");
+        fprintf(stderr, "FAIL: gguf_init_from_file on header\n");
         remove(tmp_gguf); tess_pack_close(&pi); return 1;
     }
+    uint32_t n_tensors = gguf_get_n_tensors(meta);
+    fprintf(stderr, "Tensors from header: %u\n", n_tensors);
 
-    /* ── load model via callback ── */
-    TensorHook hook;
-    memset(&hook, 0, sizeof(hook));
-    hook.pi = &pi;
+    /* ── mmap source GGUF for fallback ── */
+    struct gguf_context *src_meta = NULL;
+    uint8_t *src_base = NULL;
+    size_t src_sz = 0;
+    if (src_gguf) {
+        struct gguf_init_params sgip = { .no_alloc = true, .ctx = NULL };
+        src_meta = gguf_init_from_file(src_gguf, sgip);
+        if (src_meta) {
+            FILE *sf = fopen(src_gguf, "rb");
+            if (sf) { fseek(sf, 0, SEEK_END); src_sz = (size_t)ftell(sf); fclose(sf); }
+#ifdef _WIN32
+            HANDLE hf = CreateFileA(src_gguf, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+            if (hf != INVALID_HANDLE_VALUE) {
+                HANDLE hm = CreateFileMapping(hf, NULL, PAGE_READONLY, 0, 0, NULL);
+                if (hm) { src_base = (uint8_t *)MapViewOfFile(hm, FILE_MAP_READ, 0, 0, 0); }
+            }
+#else
+            int fd = open(src_gguf, O_RDONLY);
+            if (fd >= 0) { src_base = mmap(NULL, src_sz, PROT_READ, MAP_PRIVATE, fd, 0); close(fd); }
+#endif
+            if (src_base) {
+                fprintf(stderr, "Source GGUF: %s (%.1f MB, %u tensors)\n",
+                        src_gguf, src_sz / 1e6, gguf_get_n_tensors(src_meta));
+            }
+        }
+    }
 
-    struct llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = n_gpu;
-    static struct llama_model_tensor_buft_override ovr[2];
-    ovr[0].pattern = ".*";
-    ovr[0].buft = ggml_backend_cpu_buffer_type();
-    ovr[1].pattern = NULL;
-    if (ovr[0].buft) mp.tensor_buft_overrides = ovr;
-
+    /* ── assemble: load all tensors from pack → write full GGUF ── */
     double t0 = now_ms();
-    struct llama_model *model = llama_model_init_from_user(meta, provide_tensor,
-                                                          &hook, mp);
+    {
+        /* compute total body size */
+        uint64_t max_end = 0;
+        for (uint32_t i = 0; i < n_tensors; i++) {
+            uint64_t end = gguf_get_tensor_offset(meta, i) + gguf_get_tensor_size(meta, i);
+            if (end > max_end) max_end = end;
+        }
+        size_t body_sz = (size_t)max_end;
+        uint8_t *body = (uint8_t *)calloc(1, body_sz);
+        if (!body) { fprintf(stderr, "FAIL: OOM assemble\n");
+            gguf_free(meta); remove(tmp_gguf); tess_pack_close(&pi); return 1; }
+
+        TensorHook hook;
+        memset(&hook, 0, sizeof(hook));
+        hook.pi = &pi;
+
+        uint32_t n_from_pack = 0, n_from_source = 0, n_from_zero = 0;
+        for (uint32_t i = 0; i < n_tensors; i++) {
+            const char *name = gguf_get_tensor_name(meta, i);
+            uint64_t off = gguf_get_tensor_offset(meta, i);
+            uint32_t tsz = (uint32_t)gguf_get_tensor_size(meta, i);
+            int ttype = gguf_get_tensor_type(meta, i);
+            uint32_t csz = cell_size_of((enum ggml_type)ttype);
+            if (csz == 0) csz = 1;
+
+            uint64_t total_cells = (csz == 0) ? 0 : (uint64_t)tsz / csz;
+            if (csz != 0 && total_cells * csz == tsz && total_cells > 0) {
+                int rc = load_pack_tensor(&hook, name, csz, total_cells,
+                                          body + off);
+                if (rc > 0) { n_from_pack++; continue; }
+            }
+            /* fallback: copy from source GGUF if available */
+            if (src_base && src_meta) {
+                int found_src = 0;
+                uint32_t nsrc = gguf_get_n_tensors(src_meta);
+                for (uint32_t si = 0; si < nsrc; si++) {
+                    if (strcmp(gguf_get_tensor_name(src_meta, si), name) == 0) {
+                        uint64_t src_off = gguf_get_data_offset(src_meta) + gguf_get_tensor_offset(src_meta, si);
+                        if (src_off + tsz <= src_sz) {
+                            memcpy(body + off, src_base + src_off, tsz);
+                            n_from_source++;
+                        }
+                        found_src = 1;
+                        break;
+                    }
+                }
+                if (found_src) continue;
+            }
+            /* last resort: zero-fill (scale/input_scale/bias/rope_freqs) */
+            memset(body + off, 0, tsz);
+            n_from_zero++;
+        }
+        double assemble_ms = now_ms() - t0;
+        fprintf(stderr, "Assemble: from_pack=%u from_source=%u from_zero=%u %.0f ms\n",
+                n_from_pack, n_from_source, n_from_zero, assemble_ms);
+
+        /* ── write header + body → full temp GGUF ── */
+        double t1 = now_ms();
+        FILE *wf = fopen(tmp_gguf, "wb");
+        if (!wf) { fprintf(stderr, "FAIL: tmp rewrite\n");
+            free(body); gguf_free(meta); tess_pack_close(&pi); return 1; }
+        fwrite(hdr_bytes, 1, (size_t)hdr_sz, wf);
+        fwrite(body, 1, body_sz, wf);
+        fclose(wf);
+        free(body);
+        fprintf(stderr, "Write: %.0f ms\n", now_ms() - t1);
+        fprintf(stderr, "Temp GGUF: %s (%llu bytes)\n",
+                tmp_gguf, (unsigned long long)(hdr_sz + body_sz));
+    }
+
+    /* ── load model from assembled temp GGUF ── */
+    t0 = now_ms();
+    struct llama_model_params mp = llama_model_default_params();
+    mp.n_gpu_layers = 99; /* use Vulkan for everything */
+    struct llama_model *model = llama_model_load_from_file(tmp_gguf, mp);
     double load_ms = now_ms() - t0;
     if (!model) {
-        fprintf(stderr, "FAIL: model init (pack=%u zero=%u errors=%u)\n",
-                hook.n_pack, hook.n_zero, hook.errors);
+        fprintf(stderr, "FAIL: llama_model_load_from_file\n");
         gguf_free(meta); remove(tmp_gguf); tess_pack_close(&pi); return 1;
     }
-    fprintf(stderr, "Model loaded in %.0f ms (pack=%u tensors, %.1f MB, %.1f ms)\n",
-            load_ms, hook.n_pack, hook.b_pack / 1e6, hook.ms_pack);
+    fprintf(stderr, "Model loaded in %.0f ms from temp GGUF\n", load_ms);
     fprintf(stderr, "RSS: %.1f MB\n", rss_mb());
+    gguf_free(meta);
 
     /* ── create context for inference ── */
     struct llama_context_params cparams = llama_context_default_params();
@@ -445,7 +504,7 @@ int main(int argc, char **argv) {
     struct llama_context *ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
         fprintf(stderr, "FAIL: llama_init_from_model\n");
-        llama_model_free(model); gguf_free(meta);
+        llama_model_free(model);
         remove(tmp_gguf); tess_pack_close(&pi); return 1;
     }
 
@@ -577,8 +636,15 @@ int main(int argc, char **argv) {
 
     llama_free(ctx);
     llama_model_free(model);
-    gguf_free(meta);
     remove(tmp_gguf);
+    if (src_meta) gguf_free(src_meta);
+    if (src_base) {
+#ifdef _WIN32
+        UnmapViewOfFile(src_base);
+#else
+        munmap(src_base, src_sz);
+#endif
+    }
     tess_pack_close(&pi);
     return 0;
 }
