@@ -47,6 +47,7 @@ TIER1 := \
   test_bfs_fold \
   test_gp16_neighbors \
   test_bfs_delete \
+  test_bfs_persist_planets \
   test_geo_fs \
   test_geo_fs_mdim \
   test_geo_fs_generalize \
@@ -220,7 +221,7 @@ ACTIVE := \
 GGUF :=   test_gguf_box   test_gguf_window_chain   test_gguf_real_gate   test_gguf_multi_model   test_safetensors_reader   test_ggf_walk   test_ggf_walk_mmap   test_ggf_ckpt_replay   test_ggf_fs   test_planet_real
 
 # BFS: breathing filesystem + seek
-BFS :=   test_bfs_persist   test_bfs_stability   test_bfs_seek_anchor   test_bfs_breath   test_breathing_fs   test_geo_hyper_fs   test_geo_hyper_real   test_bfs_planet_watch   test_bfs_fold   test_bfs_delete
+BFS :=   test_bfs_persist   test_bfs_stability   test_bfs_seek_anchor   test_bfs_breath   test_breathing_fs   test_geo_hyper_fs   test_geo_hyper_real   test_bfs_planet_watch   test_bfs_fold   test_bfs_delete   test_bfs_persist_planets
 
 # CAP: capacity/accounting + chain
 CAP :=   test_cap_account   test_cap_tune_real   test_cap_tune_safetensors   test_cap_tune_fs   test_cap_chain_roundtrip   test_cap_chain_big   test_cap_scheme

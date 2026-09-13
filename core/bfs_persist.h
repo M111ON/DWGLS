@@ -11,15 +11,26 @@
  *   7) header 64 B → 40 B (−24 B)     — static geometry fields dropped
  *   → real file size = header + files + meta + offsets + Σ payloads + CRC
  *
- * IMAGE LAYOUT v3 (HEADER fixed; DATA variable):
- *   [0]      header 40B: magic"BIMG" version=3 n_files n_blocks_used
+ * IMAGE LAYOUT v4 (v3 prefix BYTE-IDENTICAL; tomb tail appended):
+ *   [0]      header 40B: magic"BIMG" version=4 n_files n_blocks_used
  *                        total_bytes data_size(u32@20) scale(f64@24)
  *                        current_pos(u32@32) home_pos(u32@36)
  *   [40]     files     64 × 49B
  *   [3176]   meta      144 × u32     (home_pos15 | strategy3 — derived rest)
  *   [3752]   enc_offs  144 × u32     (absolute payload offset; 0 = empty)
  *   [4328]   data      data_size B  (PACKED — no fixed stride)
- *   [4328+data_size]   crc32 4B
+ *   [4328+data_size]   crc32 4B      (v3 CRC over [0, data_end))
+ *   [data_end+4] tomb_tail: 144 × 40B tombs (LE field order:
+ *      magic,id,birth_w,death_w,final_home,reserved,origin_lo,origin_hi,
+ *      digest_lo,digest_hi) + u32 tomb_count + u32 planet_mismatch +
+ *      u32 fold_count + crc32 over the tail only.
+ *   v3 files (version=3, short) still load: tombs zeroed, planets rebirthed.
+ *
+ * PLANETS ACROSS RESTART (documented, not hidden): payloads persist, so
+ * rebirth recomputes EXACT digests (gates shut, tails empty — correct
+ * defaults). What survives: tomb archive + 3 counters. What does NOT:
+ * tail diagnostics and overflow scars (in-flight trouble stays in-flight).
+ * The tomb (origin + final digest) is the audit that crosses restarts.
  *
  * DERIVED ON PARSE (nothing stored twice):
  *   owners     ← file runs (home_block + n_blocks, contiguous alloc)
@@ -40,7 +51,7 @@
 
 /* ═══════════════ IMAGE GEOMETRY (v3) ═══════════════ */
 #define BFS_IMG_MAGIC     0x474D4942u   /* "BIMG" */
-#define BFS_IMG_VERSION   3u
+#define BFS_IMG_VERSION   4u
 #define BFS_IMG_HEADER_SZ 40u
 #define BFS_IMG_FILE_ENT  49u           /* serialized BFSFileEntry size */
 #define BFS_IMG_FILES_OFF 40u
@@ -54,7 +65,13 @@
 #define BFS_IMG_ENC_MAX   2048u
 #define BFS_IMG_MAX_DATA  (BFS_BLOCKS * BFS_IMG_ENC_MAX)                /* 73728 */
 #define BFS_IMG_MIN_SIZE  (BFS_IMG_DATA_OFF + 4u)                       /* 4332 */
-#define BFS_IMG_MAX_SIZE  (BFS_IMG_DATA_OFF + BFS_IMG_MAX_DATA + 4u)    /* 78060 */
+/* v4 tomb tail (appended after the v3 CRC at data_end+4) */
+#define BFS_IMG_TOMB_ENT  40u           /* LE PlanetTomb: 8xu32 + 2xu64 */
+#define BFS_IMG_TOMB_BYT  (BFS_BLOCKS * BFS_IMG_TOMB_ENT)               /* 5760 */
+#define BFS_IMG_CTR_BYT   12u           /* tomb_count + planet_mismatch + fold_count */
+#define BFS_IMG_TAIL_BYT  (BFS_IMG_TOMB_BYT + BFS_IMG_CTR_BYT + 4u)     /* +CRC */
+/* v3 files measure BFS_IMG_DATA_OFF + data + 4; tolerance handled in parse */
+#define BFS_IMG_MAX_SIZE  (BFS_IMG_DATA_OFF + BFS_IMG_MAX_DATA + 4u + BFS_IMG_TAIL_BYT)
 
 /* Header field offsets (v3) */
 #define BFS_HDR_DATA_SIZE 20u   /* u32 — packed data region bytes */
@@ -125,13 +142,13 @@ static inline void bfs_img_wf64(uint8_t *m, uint32_t off, double v) {
     memcpy(m + off, &v, 8);
 }
 
-/* Serialized size of an fs (header + TOC + packed payloads + CRC). */
+/* Serialized size of an fs (header + TOC + packed payloads + CRC + v4 tail). */
 static inline uint32_t bfs_img_size_of(const BreathingFS *fs)
 {
     uint32_t data = 0;
     for (uint32_t i = 0; i < BFS_BLOCKS; i++)
         data += fs->block_encoded_size[i];
-    return BFS_IMG_DATA_OFF + data + 4u;
+    return BFS_IMG_DATA_OFF + data + 4u + BFS_IMG_TAIL_BYT;
 }
 
 /* ═══════════════ SERIALIZE BreathingFS → byte buffer ═══════════════
@@ -189,7 +206,29 @@ static inline uint32_t bfs_img_serialize(BreathingFS *fs, uint8_t *dst)
     bfs_img_wu32(dst, BFS_HDR_DATA_SIZE, packed);
     uint32_t crc = v6b_dc_crc32(dst, BFS_IMG_DATA_OFF + packed);
     bfs_img_wu32(dst, BFS_IMG_DATA_OFF + packed, crc);
-    return actual;
+
+    /* v4 tomb tail: 144 LE tombs + 3 counters + tail CRC */
+    uint32_t t = actual;
+    for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
+        const PlanetTomb *tm = &fs->tombs[i];
+        bfs_img_wu32(dst, t + 0,  tm->magic);
+        bfs_img_wu32(dst, t + 4,  tm->id);
+        bfs_img_wu32(dst, t + 8,  tm->birth_w);
+        bfs_img_wu32(dst, t + 12, tm->death_w);
+        bfs_img_wu32(dst, t + 16, tm->final_home);
+        bfs_img_wu32(dst, t + 20, tm->reserved);
+        bfs_img_wu32(dst, t + 24, (uint32_t)(tm->origin & 0xFFFFFFFFu));
+        bfs_img_wu32(dst, t + 28, (uint32_t)(tm->origin >> 32));
+        bfs_img_wu32(dst, t + 32, (uint32_t)(tm->digest & 0xFFFFFFFFu));
+        bfs_img_wu32(dst, t + 36, (uint32_t)(tm->digest >> 32));
+        t += BFS_IMG_TOMB_ENT;
+    }
+    bfs_img_wu32(dst, t + 0, fs->tomb_count);
+    bfs_img_wu32(dst, t + 4, fs->planet_mismatch);
+    bfs_img_wu32(dst, t + 8, fs->fold_count);
+    uint32_t crc2 = v6b_dc_crc32(dst + actual, BFS_IMG_TOMB_BYT + BFS_IMG_CTR_BYT);
+    bfs_img_wu32(dst, t + 12, crc2);
+    return actual + BFS_IMG_TAIL_BYT;
 }
 
 /* ═══════════════ PARSE byte buffer → BreathingFS ═══════════════
@@ -202,7 +241,8 @@ static inline int bfs_img_parse(const uint8_t *m, size_t size, BreathingFS *fs,
 {
     if (!m || !fs || size < BFS_IMG_MIN_SIZE) return -1;
     if (bfs_img_u32(m, 0) != BFS_IMG_MAGIC) return -1;
-    if (bfs_img_u32(m, 4) != BFS_IMG_VERSION) return -2;
+    uint32_t ver = bfs_img_u32(m, 4);
+    if (ver != 3u && ver != BFS_IMG_VERSION) return -2;
     /* v3: static geometry (slots/blocks/max_files) is compile-time;
      * BFS_SLOTS_BLOCK no longer stored in the header */
 
@@ -291,6 +331,43 @@ static inline int bfs_img_parse(const uint8_t *m, size_t size, BreathingFS *fs,
             if (eoff[i] < BFS_IMG_DATA_OFF || eoff[i] + esz > data_end) return -4;
             memcpy(fs->block_encoded[i], m + eoff[i], esz);
         }
+    }
+
+    /* v4 tomb tail (strict: version claims it, bytes + CRC must be there).
+     * v3 files end at data_end+4: tombs stay zeroed, counters stay 0. */
+    if (ver == BFS_IMG_VERSION) {
+        uint32_t t = data_end + 4u;
+        if (t + BFS_IMG_TAIL_BYT > size) return -1;   /* truncated tail */
+        uint32_t crc2_stored = bfs_img_u32(m, t + BFS_IMG_TOMB_BYT + BFS_IMG_CTR_BYT);
+        if (v6b_dc_crc32(m + t, BFS_IMG_TOMB_BYT + BFS_IMG_CTR_BYT) != crc2_stored)
+            return -4;
+        for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
+            PlanetTomb *tm = &fs->tombs[i];
+            tm->magic      = bfs_img_u32(m, t + 0);
+            tm->id         = bfs_img_u32(m, t + 4);
+            tm->birth_w    = bfs_img_u32(m, t + 8);
+            tm->death_w    = bfs_img_u32(m, t + 12);
+            tm->final_home = bfs_img_u32(m, t + 16);
+            tm->reserved   = bfs_img_u32(m, t + 20);
+            tm->origin     = (uint64_t)bfs_img_u32(m, t + 24) |
+                             ((uint64_t)bfs_img_u32(m, t + 28) << 32);
+            tm->digest     = (uint64_t)bfs_img_u32(m, t + 32) |
+                             ((uint64_t)bfs_img_u32(m, t + 36) << 32);
+            t += BFS_IMG_TOMB_ENT;
+        }
+        fs->tomb_count      = bfs_img_u32(m, t + 0);
+        fs->planet_mismatch = bfs_img_u32(m, t + 4);
+        fs->fold_count      = bfs_img_u32(m, t + 8);
+    }
+
+    /* REBIRTH: payloads persisted, so digests recompute exactly (gates
+     * shut, tails empty — correct defaults, not data loss: diagnostics
+     * don't cross restarts, the tomb archive does). */
+    for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
+        if (fs->block_owner[i] == 0xFFFFFFFF) continue;
+        planet_birth(&fs->planets[i], i, 0u, i,
+                     (const int8_t *)fs->block_encoded[i],
+                     fs->block_encoded_size[i]);
     }
     return 0;
 }

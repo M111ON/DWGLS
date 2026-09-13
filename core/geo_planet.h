@@ -13,7 +13,7 @@
  *   (adopt current bytes as new baseline, tail cleared, reanchors++,
  *   overflow scar persists). Mirrors breath-engine precedent (anchor
  *   follows data); audit preserved via counters, not silent.
- * TOMBSTONE: one 32B plate on retire {id,birth,death,home,origin,digest}
+ * TOMBSTONE: one 40B plate on retire {id,birth,death,home,origin,digest}
  *   (origin = birth key, digest = final key: audit across reanchor epochs) —
  *   region becomes self-describing (deposit vs graveyard = caller's call;
  *   default severed: reads after retire return -2).
@@ -45,7 +45,7 @@ typedef struct {
     uint64_t observed;   /* recomputed key */
 } PlanetErr;
 
-/* tombstone plate: 32 bytes, written once on retire */
+/* tombstone plate: 40 bytes, written once on retire */
 typedef struct {
     uint32_t magic;      /* PLANET_TOMB_MAGIC */
     uint32_t id;
