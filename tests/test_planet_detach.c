@@ -265,6 +265,22 @@ int main(void) {
               shut_birth && self_open && masked && self_close);
     }
 
+    /* ── T13: grave replays nothing — retire shuts an open gate ── */
+    {
+        Planet d;
+        planet_birth(&d, 52u, 5u, 700u, buf, 432);
+        int8_t tmpd[432];
+        memcpy(tmpd, buf, 432);
+        tmpd[3] ^= 0x10;
+        int opened = (planet_verify(&d, tmpd, 432) == 1 && d.link_open == 1u);
+        static const FGGearEv z5[1] = {{0u, 0u, 0u}};
+        int live = planet_replay(&d, z5, 1, 5u);   /* open: agrees */
+        planet_retire(&d, 9u);
+        int grave = planet_replay(&d, z5, 1, 5u);  /* shut at death: -3 */
+        CHECK("T13: open gate replays alive, grave refuses (-3)",
+              opened && live == 0 && grave == -3 && d.link_open == 0u);
+    }
+
     printf("═ RESULT: %d pass, %d fail ═\n", pass_count, fail_count);
     return fail_count ? 1 : 0;
 }

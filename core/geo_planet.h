@@ -151,7 +151,8 @@ static inline int planet_shrink(Planet *p, uint32_t w_new) {
     return 0;
 }
 
-/* retire: write the one tombstone plate, sever by default. */
+/* retire: write the one tombstone plate, sever by default. Gate shuts
+ * at death (birth shut, death shut — the grave replays nothing). */
 static inline void planet_retire(Planet *p, uint32_t death_w) {
     if (!p || p->magic != PLANET_MAGIC || p->retired) return;
     p->tomb.magic = PLANET_TOMB_MAGIC;
@@ -161,6 +162,8 @@ static inline void planet_retire(Planet *p, uint32_t death_w) {
     p->tomb.final_home = p->home;
     p->tomb.origin = p->origin;
     p->tomb.digest = p->digest;
+    p->link_open = 0u;
+    p->clean_streak = 0u;
     p->retired = 1u;
 }
 
