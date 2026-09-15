@@ -98,3 +98,13 @@ Field residency honest: 5.7 MB after load, 617.8/683.8 MB after generation,
 ## Status (2026-09-15, done)
 
 Hunk 4 applied, DLL rebuilt, all gates green. Eviction mechanism + bounded cache enforcement proven on Qwen2.5-0.5B and Huihui MoE 1B. Private overhead eliminated (+12.3 MB). Prefetch hint wired (async, 318 faults/0.06s) — architecturally ineffective for generate under Hunk 4 (weights in llama buffers), but scaffold ready for true lazy path. Next: true lazy generate path (field-backed compute) or multi-model field sharing.
+
+## L2 outage + fix (2026-09-15) — DLL shadowing, missing CPU backend, Vulkan_Host buft
+
+Lazy load (`llama_model_init_from_user` → NULL) went red on this box. Three stacked causes, fixed in order:
+
+1. **DLL shadowing (environment)**: `build/*.exe` resolved `llama.dll`/`ggml-base.dll` by name via PATH to `I:\FGLS_new\runner\` (a third, unpatched split-DL build) instead of our patched `build_zc2`. Fix: staged `build_zc2` DLLs (`llama/ggml/ggml-base/ggml-cpu-*`) + `libomp.dll` beside the exe — exe-dir wins search order deterministically. `build/` is gitignored; treat staged DLLs as a documented environment prerequisite.
+2. **No CPU backend in registry (mechanical)**: `ggml_backend_load_all()` registers nothing built-in (GGML_USE_CPU off in this build); path-scan found only Vulkan (CPU DLLs failed: `libomp` unresolvable). After staging, scan registers CPU from exe-dir (`ggml-cpu-sse42.dll`). Proven via `[BE]` probe: `devices=2 Vulkan-only, cpu_dev=NULL` → after: `devices=5, CPU type=0`.
+3. **Vulkan_Host preferred buft can't wrap field pointers (contract)**: `select_weight_buft` picks first supported entry → `Vulkan_Host` (host-pinned staging for GPU offload); its device caps lack `buffer_from_host_ptr` → our Hunk throws `user tensor callback did not provide a host buffer for Vulkan_Host`. Fix (exe-side, no llama rebuild): `mp.no_host = true` on the **lazy path only** — CPU tensors land on the plain CPU buft → `cpu_buffer_from_ptr` binds field pointers, zero-copy preserved. Reference path keeps defaults.
+
+Re-verified after fix: Qwen2.5-0.5B **12/12 PASS** (L3 40/40 bitwise), Huihui MoE 1B **14/14 PASS** (667.3 MB → 0 MB evict, 15416 re-faults, 40/40 identical re-generate).

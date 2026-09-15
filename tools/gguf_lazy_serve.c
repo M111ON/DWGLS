@@ -764,6 +764,12 @@ int main(int argc, char **argv) {
             sc.box = &box; sc.field = fmap; sc.body_off = fbody_off; sc.fpos = fpos;
             struct llama_model_params mp = llama_model_default_params();
             mp.n_gpu_layers = 0;
+            /* L2 fix: bypass GPU host-pinned staging (Vulkan_Host) — its buft
+             * cannot wrap external field pointers (no buffer_from_host_ptr).
+             * With no_host, CPU tensors land on the plain CPU buft which binds
+             * via cpu_buffer_from_ptr: zero-copy preserved. Reference path
+             * keeps default (file mmap needs no callback binding). */
+            mp.no_host = true;
             /* PHASE 2 — model load: windows llama requests via the callback */
             phase_start();
             win_reset(&sc);
