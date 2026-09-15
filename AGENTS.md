@@ -1,5 +1,7 @@
 # AGENTS.md — DWGLS (4Dimension Geometry + KIS Timeline)
 
+#please use English and thai only to communicate 
+
 ##Included dir:
 I:\DWGLS-native-fs, I:\model, F:\model, I:\llama
 

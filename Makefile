@@ -700,10 +700,10 @@ kv-rid: | $(BUILD)
 	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
-	    -I core -I $(LLAMA_INC) -o $(BUILD)/kv_rid_serve tools/kv_rid_serve.c \
+	    -I core -I $(LLAMA_INC) -I I:/llama/include -o $(BUILD)/kv_rid_serve tools/kv_rid_serve.c \
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
-	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/kv_rid_serve $(LLAMA_GGUF) "The capital of France is" 24
+	cmd //c "set PATH=$(LLAMA_DLL);%PATH%&& $(BUILD)\\kv_rid_serve.exe $(LLAMA_GGUF) \"The capital of France is\" 24 build/kv_slot.twin $(LLAMA_DLL)"
 
 # ── Full GGUF file roundtrip through RID slot region ──
 # Pure file roundtrip (no inference): entire GGUF → slot region → readback
@@ -902,6 +902,16 @@ lazy-serve: | $(BUILD)
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lpsapi -lm
 	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_lazy_serve $(LLAMA_GGUF) "The capital of France is" 40
+
+# Minimal control for user-owned mmap buffers; no field/tesspack path involved.
+plain-user-mmap: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-format \
+	    -I $(LLAMA_INC) -I $(LLAMA_INC)/../ggml/include -o $(BUILD)/plain_user_mmap tools/plain_user_mmap.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
+	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/plain_user_mmap $(LLAMA_GGUF) "The capital of France is" "$(LLAMA_DLL)"
 
 # ── Docs SVG re-render: .excalidraw masters → .svg (never drift) ──
 # Source of truth = docs/*.excalidraw (editable in excalidraw.com / VS Code

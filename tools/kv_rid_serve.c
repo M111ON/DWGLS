@@ -298,6 +298,8 @@ int main(int argc, char **argv) {
     const char *prompt = argc > 2 ? argv[2] : "The capital of France is";
     int n_gen = argc > 3 ? atoi(argv[3]) : 24;
     const char *twin_path = argc > 4 ? argv[4] : "build\\kv_slot.twin";
+    const char *backend_dir = argc > 5 ? argv[5]
+        : "I:\\llama\\llama-b9733-bin-win-vulkan-x64";
 
     printf("=== kv_rid_serve — llama STATE <-> RID slot region ===\n");
 
@@ -307,7 +309,8 @@ int main(int argc, char **argv) {
 
     llama_backend_init();
     llama_log_set(quiet_log, NULL);
-    ggml_backend_load_all_from_path("I:/llama/llama-b9733-bin-win-vulkan-x64");
+    ggml_backend_load_all_from_path(backend_dir);
+    ggml_backend_load_all();
 
     struct llama_model *model = load_model(path);
     if (!model) { printf("FAIL model load\n"); return 1; }

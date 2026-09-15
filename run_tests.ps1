@@ -10,7 +10,7 @@ $TIER1 = @(
     "test_safetensors_reader","test_tess_index_frame","test_tess_scale_log",
     "test_tess_frame_seek","test_tess_magnify","test_tess_hex_delta",
     "test_tess_wiring","test_bfs_persist","test_bfs_stability","test_geo_bfs_hub",
-    "test_bfs_seek_anchor","test_bfs_breath"
+    "test_bfs_seek_anchor","test_bfs_breath","test_win_cache"
 )
 
 if ($Mode -eq "all") {

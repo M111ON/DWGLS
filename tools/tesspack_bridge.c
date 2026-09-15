@@ -205,11 +205,10 @@ static void provide_tensor(struct ggml_tensor *t, void *ud) {
             return;
         }
         /* weight-tying: output.weight not in GGUF (Qwen3).
-         * REROUTE: patch t->type to Q8_0 + share pointer with token_embd.weight.
+         * REROUTE: patch t->type to the embedding type + share its pointer.
          * Same data, same kernel — octa-tetra compound principle. */
-        /* ── WEIGHT-TYING Q8_0 path: if output.weight is Q8_0 (patched gguf),
-         *  share pointer with token_embd.weight directly — no dequant needed. ── */
-        if (t->type == GGML_TYPE_Q8_0) {
+        /* ── WEIGHT-TYING path: share raw blocks with token_embd.weight. ── */
+        if (strcmp(name, "output.weight") == 0) {
             void *tied = tmap_find(h, "token_embd.weight");
             if (tied) {
                 /* Verify dimensions match: output.weight may be transposed vs token_embd.
@@ -227,15 +226,16 @@ static void provide_tensor(struct ggml_tensor *t, void *ud) {
                     t->data = tied;
                     h->n_pack++; h->b_pack += (size_t)ggml_nbytes(t);
                     tmap_add(h, name, tied);
-                    fprintf(stderr, "  [bridge] TIED-Q8_0 %s → shared pointer (%d bytes)\n",
-                            name, ggml_nbytes(t));
+                    fprintf(stderr, "  [bridge] TIED-%s %s -> shared pointer (%d bytes)\n",
+                            ggml_type_name(t->type), name, ggml_nbytes(t));
                     return;
                 }
-                fprintf(stderr, "  [bridge] TIED-Q8_0 %s DIM-MISMATCH: ow=[%lld,%lld] te=[%lld,%lld] → fallback\n",
-                        name, (long long)ow_ne0, (long long)ow_ne1,
+                fprintf(stderr, "  [bridge] TIED-%s %s DIM-MISMATCH: ow=[%lld,%lld] te=[%lld,%lld] -> fallback\n",
+                        ggml_type_name(t->type), name, (long long)ow_ne0, (long long)ow_ne1,
                         (long long)te_ne0, (long long)te_ne1);
             }
-            fprintf(stderr, "  [bridge] TIED-Q8_0 %s — token_embd not loaded yet!\n", name);
+            fprintf(stderr, "  [bridge] TIED-%s %s - token_embd not loaded yet!\n",
+                    ggml_type_name(t->type), name);
         }
 
         /* ── RESIDUAL path: table-driven redirect ── */
@@ -553,15 +553,14 @@ int main(int argc, char **argv) {
         tess_pack_close(&pi); return 1;
     }
 
-    /* Patch gguf_context: add output.weight as Q8_0 if weight-tied.
-     * This makes llama create a Q8_0 buffer for lm_head instead of F32 phantom,
-     * so the callback fills Q8_0 data → Q8_0 kernel → bitwise lossless. */
+     /* Patch gguf_context: add output.weight with the embedding type if tied. */
     {
         int64_t idx_te = gguf_find_tensor(meta, "token_embd.weight");
         int64_t idx_ow = gguf_find_tensor(meta, "output.weight");
         if (idx_te >= 0 && idx_ow < 0) {
-            /* weight-tied model: output.weight not in GGUF → add as Q8_0 */
+            /* weight-tied model: output.weight not in GGUF -> add source type */
             const int64_t *ne = gguf_get_tensor_ne(meta, idx_te);
+            enum ggml_type tied_type = (enum ggml_type)gguf_get_tensor_type(meta, idx_te);
             /* count actual dims (ne[3] and ne[2] may be 1) */
             int ndims = 1;
             if (ne[1] > 1) ndims = 2;
@@ -572,17 +571,18 @@ int main(int argc, char **argv) {
             struct ggml_context *gctx = ggml_init(gp);
             struct ggml_tensor *tw;
             if (ndims == 2)
-                tw = ggml_new_tensor_2d(gctx, GGML_TYPE_Q8_0, ne[0], ne[1]);
+                tw = ggml_new_tensor_2d(gctx, tied_type, ne[0], ne[1]);
             else if (ndims == 3)
-                tw = ggml_new_tensor_3d(gctx, GGML_TYPE_Q8_0, ne[0], ne[1], ne[2]);
+                tw = ggml_new_tensor_3d(gctx, tied_type, ne[0], ne[1], ne[2]);
             else if (ndims == 4)
-                tw = ggml_new_tensor_4d(gctx, GGML_TYPE_Q8_0, ne[0], ne[1], ne[2], ne[3]);
+                tw = ggml_new_tensor_4d(gctx, tied_type, ne[0], ne[1], ne[2], ne[3]);
             else
-                tw = ggml_new_tensor_1d(gctx, GGML_TYPE_Q8_0, ne[0]);
+                tw = ggml_new_tensor_1d(gctx, tied_type, ne[0]);
             ggml_set_name(tw, "output.weight");
             gguf_add_tensor(meta, tw);
-            printf("  [bridge] patched gguf: added output.weight as Q8_0 (%dD, [%lld,%lld,%lld])\n",
-                   ndims, (long long)ne[0], (long long)ne[1], (long long)ne[2]);
+            printf("  [bridge] patched gguf: added output.weight as %s (%dD, [%lld,%lld,%lld])\n",
+                   ggml_type_name(tied_type), ndims,
+                   (long long)ne[0], (long long)ne[1], (long long)ne[2]);
             ggml_free(gctx);
         } else if (idx_ow >= 0) {
             printf("  [bridge] output.weight already in gguf (idx=%lld, type=%d)\n",

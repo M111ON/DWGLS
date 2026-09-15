@@ -41,6 +41,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
+#include <psapi.h>
 #endif
 #include "llama.h"
 #include "ggml-backend.h"
@@ -54,6 +55,7 @@ typedef struct {
     GgufReader     *src;      /* source GGUF mmap (header + tensor slices) */
     /* stats */
     uint32_t n_pack, n_src, n_zero;
+    uint32_t aliased;
     uint64_t b_pack, b_src;
     double   ms_pack, ms_src; /* wall time spent serving in callback */
     uint32_t errors;
@@ -81,6 +83,15 @@ static double now_ms(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
 #endif
+}
+
+static double rss_mb(void) {
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+        return (double)pmc.WorkingSetSize / 1048576.0;
+#endif
+    return 0.0;
 }
 
 /* Decode one full tensor from the pack (all capos, scatter) into dst. */
@@ -138,6 +149,39 @@ static void provide_tensor(struct ggml_tensor *t, void *ud) {
         return;
     }
 
+    /* Tied output metadata is patched to the source quantized type below, so
+     * this path copies the exact blocks used by the reference quantized matmul. */
+    if (strcmp(name, "output.weight") == 0 && h->src) {
+        for (uint32_t i = 0; i < h->src->n_tensors; i++) {
+            if (strcmp(h->src->names[i], "token_embd.weight") != 0) continue;
+            enum ggml_type st = (enum ggml_type)h->src->dtypes[i];
+            size_t block = ggml_blck_size(st), cell = ggml_type_size(st);
+            size_t elems = ggml_nelements(t);
+            if (t->type == st && block && cell && elems % block == 0 &&
+                h->src->sizes[i] == elems / block * cell) {
+                memcpy(dst, h->src->base + h->src->data_offset + h->src->offsets[i],
+                       h->src->sizes[i]);
+                h->aliased++;
+                return;
+            }
+            const struct ggml_type_traits *traits = ggml_get_type_traits(st);
+            if (block && cell && traits && traits->to_float && elems % block == 0 &&
+                h->src->sizes[i] == elems / block * cell) {
+                const uint8_t *raw = h->src->base + h->src->data_offset + h->src->offsets[i];
+                size_t row_elems = (size_t)t->ne[0];
+                size_t row_bytes = ggml_row_size(st, row_elems);
+                for (int64_t row = 0; row < t->ne[1]; row++) {
+                    traits->to_float(raw + row * row_bytes,
+                                     (float *)(dst + row * t->nb[1]),
+                                     (int64_t)row_elems);
+                }
+                h->aliased++;
+                return;
+            }
+            break;
+        }
+    }
+
     /* try the pack first — it holds every tensor of this model (capo scatter) */
     uint32_t cell_size = cell_size_of(t->type);
     uint64_t total_cells = (cell_size == 0) ? 0
@@ -146,7 +190,10 @@ static void provide_tensor(struct ggml_tensor *t, void *ud) {
         double t0 = now_ms();
         int rc = load_pack_tensor(h, name, cell_size, total_cells, dst);
         h->ms_pack += now_ms() - t0;
-        if (rc > 0) { h->n_pack++; h->b_pack += need; return; }
+        if (rc > 0) {
+            h->n_pack++; h->b_pack += need;
+            return;
+        }
         if (rc != -1) /* -1 = name not in pack; others = real decode errors */
             fprintf(stderr, "  [tensor] PACK-LOAD-FAIL %s rc=%d — falling back to GGUF\n",
                     name, rc);
@@ -160,6 +207,31 @@ static void provide_tensor(struct ggml_tensor *t, void *ud) {
     int rc = copy_from_source(h, name, dst, need);
     h->ms_src += now_ms() - t0;
     if (rc == 0) { h->n_src++; h->b_src += need; return; }
+
+    /* Phantom/tied tensors are recorded in the pack residual table.  Keep the
+     * source quantized in storage and use llama's own type conversion routine
+     * for the callback's requested representation. */
+    const TESS_ResidualEntry *re = tess_pack_find_residual(h->pi, name);
+    if (re && re->transform == TESS_TRANSFORM_TYPE_CAST) {
+        enum ggml_type src_type = (enum ggml_type)re->src_type;
+        size_t block = ggml_blck_size(src_type);
+        size_t cell = ggml_type_size(src_type);
+        size_t elems = ggml_nelements(t);
+        const struct ggml_type_traits *traits = ggml_get_type_traits(src_type);
+        if (block && cell && elems % block == 0 && traits && traits->to_float) {
+            size_t raw_size = elems / block * cell;
+            for (uint32_t i = 0; i < h->src->n_tensors; i++) {
+                if (strcmp(h->src->names[i], re->src) == 0 &&
+                    h->src->dtypes[i] == re->src_type &&
+                    h->src->sizes[i] == raw_size) {
+                    const uint8_t *raw = h->src->base + h->src->data_offset + h->src->offsets[i];
+                    traits->to_float(raw, (float *)dst, (int64_t)elems);
+                    h->aliased++;
+                    return;
+                }
+            }
+        }
+    }
 
     if (getenv("TESS_TRACE") && h->n_zero < 80)
         fprintf(stderr, "  [zero] %s need=%zu\n", name, need);
@@ -354,9 +426,9 @@ int main(int argc, char **argv) {
         if (run_session(mA, prompt, n_gen, &ra) != 0) {
             printf("FAIL: phase A session\n"); return 1;
         }
-        printf("Phase A: prompt eval %.1f ms | gen %d tok in %.1f ms = %.2f tok/s\n",
+        printf("Phase A: prompt eval %.1f ms | gen %d tok in %.1f ms = %.2f tok/s | RSS %.1f MB\n",
                ra.prompt_ms, ra.n_toks, ra.gen_ms,
-               ra.gen_ms > 0 ? ra.n_toks * 1000.0 / ra.gen_ms : 0.0);
+               ra.gen_ms > 0 ? ra.n_toks * 1000.0 / ra.gen_ms : 0.0, rss_mb());
         llama_model_free(mA); /* free before phase B (memory) */
     }
 
@@ -402,6 +474,25 @@ int main(int argc, char **argv) {
     ovr[1].pattern = NULL;
     if (ovr[0].buft) mpB.tensor_buft_overrides = ovr;
 
+    /* llama_model_init_from_user defaults missing tensors to F32.  Tied
+     * embeddings must retain their source quantization for identical matmul. */
+    if (gguf_find_tensor(meta, "output.weight") < 0) {
+        int64_t te = gguf_find_tensor(meta, "token_embd.weight");
+        if (te >= 0 && src_opened) {
+            const int64_t *ne = gguf_get_tensor_ne(meta, te);
+            enum ggml_type type = (enum ggml_type)src.dtypes[0];
+            for (uint32_t i = 0; i < src.n_tensors; i++)
+                if (strcmp(src.names[i], "token_embd.weight") == 0)
+                    type = (enum ggml_type)src.dtypes[i];
+            struct ggml_init_params gp = { .mem_size = 4096, .mem_buffer = NULL, .no_alloc = true };
+            struct ggml_context *gctx = ggml_init(gp);
+            struct ggml_tensor *tw = ggml_new_tensor_2d(gctx, type, ne[0], ne[1]);
+            ggml_set_name(tw, "output.weight");
+            gguf_add_tensor(meta, tw);
+            ggml_free(gctx);
+        }
+    }
+
     struct llama_model *mB = llama_model_init_from_user(meta, provide_tensor,
                                                         &hook, mpB);
     if (!mB) {
@@ -420,9 +511,9 @@ int main(int argc, char **argv) {
     if (run_session(mB, prompt, n_gen, &rb) != 0) {
         printf("FAIL: phase B session\n"); return 1;
     }
-    printf("Phase B: prompt eval %.1f ms | gen %d tok in %.1f ms = %.2f tok/s\n",
+    printf("Phase B: prompt eval %.1f ms | gen %d tok in %.1f ms = %.2f tok/s | RSS %.1f MB\n",
            rb.prompt_ms, rb.n_toks, rb.gen_ms,
-           rb.gen_ms > 0 ? rb.n_toks * 1000.0 / rb.gen_ms : 0.0);
+           rb.gen_ms > 0 ? rb.n_toks * 1000.0 / rb.gen_ms : 0.0, rss_mb());
 
     if (phase_only && strcmp(phase_only, "stream") == 0) {
         printf("\n(TESS_PHASE=stream — phase A not measured in this process)\n");

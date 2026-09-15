@@ -279,19 +279,24 @@ int main(int argc, char **argv) {
 
     /* check for weight-tying: output.weight absent + token_embd.weight present */
     int has_output_weight = 0, has_token_embd = 0;
+    uint8_t token_embd_type = 0;
     for (uint32_t i = 0; i < gguf.n_tensors; i++) {
         if (strcmp(gguf.names[i], "output.weight") == 0) has_output_weight = 1;
-        if (strcmp(gguf.names[i], "token_embd.weight") == 0) has_token_embd = 1;
+        if (strcmp(gguf.names[i], "token_embd.weight") == 0) {
+            has_token_embd = 1;
+            token_embd_type = gguf.dtypes[i];
+        }
     }
     if (!has_output_weight && has_token_embd && n_residual < 32) {
         ResidEntry *re = &residuals[n_residual++];
         memset(re, 0, sizeof(*re));
         re->name_len = 13; memcpy(re->name, "output.weight", 13);
         re->src_len  = 18; memcpy(re->src,  "token_embd.weight", 18);
-        re->src_type = 8;   /* Q8_0 */
+        re->src_type = token_embd_type;
         re->dst_type = 0;   /* F32 */
         re->transform = 1;  /* TYPE_CAST */
-        fprintf(stderr, "  [auto] RESIDUAL: output.weight → token_embd.weight (TYPE_CAST Q8_0→F32)\n");
+        fprintf(stderr, "  [auto] RESIDUAL: output.weight → token_embd.weight (TYPE_CAST type %u→F32)\n",
+                (unsigned)token_embd_type);
     }
 
     /* write residual entries after index */

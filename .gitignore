@@ -81,3 +81,4 @@ embedServer
 py
 tmp_check_gguf.c
 cookies.txt
+.worktrees/

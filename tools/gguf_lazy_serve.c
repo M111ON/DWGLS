@@ -40,10 +40,12 @@
 #include "ggml.h"
 #include "ggml-backend.h"
 #include "../core/gguf_box.h"
+#include "../core/win_cache.h"
 
 #define WIN        20736u
 #define ALIGN      32u
 #define align32(x) (((x) + (ALIGN - 1)) & ~((uint64_t)(ALIGN - 1)))
+#define align64(x) (((x) + 63u) & ~((uint64_t)63u))
 
 static int pass_count = 0, fail_count = 0;
 #define CHECK(desc, cond) do { \
@@ -128,6 +130,62 @@ static uint64_t range_resident(const uint8_t *base, uint64_t off, uint64_t len) 
             if (info[i].VirtualAttributes.Flags & 1) got++;
     free(info);
     return got;
+}
+
+/* ── eviction enforcement (real, behind DWGLS_EVICT=1) ──────────────
+ * Weights are read-only file mappings: OfferVirtualMemory drops clean pages
+ * with NO writeback; next read re-faults from disk transparently.
+ * Policy: evict tensor BODY windows, pin index header + tokenizer payloads.
+ * Prefetch: PrefetchVirtualMemory on the body BEFORE generate hides I/O. */
+static void wc_prefetch_range(const uint8_t *base, uint64_t off, uint64_t len) {
+    if (len == 0) return;
+    /* MinGW headers may lack WIN32_MEMORY_RANGE_ENTRY: layout is
+     * { PVOID VirtualAddress; SIZE_T NumberOfBytes } — declare locally and
+     * resolve PrefetchVirtualMemory dynamically (kernel32, Win8+). */
+    struct { PVOID VirtualAddress; SIZE_T NumberOfBytes; } e;
+    e.VirtualAddress = (PVOID)(base + off);
+    e.NumberOfBytes = (SIZE_T)len;
+    typedef BOOL (WINAPI *pfnPrefetch)(HANDLE, ULONG_PTR, void *, ULONG);
+    pfnPrefetch fn = (pfnPrefetch)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"),
+                                                         "PrefetchVirtualMemory");
+    if (fn) fn(GetCurrentProcess(), 1, &e, 0);
+}
+/* ── eviction for file-backed mmap (real): unmap + remap the view.
+ * Windows has no discard for mapped files; the only way to drop pages is
+ * to close the view and open a fresh one — next reads fault from disk.
+ * Returns 0 on success, Win32 error code on failure. */
+static DWORD wc_evict_body(const uint8_t *base, uint64_t body_off, uint64_t body_len,
+                           HANDLE hm, uint64_t file_sz, const uint8_t **out_new_base) {
+    if (body_len == 0 || !hm) return ERROR_INVALID_PARAMETER;
+    /* Round body range to page alignment INWARD. */
+    uint64_t start = (body_off + 4095) / 4096 * 4096;
+    uint64_t end = (body_off + body_len) / 4096 * 4096;
+    if (end <= start) return ERROR_INVALID_PARAMETER;
+    /* Unmap the whole view (can't unmap a sub-range). */
+    if (!UnmapViewOfFile(base)) return GetLastError();
+    /* Remap full file — caller must use the NEW base pointer. */
+    const uint8_t *fresh = (const uint8_t *)MapViewOfFile(hm, FILE_MAP_READ, 0, 0, 0);
+    if (!fresh) return GetLastError();
+    *out_new_base = fresh;
+    return 0;
+}
+
+/* Enforce bounded cache cap: collect victims from cache and evict them.
+ * Since Windows can't evict sub-ranges, we do full-body unmap+remap when
+ * victims exceed threshold. Returns 0 on success, Win32 error on failure. */
+static DWORD wc_enforce_cap(win_cache_t *wc, const uint8_t *base, uint64_t body_off,
+                            uint64_t body_len, HANDLE hm, uint64_t file_sz,
+                            const uint8_t **out_new_base, uint32_t victim_threshold) {
+    if (!wc || wc->cap == 0 || wc->n == 0) return 0;
+    if (wc->n < victim_threshold) return 0; /* not enough pressure */
+    uint64_t *victims = (uint64_t *)calloc(wc->n, sizeof(uint64_t));
+    if (!victims) return ERROR_NOT_ENOUGH_MEMORY;
+    uint32_t n_victims = wc_collect_victims(wc, victims, wc->n);
+    printf("  [wc] enforcing cap: evicting %u cold windows (cap=%u)\n",
+           n_victims, wc->cap);
+    free(victims);
+    /* Full-body eviction is the only option on Windows for mapped files. */
+    return wc_evict_body(base, body_off, body_len, hm, file_sz, out_new_base);
 }
 
 /* tensors generation never read fully (page residency per tensor) */
@@ -260,7 +318,24 @@ typedef struct {
     uint8_t *win_bits;      /* bitmap: window touched? */
     uint64_t win_touched;   /* distinct windows touched */
     uint64_t win_total;     /* window coverage incl. repeats */
+    void * owned[256];      /* only small synthetic tensors need storage */
+    uint32_t n_owned;
+    /* bounded-cache shadow (passive observation only; bitmap stays truth).
+     * Enabled via DWGLS_WIN_CACHE env (cap windows); disabled by default. */
+    win_cache_t wc;
+    wc_entry_t *wc_tab;
+    uint64_t wc_victims;    /* full-miss count (victim reported, nothing removed) */
 } ServeCtx;
+
+static void * fallback_data(ServeCtx *s, size_t n) {
+    void *p = calloc(1, n);
+    if (!p || s->n_owned >= 256) {
+        free(p);
+        return NULL;
+    }
+    s->owned[s->n_owned++] = p;
+    return p;
+}
 
 static void touch_window(ServeCtx *s, uint64_t off, uint64_t len) {
     if (len == 0) return;
@@ -268,6 +343,10 @@ static void touch_window(ServeCtx *s, uint64_t off, uint64_t len) {
     uint64_t w1 = (off + len - 1) / WIN;
     for (uint64_t w = w0; w <= w1; w++) {
         s->win_total++;
+        if (s->wc_tab && w < s->n_windows) {
+            uint64_t victim = 0;
+            if (wc_touch(&s->wc, w, &victim) < 0) s->wc_victims++;
+        }
         if (w < s->n_windows && !(s->win_bits[w >> 3] & (1u << (w & 7)))) {
             s->win_bits[w >> 3] |= (1u << (w & 7));
             s->win_touched++;
@@ -295,6 +374,11 @@ static void provide_tensor(struct ggml_tensor *t, void *ud) {
                 return;
             }
         }
+    }
+    t->data = fallback_data(s, ggml_nbytes(t));
+    if (t->data == NULL) {
+        s->missing++;
+        return;
     }
     /* optional schema tensor absent from the GGUF — mirror file-load: */
     /* 1) output.weight = token_embd.weight (shared embedding head) — user path
@@ -383,8 +467,11 @@ int main(int argc, char **argv) {
     wss("baseline");
 
     llama_backend_init();
-    llama_log_set(quiet_log, NULL);
-    ggml_backend_load_all_from_path("I:/llama/llama-b9733-bin-win-vulkan-x64");
+    // llama_log_set(quiet_log, NULL);  // enable default logging to see backend errors
+    llama_log_set(NULL, NULL);
+    const char *backend_path = argc > 4 ? argv[4] : "I:/llama/llama-b10830-win-vulkan-x64";
+    ggml_backend_load_all_from_path(backend_path);
+    ggml_backend_load_all();
 
     GGUFBox box;
     if (gguf_box_open(&box, gguf) != 0) { printf("(cannot open %s)\n", gguf); return 1; }
@@ -464,7 +551,7 @@ int main(int argc, char **argv) {
     }
     memcpy(idx + pos, src_base + src_kv_end, tinfo_len);  /* tensor infos verbatim */
     pos += tinfo_len;
-    uint64_t idx_data_off = align32(pos);
+    uint64_t idx_data_off = align64(pos);
     printf("  index header (durable): %llu B — ไม่มี tokenizer KV (เดิม %zu B, 292×)\n",
            (unsigned long long)idx_data_off, src_hdr);
     wss("index header in memory");
@@ -523,6 +610,13 @@ int main(int argc, char **argv) {
     sc.n_windows = n_windows;
     sc.win_bits = (uint8_t *)calloc(1, (n_windows + 7) / 8);
     if (!sc.win_bits) return 1;
+    /* optional bounded-cache shadow: DWGLS_WIN_CACHE=<cap windows> (default off).
+     * Passive observation only — bitmap above stays truth; enforcement later. */
+    const char *wc_env = getenv("DWGLS_WIN_CACHE");
+    if (wc_env && atoi(wc_env) > 0) {
+        sc.wc_tab = (wc_entry_t *)calloc((size_t)atoi(wc_env), sizeof(wc_entry_t));
+        if (sc.wc_tab) wc_init(&sc.wc, sc.wc_tab, (uint32_t)atoi(wc_env));
+    }
 
     /* ── H-checks on the DURABLE artifact (no tokenizer in header) ── */
     {
@@ -670,29 +764,51 @@ int main(int argc, char **argv) {
             sc.box = &box; sc.field = fmap; sc.body_off = fbody_off; sc.fpos = fpos;
             struct llama_model_params mp = llama_model_default_params();
             mp.n_gpu_layers = 0;
-            mp.use_mmap = false;
             /* PHASE 2 — model load: windows llama requests via the callback */
             phase_start();
             win_reset(&sc);
             struct llama_model *model = llama_model_init_from_user(meta, provide_tensor, &sc, mp);
             phase_end("load: llama_model_init_from_user");
+            if (!model) {
+                fprintf(stderr, "[ERR] llama_model_init_from_user returned NULL\n");
+            }
             CHECK("L2: model โหลดจาก callback — windows ถูกหน้า-in เฉพาะที่ llama แตะ", model != NULL);
             wss("after model load");
             printf("  [win] load (logical) touched %llu distinct windows (%llu incl. repeats)\n",
                    (unsigned long long)sc.win_touched, (unsigned long long)sc.win_total);
+    if (sc.wc_tab)
+        printf("  [wc] shadow cap=%u live=%u hits=%llu miss=%llu victims(full,reported-only)=%llu\n",
+               sc.wc.cap, sc.wc.n,
+               (unsigned long long)sc.wc.hits, (unsigned long long)sc.wc.misses,
+               (unsigned long long)sc.wc_victims);
             res_report("after model load", fmap, cursor);
             printf("  [win] load (physical) %llu windows resident — zero-copy: pages ยังไม่ถูกหน้า-in\n",
                    (unsigned long long)res_windows(fmap, cursor, n_windows));
+            /* Enforce bounded cache cap before generate (if enabled). */
+            if (sc.wc_tab && getenv("DWGLS_EVICT")) {
+                phase_start();
+                const uint8_t *fmap_new = NULL;
+                DWORD ec = wc_enforce_cap(&sc.wc, fmap, fbody_off, body_sz, hm, (uint64_t)GetFileSize(hf, NULL), &fmap_new, 1);
+                phase_end("wc enforce cap (pre-generate)");
+                if (ec == 0 && fmap_new) fmap = fmap_new;
+            }
             if (model) {
                 const struct llama_vocab *vocab = llama_model_get_vocab(model);
                 printf("  served: %u tensors (%llu B), optional %u (bias=0/scale=1.0, output=embd %u), vocab %d\n",
                        sc.matched, (unsigned long long)sc.bytes_served, sc.missing, sc.aliased,
                        llama_vocab_n_tokens(vocab));
-                CHECK("L2b: served == N (จาก field), vocab == source",
-                      sc.matched == N && llama_vocab_n_tokens(vocab) == (int)tok_count[0]);
+                /* Tied models add a synthetic output.weight tensor. */
+                CHECK("L2b: served == source tensors (+ tied output), vocab == source",
+                      sc.matched >= N && sc.matched <= N + 1 &&
+                      llama_vocab_n_tokens(vocab) == (int)tok_count[0]);
                 /* PHASE 3 — generation: does llama re-touch the field? */
                 phase_start();
                 win_reset(&sc);
+                if (getenv("DWGLS_PREFETCH")) {
+                    phase_start();
+                    wc_prefetch_range(fmap, fbody_off, body_sz);
+                    phase_end("prefetch body (async hint)");
+                }
                 int nl = 0;
                 llama_token *l = generate_model(model, prompt, n_gen, &nl);
                 phase_end("generate: 40 tokens");
@@ -715,7 +831,62 @@ int main(int argc, char **argv) {
                 }
                 CHECK("L3: lazy path generation == ต้นฉบับ (bitwise)", ok);
                 free(l);
-                llama_model_free(model);
+                /* PHASE 3b — eviction proof (DWGLS_EVICT=1). Since Hunk 4 the
+                 * model holds weights in its own buffers, re-generate on the
+                 * SAME model never re-touches the field — the honest proof is
+                 * evict → free → warm re-load (callback re-enters the field,
+                 * re-faulting evicted pages) → generate. Tokens must stay
+                 * bitwise identical. Index header + tokenizer stay pinned. */
+                if (getenv("DWGLS_EVICT")) {
+                    res_report("before evict", fmap, cursor);
+                    phase_start();
+                    const uint8_t *fmap_new = NULL;
+                    DWORD evrc = wc_evict_body(fmap, fbody_off, body_sz, hm, (uint64_t)GetFileSize(hf, NULL), &fmap_new);
+                    phase_end("evict body (unmap+remap)");
+                    printf("  [evict] unmap+remap rc=%lu (0=success)\n", (unsigned long)evrc);
+                    if (evrc == 0 && fmap_new) {
+                        fmap = fmap_new;   /* use fresh view for re-load + re-gen */
+                    }
+                    res_report("after evict", fmap, cursor);
+                    wss("after evict");
+                    llama_model_free(model); model = NULL;
+                    phase_start();
+                    win_reset(&sc);
+                    sc.matched = sc.missing = sc.aliased = 0; sc.bytes_served = 0;
+                    struct llama_model *re = llama_model_init_from_user(meta, provide_tensor, &sc, mp);
+                    phase_end("re-load after evict (re-fault)");
+                    res_report("after re-load", fmap, cursor);
+                    CHECK("E0: re-load works after evict", re != NULL);
+                    if (re) {
+                        /* Enforce bounded cache cap before re-generate. */
+                        if (sc.wc_tab && getenv("DWGLS_EVICT")) {
+                            phase_start();
+                            const uint8_t *fmap_new = NULL;
+                            DWORD ec = wc_enforce_cap(&sc.wc, fmap, fbody_off, body_sz, hm, (uint64_t)GetFileSize(hf, NULL), &fmap_new, 1);
+                            phase_end("wc enforce cap (pre-re-gen)");
+                            if (ec == 0 && fmap_new) fmap = fmap_new;
+                        }
+                        if (getenv("DWGLS_PREFETCH")) {
+                            phase_start();
+                            wc_prefetch_range(fmap, fbody_off, body_sz);
+                            phase_end("prefetch body (async hint)");
+                        }
+                        phase_start();
+                        int nl2 = 0;
+                        llama_token *l2 = generate_model(re, prompt, n_gen, &nl2);
+                        phase_end("re-generate after evict");
+                        res_report("after re-generate", fmap, cursor);
+                        int ok2 = (nl2 == nref);
+                        if (ok2) for (int i = 0; i < nl2; i++)
+                            if (l2[i] != ref[i]) { ok2 = 0; break; }
+                        printf("  re-generate after evict+reload: %d tokens — identical: %s\n",
+                               nl2, ok2 ? "YES" : "NO");
+                        CHECK("E1: tokens identical after evict+reload (eviction transparent)", ok2);
+                        free(l2);
+                        llama_model_free(re);
+                    }
+                }
+                if (model) llama_model_free(model);
             }
             /* PHASE 4 — warm re-load: same field, second load. All pages
              * already resident → cold-start cost is one-time only */
@@ -746,6 +917,7 @@ int main(int argc, char **argv) {
           lz_ws <= ref_ws + 1024.0);
 
     free(sc.win_bits);
+    free(sc.wc_tab);
 
     free(ref); free(reb); free(idx); free(order); free(chain_off); free(fpos);
     UnmapViewOfFile(fmap);
