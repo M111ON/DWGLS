@@ -46,6 +46,11 @@ static int pass_count = 0, fail_count = 0;
     else      { fail_count++; printf("  T: FAIL — %s\n", desc); } \
 } while (0)
 
+static void err_log(enum ggml_log_level level, const char *text, void *ud) {
+    (void)ud;
+    if (level >= GGML_LOG_LEVEL_ERROR) fputs(text, stderr);
+}
+
 /* ── working set (MB) ─────────────────────────────────────── */
 static double g_peak_ws = 0, g_peak_priv = 0;
 static void wss(const char *tag) {
@@ -226,6 +231,12 @@ typedef struct {
     const uint8_t *field;   /* mmap base */
     uint64_t body_off;      /* body start within field file */
     const uint64_t *fpos;   /* file-idx → body position */
+    const uint8_t *is_delta;  /* file-idx → 1 if exps tensor stored base+delta */
+    const uint32_t *d_E;      /* file-idx → expert count (valid if delta) */
+    const uint64_t *d_sl;     /* file-idx → slice bytes (valid if delta) */
+    const uint64_t *d_boff;   /* file-idx → bitmap-block body pos (valid if delta) */
+    uint64_t *const *d_voff;  /* file-idx → per-expert vals body pos (valid if delta) */
+    const uint64_t *d_rlen;   /* file-idx → delta region bytes read (valid if delta) */
     uint32_t matched, missing, aliased;
     uint64_t bytes_served;
     uint64_t n_windows;
@@ -267,6 +278,44 @@ static void provide_tensor(struct ggml_tensor *t, void *ud) {
     const char *name = ggml_get_name(t);
     for (uint32_t i = 0; i < s->box->n_tensors; i++) {
         if (strcmp(s->box->entries[i].name, name) == 0) {
+            /* delta path: reconstruct the stacked experts from base slice +
+               per-expert bitmap-XOR chains (copy-on-serve; non-exps stay
+               zero-copy). Lossless by construction: out = base ^ deltas. */
+            if (s->is_delta && s->is_delta[i]) {
+                size_t total = s->box->entries[i].size;
+                /* 64B-align the reconstruct buffer: ggml from_ptr buffers
+                   demand TENSOR_ALIGNMENT; plain calloc (16B) may not bind.
+                   Over-alloc + align inside keeps free() valid (owned[]). */
+                uint8_t *rawbuf = (uint8_t *)fallback_data(s, total + 64);
+                if (!rawbuf) { s->missing++; return; }
+                uint8_t *out = (uint8_t *)(((uintptr_t)rawbuf + 63) & ~(uintptr_t)63);
+                uint64_t sl = s->d_sl[i];
+                uint32_t E = s->d_E[i];
+                uint64_t bm_sz = (sl + 7) / 8;
+                const uint8_t *reg = s->field + s->body_off + s->fpos[i];
+                memcpy(out, reg, (size_t)sl);
+                for (uint32_t e = 1; e < E; e++) {
+                    const uint8_t *bm = s->field + s->body_off + s->d_boff[i] + (uint64_t)(e - 1) * bm_sz;
+                    const uint8_t *vals = s->field + s->body_off + s->d_voff[i][e];
+                    uint8_t *dst = out + (uint64_t)e * sl;
+                    memcpy(dst, reg, (size_t)sl);
+                    uint64_t vi = 0;
+                    for (uint64_t k = 0; k < sl; k++)
+                        if (bm[k >> 3] & (1u << (k & 7))) dst[k] ^= vals[vi++];
+                }
+                touch_window(s, s->body_off + s->fpos[i], s->d_rlen[i]);
+                s->bytes_served += total;
+                /* D1: reconstructed bytes == source bytes (oracle = box mmap,
+                   independent of the field layout). Fail LOUD, not silent. */
+                if (memcmp(out, s->box->entries[i].data, total) != 0) {
+                    printf("  [D1] MISMATCH in delta reconstruct: %s\n", name);
+                    s->missing++;
+                    return;
+                }
+                t->data = (void *)out; /* DELIVER the buffer (the actual bind) */
+                s->matched++;
+                return;
+            }
             size_t nb = ggml_nbytes(t);
             if (nb == s->box->entries[i].size) {
                 t->data = (void *)(s->field + s->body_off + s->fpos[i]);
@@ -361,6 +410,10 @@ typedef struct {
     uint64_t tok_elem_off[3], tok_elem_len[3], tok_count[3];
     uint32_t tok_arrtype[3]; size_t tok_total;
     uint32_t *order; uint64_t *chain_off; uint64_t body_sz;
+    /* adaptive delta (exps tensors): base slice + per-expert bitmap-XOR chains */
+    uint8_t *is_delta; uint32_t *d_E; uint64_t *d_sl;
+    uint64_t *d_boff; uint64_t **d_voff; uint64_t *d_rlen;
+    uint64_t d_raw, d_enc; /* bake totals for the D0 gate */
     uint8_t *idx; uint64_t idx_data_off;
     uint64_t body_off, cursor, n_windows;
     uint64_t payload_off[3];
@@ -375,6 +428,22 @@ typedef struct {
     llama_token *lazy; int nlazy;
     double ref_ws, ref_priv;
 } Mod;
+
+/* adaptive delta decision: scan expert slices vs slice 0; returns encoded
+ * bytes (base + bitmaps + values), or 0 to stay flat. Fills nv[e] when given.
+ * Pure measurement — oracle is the source bytes themselves. */
+static uint64_t delta_measure(const uint8_t *data, uint64_t size, uint32_t E, uint64_t *out_nv) {
+    if (E < 2 || size % E) return 0;
+    uint64_t sl = size / E, bm_sz = (sl + 7) / 8, enc = sl;
+    for (uint32_t e = 1; e < E; e++) {
+        const uint8_t *s = data + (uint64_t)e * sl;
+        uint64_t nv = 0;
+        for (uint64_t k = 0; k < sl; k++) if (s[k] != data[k]) nv++;
+        if (out_nv) out_nv[e] = nv;
+        enc += bm_sz + nv;
+    }
+    return enc < size ? enc : 0; /* 0 = flat wins */
+}
 
 /* bake field file from source GGUF */
 static int mod_bake(Mod *m) {
@@ -401,9 +470,43 @@ static int mod_bake(Mod *m) {
     }
     m->order = (uint32_t *)calloc(m->N, sizeof(uint32_t));
     m->chain_off = (uint64_t *)calloc(m->N, sizeof(uint64_t));
+    m->is_delta = (uint8_t *)calloc(m->N, 1);
+    m->d_E = (uint32_t *)calloc(m->N, sizeof(uint32_t));
+    m->d_sl = (uint64_t *)calloc(m->N, sizeof(uint64_t));
+    m->d_boff = (uint64_t *)calloc(m->N, sizeof(uint64_t));
+    m->d_voff = (uint64_t **)calloc(m->N, sizeof(uint64_t *));
+    m->d_rlen = (uint64_t *)calloc(m->N, sizeof(uint64_t));
+    m->d_raw = m->d_enc = 0;
     sort_inference(&m->box, m->order, m->N);
     m->body_sz = 0;
-    for (uint32_t r = 0; r < m->N; r++) { m->chain_off[r] = m->body_sz; m->body_sz += align32(m->box.entries[m->order[r]].size); }
+    for (uint32_t r = 0; r < m->N; r++) {
+        uint32_t fi = m->order[r];
+        const GGUFBoxEntry *ent = &m->box.entries[fi];
+        uint64_t tsz = align32(ent->size);
+        m->chain_off[r] = m->body_sz;
+        /* adaptive: exps tensors go delta only when measured smaller */
+        if (strstr(ent->name, "_exps.weight") && ent->n_dims == 3) {
+            uint32_t E = ent->dims[2];
+            uint64_t *nv = E ? (uint64_t *)calloc(E, sizeof(uint64_t)) : NULL;
+            uint64_t enc = (E && nv) ? delta_measure(ent->data, ent->size, E, nv) : 0;
+            if (enc) {
+                uint64_t sl = ent->size / E, bm_sz = (sl + 7) / 8;
+                m->is_delta[fi] = 1; m->d_E[fi] = E; m->d_sl[fi] = sl;
+                m->d_boff[fi] = m->body_sz + sl;
+                m->d_voff[fi] = (uint64_t *)calloc(E, sizeof(uint64_t));
+                uint64_t vp = m->d_boff[fi] + (uint64_t)(E - 1) * bm_sz;
+                for (uint32_t e = 0; e < E; e++) {
+                    m->d_voff[fi][e] = (e == 0) ? m->body_sz : vp;
+                    if (e > 0) vp += nv[e];
+                }
+                m->d_rlen[fi] = enc;
+                m->d_raw += ent->size; m->d_enc += enc;
+                tsz = align32(enc);
+            }
+            free(nv);
+        }
+        m->body_sz += tsz;
+    }
 
     size_t kv_len = m->src_kv_end - 24;
     size_t kis_slots = 13;
@@ -473,9 +576,44 @@ static int mod_bake(Mod *m) {
     if (!bf) return -1;
     if (fwrite(m->idx, 1, (size_t)m->idx_data_off, bf) != (size_t)m->idx_data_off) { fclose(bf); return -1; }
     for (uint32_t r = 0; r < m->N; r++) {
-        const GGUFBoxEntry *ent = &m->box.entries[m->order[r]];
-        if (fwrite(ent->data, 1, ent->size, bf) != ent->size) { fclose(bf); return -1; }
-        uint64_t pad = align32(ent->size) - ent->size;
+        uint32_t fi = m->order[r];
+        const GGUFBoxEntry *ent = &m->box.entries[fi];
+        uint64_t wrote = 0;
+        if (!m->is_delta[fi]) {
+            if (fwrite(ent->data, 1, ent->size, bf) != ent->size) { fclose(bf); return -1; }
+            wrote = ent->size;
+        } else {
+            /* delta region: [base slice][bitmaps e=1..][vals e=1..] (regenerate
+               deterministically — identical bytes to the measure pass) */
+            uint32_t E = m->d_E[fi];
+            uint64_t sl = m->d_sl[fi], bm_sz = (sl + 7) / 8;
+            const uint8_t *base = ent->data;
+            if (fwrite(base, 1, (size_t)sl, bf) != (size_t)sl) { fclose(bf); return -1; }
+            wrote = sl;
+            uint8_t *bm = (uint8_t *)malloc((size_t)bm_sz);
+            if (!bm) { fclose(bf); return -1; }
+            for (uint32_t e = 1; e < E; e++) {
+                const uint8_t *s = base + (uint64_t)e * sl;
+                memset(bm, 0, (size_t)bm_sz);
+                for (uint64_t k = 0; k < sl; k++)
+                    if (s[k] != base[k]) bm[k >> 3] |= (uint8_t)(1u << (k & 7));
+                if (fwrite(bm, 1, (size_t)bm_sz, bf) != (size_t)bm_sz) { free(bm); fclose(bf); return -1; }
+                wrote += bm_sz;
+            }
+            for (uint32_t e = 1; e < E; e++) {
+                const uint8_t *s = base + (uint64_t)e * sl;
+                for (uint64_t k = 0; k < sl; k++) {
+                    uint8_t d = s[k] ^ base[k];
+                    if (d) {
+                        if (fwrite(&d, 1, 1, bf) != 1) { free(bm); fclose(bf); return -1; }
+                        wrote++;
+                    }
+                }
+            }
+            free(bm);
+            if (wrote != m->d_rlen[fi]) { fclose(bf); return -1; } /* measure/write diverged */
+        }
+        uint64_t pad = align32(wrote) - wrote;
         if (pad) { uint8_t z[32] = {0}; if (fwrite(z, 1, pad, bf) != pad) { fclose(bf); return -1; } }
     }
     for (int t = 0; t < 3; t++) {
@@ -614,8 +752,12 @@ static int mod_lazyload(Mod *m, struct llama_model_params mp) {
     snprintf(d1c, sizeof(d1c), "[%s] L1c: vocab from field windows == source", m->tag);
     CHECK(d1c, vocab_ok);
     m->sc.box = &m->box; m->sc.field = m->fmap; m->sc.body_off = m->fbody_off; m->sc.fpos = m->fpos;
+    m->sc.is_delta = m->is_delta; m->sc.d_E = m->d_E; m->sc.d_sl = m->d_sl;
+    m->sc.d_boff = m->d_boff; m->sc.d_voff = m->d_voff; m->sc.d_rlen = m->d_rlen;
     win_reset(&m->sc);
     m->model = llama_model_init_from_user(m->meta, provide_tensor, &m->sc, mp);
+    printf("[%s] cb stats: matched=%u missing=%u aliased=%u owned=%u\n",
+           m->tag, m->sc.matched, m->sc.missing, m->sc.aliased, m->sc.n_owned);
     char d2[64], d2b[64];
     snprintf(d2, sizeof(d2), "[%s] L2: model loads from field callback", m->tag);
     CHECK(d2, m->model != NULL);
@@ -658,6 +800,8 @@ static int mod_reload(Mod *m, struct llama_model_params mp) {
     for (uint32_t i = 0; i < m->sc.n_owned; i++) free(m->sc.owned[i]);
     m->sc.n_owned = 0;
     m->model = llama_model_init_from_user(m->meta, provide_tensor, &m->sc, mp);
+    printf("[%s] cb stats (reload): matched=%u missing=%u aliased=%u owned=%u\n",
+           m->tag, m->sc.matched, m->sc.missing, m->sc.aliased, m->sc.n_owned);
     char d[64];
     snprintf(d, sizeof(d), "[%s] E0: re-load works after evict", m->tag);
     CHECK(d, m->model != NULL);
@@ -669,6 +813,8 @@ static void mod_close(Mod *m) {
     if (m->meta) gguf_free(m->meta);
     free(m->lazy); free(m->ref); free(m->reb); free(m->idx);
     free(m->order); free(m->chain_off); free(m->fpos);
+    free(m->is_delta); free(m->d_E); free(m->d_sl); free(m->d_boff); free(m->d_rlen);
+    if (m->d_voff) { for (uint32_t i = 0; i < m->N; i++) free(m->d_voff[i]); free(m->d_voff); }
     free(m->sc.win_bits);
     for (uint32_t i = 0; i < m->sc.n_owned; i++) free(m->sc.owned[i]);
     if (m->fmap) UnmapViewOfFile(m->fmap);
@@ -692,7 +838,8 @@ int main(int argc, char **argv) {
     wss("baseline");
 
     llama_backend_init();
-    llama_log_set(NULL, NULL);
+    llama_log_set(err_log, NULL);
+    ggml_log_set(err_log, NULL);
     { /* loader audit: WHICH llama.dll did we actually bind? */
         char path[MAX_PATH] = {0};
         HMODULE hmll = GetModuleHandleA("llama.dll");
@@ -715,6 +862,17 @@ int main(int argc, char **argv) {
     res_report("A after mmap (cold)", A.fmap, A.cursor);
     res_report("B after mmap (cold)", B.fmap, B.cursor);
     if (mod_hcheck(&A) != 0 || mod_hcheck(&B) != 0) { printf("durable check failed\n"); return 1; }
+    /* ── D0 (bake oracle = source sizes): delta layout only where measured smaller ── */
+    {
+        char d0a[96], d0b[96];
+        snprintf(d0a, sizeof(d0a), "[A] D0: adaptive delta honest (raw=%llu enc=%llu)",
+                 (unsigned long long)A.d_raw, (unsigned long long)A.d_enc);
+        snprintf(d0b, sizeof(d0b), "[B] D0: adaptive delta honest (raw=%llu enc=%llu ratio=%.3f)",
+                 (unsigned long long)B.d_raw, (unsigned long long)B.d_enc,
+                 B.d_raw ? (double)B.d_enc / (double)B.d_raw : 0.0);
+        CHECK(d0a, A.d_raw == 0 || A.d_enc < A.d_raw);
+        CHECK(d0b, B.d_raw == 0 || B.d_enc < B.d_raw);
+    }
     if (mod_rebuild(&A) != 0 || mod_rebuild(&B) != 0) { printf("rebuild failed\n"); return 1; }
 
     /* ── M4 (info only): tokenizer payloads identical across models? ──
