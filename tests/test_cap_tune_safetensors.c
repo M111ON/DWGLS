@@ -247,6 +247,12 @@ int main(int argc, char **argv) {
     printf("  field: file-order %llu → targeted %llu windows (Σ); base %llu\n",
            (unsigned long long)fcur, (unsigned long long)fopt, (unsigned long long)base);
 
+    if (n_present < 2) {
+        printf("\n════════════════════════════════════════════════════════\n");
+        printf("SKIP: only %u/3 safetensors files present (need ≥2)\n", n_present);
+        return 0;
+    }
+
     CHECK(1, "≥2 safetensors parsed (real data)", n_present >= 2);
     CHECK(2, "lift rate @1.0 > 75% — w-distribution uniform (สูตร placement)",
           n_present >= 2 && l100 > 75.0 && l100 < 100.0);
@@ -259,10 +265,5 @@ int main(int argc, char **argv) {
     CHECK(5, "targeted cuts aggregate field", n_present >= 2 && fopt < fcur);
     CHECK(6, "targeted field fits in a handful of windows (Σ ≤ 64)", n_present >= 2 && fopt <= 64);
 
-    if (n_present < 2) {
-        printf("\n════════════════════════════════════════════════════════\n");
-        printf("SKIP: only %u/3 safetensors files present (need ≥2)\n", n_present);
-        return 0;
-    }
     return fail ? 1 : 0;
 }
