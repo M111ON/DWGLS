@@ -450,6 +450,25 @@ static int mod_bake(Mod *m) {
         *kis_val[1 + t * 4 + 2] = m->tok_count[t];
         *kis_val[1 + t * 4 + 3] = m->tok_arrtype[t];
     }
+    /* P5: skip-if-fresh — layout is deterministic from the source box; if the
+       field file already has exactly the expected bytes and is newer than
+       the GGUF, skip the rewrite (serve re-derives everything from disk). */
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fa, ga;
+        if (GetFileAttributesExA(m->field_path, GetFileExInfoStandard, &fa) &&
+            GetFileAttributesExA(m->gguf, GetFileExInfoStandard, &ga)) {
+            uint64_t fsz = ((uint64_t)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+            ULARGE_INTEGER fm, gm;
+            fm.HighPart = fa.ftLastWriteTime.dwHighDateTime; fm.LowPart = fa.ftLastWriteTime.dwLowDateTime;
+            gm.HighPart = ga.ftLastWriteTime.dwHighDateTime; gm.LowPart = ga.ftLastWriteTime.dwLowDateTime;
+            if (fsz == m->cursor && fm.QuadPart >= gm.QuadPart) {
+                printf("[%s] reusing %s (%llu B, newer than source) — bake skipped\n",
+                       m->tag, m->field_path, (unsigned long long)fsz);
+                free(m->idx); m->idx = NULL;
+                return (m->idx_data_off < 65536) ? 0 : -1;
+            }
+        }
+    }
     FILE *bf = fopen(m->field_path, "wb");
     if (!bf) return -1;
     if (fwrite(m->idx, 1, (size_t)m->idx_data_off, bf) != (size_t)m->idx_data_off) { fclose(bf); return -1; }
