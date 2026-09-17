@@ -108,3 +108,34 @@ Lazy load (`llama_model_init_from_user` → NULL) went red on this box. Three st
 3. **Vulkan_Host preferred buft can't wrap field pointers (contract)**: `select_weight_buft` picks first supported entry → `Vulkan_Host` (host-pinned staging for GPU offload); its device caps lack `buffer_from_host_ptr` → our Hunk throws `user tensor callback did not provide a host buffer for Vulkan_Host`. Fix (exe-side, no llama rebuild): `mp.no_host = true` on the **lazy path only** — CPU tensors land on the plain CPU buft → `cpu_buffer_from_ptr` binds field pointers, zero-copy preserved. Reference path keeps defaults.
 
 Re-verified after fix: Qwen2.5-0.5B **12/12 PASS** (L3 40/40 bitwise), Huihui MoE 1B **14/14 PASS** (667.3 MB → 0 MB evict, 15416 re-faults, 40/40 identical re-generate).
+
+## Hunk 5 (multi-model, 2026-09-17) — `llama-model-loader.cpp:21-26,571-590,1406-1410`
+
+`g_gguf_box` was process-global + init-once: loading a 2nd model in one
+process routed its tensors through the 1st model's box (same names, different
+sizes) → `get_mapping_range` shaped buffers from stale offsets → ggml assert.
+Fix: store `g_gguf_box_fname`; different `fname` → `gguf_box_close` + reopen
++ reset routed/skipped counters. Same file → box kept (single-model runs see
+zero behavior change). Plus a size guard in `get_mapping_range` (entry size
+must equal `ggml_nbytes`, stale-file defense).
+Rebuilt `build_zc2` (`llama.vcxproj` Release x64, only
+`llama-model-loader.cpp` recompiled), restaged `build/*.dll`.
+Single path re-verified green (plain 291/291 + lazy 12/12).
+
+Proven by `tools/dual_lazy_serve.c` (new): Qwen2.5-0.5B + Huihui MoE 1B in
+ONE process, per-model fields — **19/19 PASS**: H1/H2 both, M1 co-serve both
+live + both L3 bitwise, M2 evict-A→B identical (A 0 pages, B 645 MB resident),
+E0/M3 reload-A→A identical, M5 dual WS 3412 MB ≤ refA+refB+1024.
+M4 analysis: same vocab counts (151936/151387/151936) but payload bytes
+differ → separate tokenizer windows required (shared layout would NOT be
+lossless here). `make dual-lazy-serve`.
+
+Build trap (2026-09-17, cost ~1h): `I:/llama/include` drifted NEWER than the
+DLL source tree (extra fields e.g. `lazy_mode`), shifting
+`llama_context_params` layout → `Unsupported ctx type` throw on context init
+(first `graph_reserve`, no `resolve_fused_ops` lines = signature). Rule:
+llama-linked tools MUST compile against the headers matching the running
+DLLs — `I:/llama/llama.cpp/include` (+ `/ggml/include`) for build_zc2.
+Symptom vs cause: explicit `cp.ctx_type = DEFAULT` did NOT help (offsets,
+not values). Diagnosis: `Compare-Object` the two `llama.h`, check
+`[dll] llama.dll ->` loader audit line, hash the 3 `llama.dll` copies.

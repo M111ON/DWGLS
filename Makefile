@@ -913,6 +913,20 @@ plain-user-mmap: | $(BUILD)
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
 	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/plain_user_mmap $(LLAMA_GGUF) "The capital of France is" "$(LLAMA_DLL)"
 
+# Dual-model co-serve: 2 models, 1 process, per-model fields (M1 co-serve,
+# M2 evict isolation, M3 recovery, M4 tokenizer analysis, M5 WS bound).
+# NOTE: compile against the build_zc2 TREE headers, not $(LLAMA_INC):
+# I:/llama/include drifted newer than the patched DLLs, shifting struct
+# layout ("Unsupported ctx type" incident 2026-09-17). Runtime DLLs still
+# resolve to staged build/*.dll (exe-dir wins).
+dual-lazy-serve: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-format \
+	    -I core -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -o $(BUILD)/dual_lazy_serve tools/dual_lazy_serve.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lpsapi -lm
+	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/dual_lazy_serve "I:/model/Qwen2.5-0.5B-Instruct-Q8_0.gguf" "F:/model/huihui-moe-1b-q4_k_m.gguf" "The capital of France is" 10
+
 # ── Docs SVG re-render: .excalidraw masters → .svg (never drift) ──
 # Source of truth = docs/*.excalidraw (editable in excalidraw.com / VS Code
 # extension). Run after editing a master so the committed .svg stays in sync.
