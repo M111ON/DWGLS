@@ -44,22 +44,35 @@ static inline int zone_card3_is_special(uint16_t id) {
 }
 
 /* -- single-use per job: a special card played is SPENT until job ends.
- * 7 specials -> 7-bit mask. Prevents WILDCARD spam breaking everything. -- */
+ * 7 specials -> 7-bit mask. Prevents WILDCARD spam breaking everything.
+ * WILDCARD is HIDDEN from the normal gate (dev-only): normal play refuses
+ * it without spending; dev path unlocks it explicitly. -- */
 #define ZGATE_ALREADY_SPENT -2
+#define ZGATE_HIDDEN        -3
 
 typedef struct {
     uint32_t job_id;
     uint8_t  spent; /* bit i = special (id - ZCARD_RED) played */
+    uint8_t  dev;   /* nonzero = dev mode: WILDCARD visible */
 } ZCardJob;
 
 static inline void zcard_job_begin(ZCardJob *j, uint32_t job_id) {
     j->job_id = job_id;
     j->spent = 0;
+    j->dev = 0;
 }
 
-/* returns gate verdict, or ZGATE_ALREADY_SPENT if this card was used this job */
+static inline void zcard_job_begin_dev(ZCardJob *j, uint32_t job_id) {
+    j->job_id = job_id;
+    j->spent = 0;
+    j->dev = 1;
+}
+
+/* returns gate verdict, ZGATE_ALREADY_SPENT on replay, ZGATE_HIDDEN if
+ * WILDCARD is played without dev mode (not spent, invisible to gate) */
 static inline int zcard_play(ZCardJob *j, uint16_t id) {
     if (!zone_card3_is_special(id)) return 0; /* ordinary card: no verdict */
+    if (id == ZCARD_WILDCARD && !j->dev) return ZGATE_HIDDEN;
     unsigned bit = (unsigned)(id - ZCARD_RED);
     if (j->spent & (uint8_t)(1u << bit)) return ZGATE_ALREADY_SPENT;
     j->spent |= (uint8_t)(1u << bit);
