@@ -11,7 +11,7 @@ MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 RANK, EPOCHS, BATCH, LR = 8, 3, 4, 2e-4
 
 tok = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(MODEL, torch_dtype=torch.float16,
+model = AutoModelForCausalLM.from_pretrained(MODEL, dtype=torch.float16,
                                              trust_remote_code=True).cuda()
 cfg = LoraConfig(r=RANK, lora_alpha=16, lora_dropout=0.05, bias="none",
                  task_type="CAUSAL_LM",
@@ -21,10 +21,13 @@ model = get_peft_model(model, cfg)
 model.print_trainable_parameters()
 
 recs = [json.loads(l) for l in open(DATA, encoding="utf-8")]
+def ids_of(x):
+    return x.ids if hasattr(x, "ids") else list(x)
+
 def encode(rec):
-    full = tok.apply_chat_template(rec["messages"], tokenize=True, add_generation_prompt=False)
+    full = ids_of(tok.apply_chat_template(rec["messages"], tokenize=True, add_generation_prompt=False))
     # mask everything up to end of user turn: re-encode without assistant reply
-    pre = tok.apply_chat_template(rec["messages"][:2], tokenize=True, add_generation_prompt=True)
+    pre = ids_of(tok.apply_chat_template(rec["messages"][:2], tokenize=True, add_generation_prompt=True))
     labels = [-100] * len(pre) + full[len(pre):]
     return torch.tensor(full), torch.tensor(labels)
 
