@@ -42,3 +42,35 @@ _Static_assert(sizeof(ZoneCard3) == 12, "ZoneCard3 must be 12 bytes");
 static inline int zone_card3_is_special(uint16_t id) {
     return id >= ZCARD_RED && id <= ZCARD_WILDCARD;
 }
+
+/* -- single-use per job: a special card played is SPENT until job ends.
+ * 7 specials -> 7-bit mask. Prevents WILDCARD spam breaking everything. -- */
+#define ZGATE_ALREADY_SPENT -2
+
+typedef struct {
+    uint32_t job_id;
+    uint8_t  spent; /* bit i = special (id - ZCARD_RED) played */
+} ZCardJob;
+
+static inline void zcard_job_begin(ZCardJob *j, uint32_t job_id) {
+    j->job_id = job_id;
+    j->spent = 0;
+}
+
+/* returns gate verdict, or ZGATE_ALREADY_SPENT if this card was used this job */
+static inline int zcard_play(ZCardJob *j, uint16_t id) {
+    if (!zone_card3_is_special(id)) return 0; /* ordinary card: no verdict */
+    unsigned bit = (unsigned)(id - ZCARD_RED);
+    if (j->spent & (uint8_t)(1u << bit)) return ZGATE_ALREADY_SPENT;
+    j->spent |= (uint8_t)(1u << bit);
+    switch (id) {
+        case ZCARD_RED:   return ZGATE_HALT;
+        case ZCARD_BLACK: return ZGATE_HALT;
+        case ZCARD_GREEN: return ZGATE_FAST;
+        case ZCARD_GOLD:  return ZGATE_FAST;
+        case ZCARD_BLUE:  return ZGATE_AUGMENT;
+        case ZCARD_WHITE: return ZGATE_BLANK;
+        case ZCARD_WILDCARD: return ZGATE_OVERRIDE;
+        default: return 0;
+    }
+}
