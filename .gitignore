@@ -82,3 +82,6 @@ py
 tmp_check_gguf.c
 cookies.txt
 .worktrees/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
