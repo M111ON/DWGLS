@@ -18,15 +18,17 @@ int main(void) {
     CHECK(4, 6 * 6 * 8 * 4 == 1152); // one tesseract from both worlds
     CHECK(5, 27 * 32 == 864); // base3 x base2 parts
     CHECK(6, 864 / 8 == 108); // pentagon interior angle
-    CHECK(7, 360 - 108 != 144); // as-written is 252: flagged, NOT encoded
-    CHECK(8, 360 - 2 * 108 == 144); // corrected: minus the pair
-    CHECK(9, 144 / 2 == 72 && 72 / 2 == 36 && 108 / 2 == 54); // halving chain
+    // owner intent: triangle world 180-72=108 (square world's 360 = 4x90 separate)
+    CHECK(7, 180 - 72 == 108);
+    CHECK(8, 4 * 90 == 360); // square world total belongs here, not in the chain
+    CHECK(9, 108 - 72 == 36 && 108 + 36 == 144); // loop closes: 108->36->144
+    CHECK(10, 144 / 2 == 72 && 108 / 2 == 54); // 72 regenerates: fixed point
     // pentagon angle family {36,54,72,108}: golden-triangle vertex/base, half/full interior
-    CHECK(10, 36 + 72 + 72 == 180 && 2 * 54 == 108);
-    CHECK(11, 32 - 27 == 5); // base2 - base3 = pentagon number
-    CHECK(12, 6 + 6 == 12 && 8 + 4 == 12 && 12 * 12 == 144); // both roads -> 12 -> 144
+    CHECK(11, 36 + 72 + 72 == 180 && 2 * 54 == 108);
+    CHECK(12, 32 - 27 == 5); // base2 - base3 = pentagon number
+    CHECK(13, 6 + 6 == 12 && 8 + 4 == 12 && 12 * 12 == 144); // both roads -> 12 -> 144
     // structural: cube 6 faces in 3 parallel pairs; tetra 4 faces, none parallel
-    CHECK(13, 6 / 2 == 3 && 4 - 0 == 4); // +-3 pairs vs 4 unique dirs
-    printf(fails ? "FAIL %d\n" : "DUALWORLD 14/14 OK\n", fails);
+    CHECK(14, 6 / 2 == 3 && 4 - 0 == 4); // +-3 pairs vs 4 unique dirs
+    printf(fails ? "FAIL %d\n" : "DUALWORLD 15/15 OK\n", fails);
     return fails;
 }
