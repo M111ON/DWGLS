@@ -21,6 +21,13 @@ int main(void) {
     CHECK(7, 27 == 3 * 3 * 3); // 27 = 3^3 base-3 signature
     CHECK(8, 82944 == 4 * 20736 && 331776 == 4 * 82944); // x4 per doubling
     CHECK(9, dsum(144) == 9); // 144 itself already root 9
-    printf(fails ? "FAIL %d\n" : "DIGIT9 10/10 OK\n", fails);
+    // doubling chain 1152->2304->4608->9216: 9Z-closed, root 9 forever
+    CHECK(10, 1152 == 18 * 64); // back to 18 (18tes x 64)
+    CHECK(11, 2304L * 2304 == 5308416 && dsum(5308416) == 27);
+    CHECK(12, 4608L * 4608 == 21233664 && dsum(21233664) == 27);
+    CHECK(13, 9216L * 9216 == 84934656 && dsum(84934656) == 45);
+    CHECK(14, drood(5308416) == 9 && drood(21233664) == 9 && drood(84934656) == 9);
+    CHECK(15, 1152 % 9 == 0 && 2304 % 9 == 0 && 4608 % 9 == 0 && 9216 % 9 == 0);
+    printf(fails ? "FAIL %d\n" : "DIGIT9 16/16 OK\n", fails);
     return fails;
 }
