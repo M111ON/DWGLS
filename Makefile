@@ -43,6 +43,7 @@ TIER1 := \
   test_net_walk \
   test_wonder_cube \
   test_planet12 \
+  test_saturn_ring \
   test_bfs_planet_watch \
   test_bfs_fold \
   test_gp16_neighbors \

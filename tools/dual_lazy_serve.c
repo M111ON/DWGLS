@@ -41,6 +41,7 @@
 #define align64(x) (((x) + 63u) & ~((uint64_t)63u))
 
 static int pass_count = 0, fail_count = 0;
+static int TRACE = 0; /* DUAL_TRACE mode: force flat layout (see trace block) */
 #define CHECK(desc, cond) do { \
     if (cond) { pass_count++; printf("  T: PASS — %s\n", desc); } \
     else      { fail_count++; printf("  T: FAIL — %s\n", desc); } \
@@ -121,6 +122,7 @@ static uint64_t range_resident(const uint8_t *base, uint64_t off, uint64_t len) 
     free(info);
     return got;
 }
+
 
 /* ── eviction for file-backed mmap (real): unmap + remap the view ── */
 static DWORD wc_evict_body(const uint8_t *base, uint64_t body_off, uint64_t body_len,
@@ -361,6 +363,7 @@ static void provide_tensor(struct ggml_tensor *t, void *ud) {
 }
 
 /* ── greedy generation from a loaded model ────────────────── */
+static void (*trace_step_fn)(void) = NULL; /* DUAL_TRACE per-decode hook */
 static llama_token *generate_model(struct llama_model *model, const char *prompt,
                                    int n_gen, int *n_out) {
     *n_out = 0;
@@ -380,6 +383,7 @@ static llama_token *generate_model(struct llama_model *model, const char *prompt
     llama_token *out = (llama_token *)malloc((size_t)(n_gen + 1) * sizeof(llama_token));
     int total = 0;
     if (llama_decode(ctx, llama_batch_get_one(toks, np)) != 0) { free(toks); free(out); llama_free(ctx); return NULL; }
+    if (TRACE && trace_step_fn) trace_step_fn(); /* step 0 = prompt batch */
     for (int i = 0; i < n_gen; i++) {
         const float *logits = (i == 0) ? llama_get_logits_ith(ctx, np - 1) : llama_get_logits(ctx);
         llama_token best = 0; float bv = logits[0];
@@ -387,6 +391,7 @@ static llama_token *generate_model(struct llama_model *model, const char *prompt
         out[total++] = best;
         if (best == eos) break;
         if (llama_decode(ctx, llama_batch_get_one(&best, 1)) != 0) break;
+        if (TRACE && trace_step_fn) trace_step_fn(); /* steps 1.. = single tokens */
     }
     wss("generation");
     free(toks); llama_free(ctx);
@@ -484,8 +489,10 @@ static int mod_bake(Mod *m) {
         const GGUFBoxEntry *ent = &m->box.entries[fi];
         uint64_t tsz = align32(ent->size);
         m->chain_off[r] = m->body_sz;
-        /* adaptive: exps tensors go delta only when measured smaller */
-        if (strstr(ent->name, "_exps.weight") && ent->n_dims == 3) {
+        /* adaptive: exps tensors go delta only when measured smaller
+           (TRACE forces flat: owned reconstruct buffers are private memory
+           and must never be page-discarded, file-backed only) */
+        if (!TRACE && strstr(ent->name, "_exps.weight") && ent->n_dims == 3) {
             uint32_t E = ent->dims[2];
             uint64_t *nv = E ? (uint64_t *)calloc(E, sizeof(uint64_t)) : NULL;
             uint64_t enc = (E && nv) ? delta_measure(ent->data, ent->size, E, nv) : 0;
@@ -824,6 +831,144 @@ static void mod_close(Mod *m) {
     memset(m, 0, sizeof(*m));
 }
 
+/* ── DUAL_TRACE mode: per-prompt expert activation sets ──────────────
+ * Measures WHICH experts fire together (affinity for locality layout),
+ * not byte similarity. Method: DiscardVirtualMemory on file-backed exps
+ * ranges (pointers stay valid, pages re-fault from file), generate prompt,
+ * then per-expert-slice residency = fired set. Flat layout forced (TRACE
+ * disables delta: owned buffers are private and must never be discarded). */
+/* TRACE global is declared near the top (mod_bake needs it). */
+
+static const char *trace_prompts[] = {
+    "The capital of France is",
+    "Write a Python function that sorts a list",
+    "1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 =",
+    "Once upon a time in a deep forest there lived",
+    "Translate to French: good morning, how are you today",
+    "The smallest prime number greater than 1000 is",
+};
+#define N_TRACE_PROMPTS 6
+
+#define TRACE_MAXSTEPS 16
+static Mod *trace_hook_mod = NULL;
+static uint32_t trace_hook_exps[128]; static uint32_t trace_hook_ne = 0;
+static uint64_t trace_stepmask[TRACE_MAXSTEPS][128]; /* step x tensor -> expert bits */
+static int trace_nsteps = 0;
+static void trace_capture_step(void) {
+    if (!trace_hook_mod || trace_nsteps >= TRACE_MAXSTEPS) return;
+    Mod *m = trace_hook_mod;
+    for (uint32_t x = 0; x < trace_hook_ne; x++) {
+        uint32_t i = trace_hook_exps[x];
+        uint32_t E = m->box.entries[i].dims[2];
+        uint64_t sl = m->box.entries[i].size / E, mask = 0;
+        for (uint32_t e = 0; e < E && e < 64; e++) {
+            uint64_t so = (uint64_t)e * sl, slen = sl;
+            /* slices are 32B-packed, not page-aligned: head page is shared
+               with the previous slice's tail AND tail page with the next
+               slice's head. Skip both — a firing expert otherwise raises a
+               false positive on its lower neighbor (proven: all-9 artifact). */
+            if (slen > 8192) { so += 4096; slen -= 8192; }
+            else continue; /* slice too small to resolve — honest skip */
+            if (range_resident(m->fmap, m->fbody_off + m->fpos[i] + so, slen) > 0)
+                mask |= (1ull << e);
+        }
+        trace_stepmask[trace_nsteps][x] = mask;
+    }
+    trace_nsteps++;
+    if (!EmptyWorkingSet(GetCurrentProcess()))
+        printf("TRACE VOID: in-step discard failed\n");
+}
+
+static int trace_run(Mod *m, int n_gen) {
+    uint32_t exps[128]; uint32_t ne = 0;
+    for (uint32_t i = 0; i < m->N && ne < 128; i++)
+        if (strstr(m->box.entries[i].name, "_exps.weight")) exps[ne++] = i;
+    if (!ne) { printf("TRACE: no exps tensors in %s\n", m->gguf); return 1; }
+    uint32_t Emax = 0;
+    for (uint32_t x = 0; x < ne; x++) {
+        uint32_t E = m->box.entries[exps[x]].dims[2];
+        if (E > Emax) Emax = E;
+    }
+    printf("TRACE: %u exps tensors, Emax=%u, %d prompts x %d tokens\n",
+           ne, Emax, N_TRACE_PROMPTS, n_gen);
+    static uint32_t hist[64][64]; /* layer x expert: decode-step votes */
+    memset(hist, 0, sizeof(hist));
+    uint32_t gate_x[64]; uint32_t nlayers = 0;
+    for (uint32_t x = 0; x < ne && nlayers < 64; x++)
+        if (strstr(m->box.entries[exps[x]].name, "ffn_gate_exps"))
+            gate_x[nlayers++] = x;
+    trace_hook_mod = m;
+    for (uint32_t x = 0; x < ne && x < 128; x++) trace_hook_exps[x] = exps[x];
+    trace_hook_ne = ne;
+    trace_step_fn = trace_capture_step;
+    for (int p = 0; p < N_TRACE_PROMPTS; p++) {
+        if (!EmptyWorkingSet(GetCurrentProcess())) {
+            printf("TRACE VOID: EmptyWorkingSet failed err=%lu\n", GetLastError());
+            return 1;
+        }
+        if (p == 0) {
+            uint32_t i0 = exps[0];
+            uint64_t r = range_resident(m->fmap, m->fbody_off + m->fpos[i0],
+                                        m->box.entries[i0].size);
+            printf("TRACE: post-discard residency of first exps tensor = %llu pages (expect 0)\n",
+                   (unsigned long long)r);
+            if (r != 0) { printf("TRACE VOID: OS did not discard — abort\n"); return 1; }
+        }
+        trace_nsteps = 0;
+        memset(trace_stepmask, 0, sizeof(trace_stepmask));
+        int nout = 0;
+        llama_token *toks = generate_model(m->model, trace_prompts[p], n_gen, &nout);
+        free(toks);
+        /* step 0 = prompt batch (union, informational); steps 1.. = single tokens */
+        for (int s = 0; s < trace_nsteps; s++) {
+            printf("  [P%d] step %d (gate experts per layer):", p, s);
+            for (uint32_t l = 0; l < nlayers; l++) {
+                uint64_t mask = trace_stepmask[s][gate_x[l]];
+                int e = -1, nbits = 0;
+                for (int b = 0; b < 4; b++) if (mask & (1ull << b)) { nbits++; e = b; }
+                if (nbits == 1) { printf(" %d", e); if (s > 0) hist[l][e]++; }
+                else printf(" [%llu]", (unsigned long long)mask);
+            }
+            printf("%s\n", s == 0 ? "  <- prompt-batch union" : "");
+        }
+    }
+    trace_step_fn = NULL; trace_hook_mod = NULL;
+    printf("TRACE per-layer decode-step histogram (rows=layers, cols=experts):\n");
+    int nstatic = 0, nsteps_tot = 0;
+    for (uint32_t l = 0; l < nlayers; l++) {
+        uint32_t tot = hist[l][0] + hist[l][1] + hist[l][2] + hist[l][3];
+        nsteps_tot += tot;
+        uint32_t mx = hist[l][0];
+        for (int e = 1; e < 4; e++) if (hist[l][e] > mx) mx = hist[l][e];
+        if (tot > 0 && mx * 5 >= tot * 4) nstatic++; /* >=80% one expert */
+        printf("  L%2u: %u %u %u %u\n", l, hist[l][0], hist[l][1], hist[l][2], hist[l][3]);
+    }
+    printf("TRACE done — static layers (>=80%% one expert): %d/%u over %d decode steps\n",
+           nstatic, nlayers, nsteps_tot / (nlayers ? (int)nlayers : 1));
+    return 0;
+}
+
+static int trace_main(const char *ggufB, int n_gen) {
+    TRACE = 1;
+    Mod B = {0};
+    B.tag = "B"; B.gguf = ggufB; B.field_path = "build/fieldB_trace.bin";
+    if (mod_bake(&B) != 0) { printf("B trace-bake failed\n"); return 1; }
+    if (mod_mmap(&B) != 0) { printf("B trace-mmap failed\n"); return 1; }
+    if (mod_hcheck(&B) != 0) { printf("B trace-hcheck failed\n"); return 1; }
+    if (mod_rebuild(&B) != 0) { printf("B trace-rebuild failed\n"); return 1; }
+    struct llama_model_params mp = llama_model_default_params();
+    mp.n_gpu_layers = 0;
+    mp.no_host = true;
+    if (mod_refgen(&B, trace_prompts[0], 10) != 0) { printf("B trace-ref failed\n"); return 1; }
+    if (mod_lazyload(&B, mp) != 0) { printf("B trace-load failed\n"); return 1; }
+    if (mod_lazygen(&B, trace_prompts[0], 10, "[B] L3 trace-precheck (must be bitwise)") != 0) {
+        printf("B trace L3 diverged — trace would be invalid\n"); return 1;
+    }
+    int rc = trace_run(&B, n_gen);
+    mod_close(&B);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     const char *ggufA = (argc > 1) ? argv[1] : "I:/model/Qwen2.5-0.5B-Instruct-Q8_0.gguf";
     const char *ggufB = (argc > 2) ? argv[2] : "F:/model/huihui-moe-1b-q4_k_m.gguf";
@@ -850,6 +995,8 @@ int main(int argc, char **argv) {
     }
     ggml_backend_load_all_from_path(backend_path);
     ggml_backend_load_all();
+
+    if (getenv("DUAL_TRACE")) return trace_main(ggufB, n_gen);
 
     Mod A = {0}, B = {0};
     A.tag = "A"; A.gguf = ggufA; A.field_path = "build/fieldA.bin";

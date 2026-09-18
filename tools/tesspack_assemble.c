@@ -16,6 +16,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+/* Forward decls: stub ggml functions (defined below) must be visible before
+   geo_tess_container.h, whose tess_pack_apply_residual calls them. */
+int ggml_type_size(int type);
+int ggml_blck_size(int type);
 #include "../core/geo_tess_container.h"
 #include "../core/gguf_reader.h"
 
