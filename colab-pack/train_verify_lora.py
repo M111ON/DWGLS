@@ -21,13 +21,15 @@ model = get_peft_model(model, cfg)
 model.print_trainable_parameters()
 
 recs = [json.loads(l) for l in open(DATA, encoding="utf-8")]
-def ids_of(x):
-    return x.ids if hasattr(x, "ids") else list(x)
+def chat_ids(msgs, add_gen):
+    txt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=add_gen)
+    e = tok.encode(txt, add_special_tokens=False)
+    return e.ids if hasattr(e, "ids") else list(e)
 
 def encode(rec):
-    full = ids_of(tok.apply_chat_template(rec["messages"], tokenize=True, add_generation_prompt=False))
+    full = chat_ids(rec["messages"], False)
     # mask everything up to end of user turn: re-encode without assistant reply
-    pre = ids_of(tok.apply_chat_template(rec["messages"][:2], tokenize=True, add_generation_prompt=True))
+    pre = chat_ids(rec["messages"][:2], True)
     labels = [-100] * len(pre) + full[len(pre):]
     return torch.tensor(full), torch.tensor(labels)
 
