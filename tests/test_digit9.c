@@ -28,6 +28,8 @@ int main(void) {
     CHECK(13, 9216L * 9216 == 84934656 && dsum(84934656) == 45);
     CHECK(14, drood(5308416) == 9 && drood(21233664) == 9 && drood(84934656) == 9);
     CHECK(15, 1152 % 9 == 0 && 2304 % 9 == 0 && 4608 % 9 == 0 && 9216 % 9 == 0);
-    printf(fails ? "FAIL %d\n" : "DIGIT9 16/16 OK\n", fails);
+    // 36 = axis value: 12 (scale) x 3 (axes) — structural, not a chain transient
+    CHECK(16, 36 == 12 * 3 && 36 == 108 / 3 && 36 == 72 / 2);
+    printf(fails ? "FAIL %d\n" : "DIGIT9 17/17 OK\n", fails);
     return fails;
 }
