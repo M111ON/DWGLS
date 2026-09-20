@@ -110,6 +110,23 @@ static inline uint32_t nw_count_edges(uint32_t F, uint32_t SMAX,
     return halves - pairs / 2u;
 }
 
+/* fan cartridge builder: center b-gon + 3 a-gon petals on edges 0,1,2.
+ * sides[4] = {b,a,a,a}; 3 petals regardless of b (they attach to the
+ * seed sides, not the shaft sides). Fills peer tables with -1 then the
+ * 6 glued halves. No config — gluing is fixed by the principle. */
+static inline void nw_build_fan(uint32_t a, uint32_t b, uint32_t SMAX,
+                                uint32_t *sides, int32_t *peer_f, int32_t *peer_e) {
+    sides[0] = b; sides[1] = a; sides[2] = a; sides[3] = a;
+    for (uint32_t f = 0; f < 4; f++)
+        for (uint32_t i = 0; i < SMAX; i++) { peer_f[f * SMAX + i] = -1; peer_e[f * SMAX + i] = 0; }
+    peer_f[0 * SMAX + 0] = 1; peer_e[0 * SMAX + 0] = 0;
+    peer_f[0 * SMAX + 1] = 2; peer_e[0 * SMAX + 1] = 0;
+    peer_f[0 * SMAX + 2] = 3; peer_e[0 * SMAX + 2] = 0;
+    peer_f[1 * SMAX + 0] = 0; peer_e[1 * SMAX + 0] = 0;
+    peer_f[2 * SMAX + 0] = 0; peer_e[2 * SMAX + 0] = 1;
+    peer_f[3 * SMAX + 0] = 0; peer_e[3 * SMAX + 0] = 2;
+}
+
 /* open (dashed/boundary) half-edges — excluded from walks by construction */
 static inline uint32_t nw_count_open(uint32_t F, uint32_t SMAX,
                                      const uint32_t *sides, const int32_t *peer_f) {
