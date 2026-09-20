@@ -1,214 +1,28 @@
-# AGENTS.md — DWGLS (4Dimension Geometry + KIS Timeline)
+# AGENTS.md — DWGLS (4Dimension Geometry + KIS Timeline) · router (L0)
 
-#please use English and thai only to communicate 
+## Step 0 — self-detect (do this FIRST, before anything else)
+1. Estimate your usable context. If you are a **small/local model** (roughly ≤ 32k, or you were told to run light): load ONLY `.agents/chatmode.md` next, then stop loading and follow it.
+2. Otherwise (normal cloud model): continue below.
 
-##Included dir:
-I:\DWGLS-native-fs, I:\model, F:\model, I:\llama
+## Mandatory (all apps, all sizes — no exceptions)
+- Read `.agents/rules.md` IN FULL before doing any work. Prohibitions there override everything else.
 
-## Core Architecture
+## Tools 
+-suggest try using "graft grep <query>" instead of grep and "graft ask <query>" 
+**more info just type "graft" in terminal 
 
-### Parameterized Geometry Layer (`core/geo_param_grid.h`)
+## Tier map (load on demand, shallow → deep)
+| Tier | File | When |
+|------|------|------|
+| L1 | `.agents/rules.md` | always (mandatory) |
+| L2-shared | `.agents/project.md` | architecture, state, tools, build |
+| L2-app | `.agents/opencode.md` | ONLY if you are OpenCode |
+| L3 | `docs/`, `graft/INDEX.md`, git log | deep dives, one file at a time |
 
-**One family: Dodeca Root** → all shapes derive from the same parent.
+## App routing (don't hunt for tools that aren't yours)
+- **OpenCode** → read `.agents/opencode.md` (graft, memory MCPs, handoff, local cmds).
+- **Any other app** → SKIP the L2-app file entirely. If a doc references a tool you don't have (a `*.cmd`, an MCP name, a CLI), do NOT go searching the system for it — ask the user or work without it.
 
-| GeoType | verts | edges | faces | cells | Notes |
-|---------|-------|-------|-------|-------|-------|
-| GEO_DODEC_BASE | 20 | 30 | 12 | 1 | dodecahedron (root) |
-| GEO_ICO_BASE | 20 | 30 | 20 | 1 | icosahedron (dual) |
-| GEO_COMPOUND_24 | 24 | 48 | 24 | 6 | inverted dodeca compound |
-| GEO_DODEC_EDGES | 30 | 60 | 32 | 1 | edge-based |
-| GEO_COMPOUND_60 | 60 | 90 | 32 | 1 | pentakis dodeca |
-| GEO_PENTAKIS_72 | 72 | 90 | 32 | 1 | 12 base + 60 pyramids |
-| GEO_GOLDBERG_92 | 92 | 270 | 92 | 1 | goldberg dual |
-| GEO_COMP_SPIKE_120 | 120 | 180 | 62 | 1 | spike compound |
-| GEO_GOLDBERG_132 | 132 | 270 | 92 | 1 | goldberg level 2 |
-| **GEO_COMPOUND_144** | **144** | **576** | **576** | **144** | **★ 6ico = 18tes (protagonist)** |
-| GEO_GOLDBERG_192 | 192 | 270 | 92 | 1 | goldberg level 3 |
-
-**★ 6ico Compound (GEO_COMPOUND_144) — The Protagonist**
-- V=144 · E=576 · F=576 · C=144
-- "18tes" — 18tesseract with triangle tessellation field
-- This is the WORKING field for KIS-timeline
-
-**Mechanism:**
-- Parameters before entry — you choose GeoType → selects shape
-- `sort → distinct count → codebook size`
-- `mask = how many distinct values fit in geometry vertices`
-- **No hash, no lookup** — coordinate = address
-
-### KIS-Timeline (`core/kis_codec_v4/v5/v6.h`)
-
-**KIS = FIELD, not pipeline.**
-
-```
-∞ ← contraction ← 0 ← expansion → ∞
-                    ↑
-              enter anywhere
-**choice:  enter higher benifits more due to compress from breathing file system**
-```
-
-- **No start, no end, no zero entry point** — enter ANYWHERE
-- **Forward** = expansion (spike → more vertices)
-- **Backward** = contraction (seal → fewer vertices)
-- **Like a balance scale** — place data anywhere on 0-20736
-- **6 values same position** = 6 data points from different topology
-- **Direction = value** = path data came from
-
-**Loop transition:** dodeca ↔ icosahedron through spike vertex
-
-**Infinite alternation: Ico ↔ Dodec through spiking**
-- Spike = operation that transforms duals (face ↔ vertex)
-- h-depth: spike = h→0 (infinite resolution), sealed = h→R (finite)
-
-### Core Principle
-
-> **MAP not COMPRESS** — Geometry IS the address space.
-> Coordinate = data. No hash, no collision, no lookup table.
-
-## Magic Context (Cross-Platform Memory)
-OpenCode/Pi sessions store learned facts in `~/.local/share/cortexkit/magic-context/context.db`.
-Hermes can read AND write via MCP tools: `magic_search`, `magic_probe`, `magic_remember`, etc.
-**Rule:** Before starting DWGLS/FGLS work, `magic_search` with relevant keywords to check if OpenCode already learned something about this topic. Use `magic_remember` to save important findings back so both platforms share knowledge.
-
-## Working Rules
-
-### Geometry Constants (Sacred)
-- **12**: dodecahedron base (12 faces)
-- **20**: icosahedron base (20 faces)
-- **24**: compound dodeca (inverted)
-- **30**: edge count (both base)
-- **60**: pentakis / compound-60
-- **72**: pentakis-72
-- **92**: goldberg-92
-- **120**: spike compound
-- **132/192**: goldberg levels
-- **144**: 6ico compound (★ protagonist, 18tes)
-- **576**: edges+faces of 6ico compound
-
-### Coordinate = Address
-- Geometry provides: mask bit per vertex (which slots used) + addressing
-- No hash functions allowed for weight mapping
-- No lookup tables for address resolution (LUT only for static geometry)
-
-### Verification
-- Lossless = decode → compare every value at every position
-- `geo_codec_verify()` = binary truth
-- Ratio < 1.0 must prove via decode (never trust encode-only)
-
-### Test Integrity
-- **expected ต้องมาจาก oracle อิสระเท่านั้น**: spec / คณิตศาสตร์ / ข้อมูลต้นทาง / reference implementation
-  — ห้ามมาจากฟังก์ชันที่กำลังเทส (f(x) == f(x) = tautology)
-- **ห้าม "run แล้วแปะ output เป็น expected"** — characterization test แบบนี้ freeze bug ให้เข้ากล่อง
-- **ห้าม copy comment/spec จาก implementation ไปใส่ใน test** — spec ต้องมาก่อน code
-- **ทุกเทสต้อง fail ได้จริง**: mutation check — เปลี่ยน logic 1 บรรทัดใน core → เทสต้องแดง
-
-### Experiments = History
-- **ทุก experiment/debug scratch เก็บไว้เป็นประวัติ** — ย้ายไป `deprecated/` (ไม่ delete)
-- ลบได้เฉพาะ artifact ใหญ่ที่ regenerable จริง (เช่น .tesspack/.gguf) และต้องถามก่อน
-
-### Design Principles (Timeline-First)
-- เลือกใช้ **timeline-first**: int, base-2 scale, ไม่มี 0, ทุกสถานะ deterministic + replay ได้
-- hyperbolic/residual = เก็บส่วนต่างที่ explicit; geometry = template เท่านั้น (ไม่ใช่ตัวคำนวณ)
-
-## Rescope — Scale Timeline + 1 Tesseract (2026-08-14)
-
-> เราไม่ได้สร้าง geometry — ใช้โครงสร้าง combinatorial เป็น template ในการ map ข้อมูลเท่านั้น
-
-### Scale = Constant Magnification Rate
-- scale = อัตราการขยายคงที่ (multiplicative): `s(t) = s₀·kᵗ` — **ไม่มี 0, ไม่มีที่สิ้นสุด**
-- หน้าต่างที่เลือกใช้ = `(0, 20736)`; 20736 = 144² = 1728×12 = 18 tes × 8 cube × 144
-- ทุกอย่างขยับพร้อมกันหมด (global scale เดียว) → **append ไม่ต้อง tag scale**
-
-### Hyperbolic Side = Passive Scale-Change Log
-- ฝั่ง hyperbolic เก็บ **log ของ scale-change events** (แต่ละ entry = route/path สั้นๆ)
-- delta ∝ จำนวน scale-change events ไม่ใช่ขนาดข้อมูล
-- อ่านที่ scale ตรง → lossless ตรงๆ (log ว่าง)
-- อ่านที่ scale ไม่ตรง → replay log (deterministic) → lossless
-
-### 1 Tesseract = Frame-as-Index
-- **1 tesseract = 8 cube × 144 slots = 1152**
-- **cube 0 = index frame** (144 slots = 8 blocks × 18): base/len/stride(route)/checksum
-- cube 1..7 = data (1008 slots), scatter ด้วย route (stride coprime กับ 144)
-- พิสูจน์แล้ว: `tests/test_tess_index_frame.c` (7/7), `test_tess_scale_log.c` (10/10),
-  `test_tess_frame_seek.c` (8/8), `test_tess_magnify.c` (12/12), `test_tess_hex_delta.c` (10/10)
-
-### 18tes (6ico compound) = DONE
-- 18 tesseracts × 8 cube × 144 = 20736 — full field tested
-
-### Working Rule: No Geometry Construction
-- ห้าม compute vertex/face/projection/coordinate จริง — ใช้แค่โครงสร้างเป็นโครงร่างการ map
-- int ล้วน, LUT static, modular arithmetic เท่านั้น
-
-## Session Handoff
-
-Trigger (any): compact/summarization happened · early messages gone · history noticeably short
-Action:
-1. Summarize: done / pending / next + cwd
-2. ASK user before `opencode new` — show summary, wait confirm
-3. On confirm: `obsidian_mem.cmd endsession "summary" --proj DWGLS-native-fs`
-
-> **Cross-platform handoff:** `python tools/handoff.py --summary "..." --proj DWGLS-native-fs`
-> pushes to obsidian vault + cloud-memory worker (searchable from any platform)
->
-> **Full-work trail:** `tools/session_trail.py` → `I:/tools/cloud-workspace/trail/`
-> Automation: `obsidian_mem endsession` auto-collect-vault + collect-git
-
-## Latest State
-
-### Done (Proven Lossless)
-- **Platonic Field Phase 1-4**: octant, limacon, tesseract_dense, voronoi_mask — all tests PASS
-- **Integration**: `test_platonic_integration.c` 6/6 PASS
-- **MoE pipeline**: bake 108/108 tensors lossless, graft BITWISE identical, streaming 93.8% bandwidth savings
-- **.tess pipeline**: 291/291 tensors, 1181 .tess files (722 MB), all bitwise identical
-- **.tesspack**: 2.87GB single file, 43,596 capos ALL PASS lossless
-- **Tesspack graft/view/stream/breathe**: all proven on real Qwen3-4B-MoE
-- **KV/state/GeoFS/RID**: all DONE
-- **Breathing FS**: mmap RSS proof — 3.5GB file, 48MB load RSS, 1331MB peak
-- **Scale bridge**: BFS seeker ⇄ tess gear ring on ONE timeline (1 tooth = 1 semitone = 2^(1/12));
-  `core/scale_bridge.h` + `tests/test_scale_bridge.c` 35/35 PASS, TIER1 122/122 → docs/PIPELINE-MAP.md §5 + docs/scale-bridge.svg
-- **Baseline**: TIER1 121/121 PASS, TIER2 4/4 PASS (re-verified 2026-09-05; real-pack verify 44,319 capos 0 fail → docs/PIPELINE-MAP.md)
-- **Multi-format tesspack**: 4/4 models lossless — Kokoro-82M ONNX (0% overhead), Bonsai-4B Q1_0 (36.5%), Qwen3-VL-2B Q4_K_M (24.5%), LFM2.5-8B Q4_K_M (5.4%). Q1_0 (type 41) added to gguf_reader.h tinfo[42] + all 4 tess tools.
-- **tesspack_assemble**: general .tesspack→GGUF assembler — patches non-sequential header offsets, lossless roundtrip proven.
-- **Graft OOM fix**: VirtualAlloc(MEM_RESERVE) + MEM_COMMIT active regions only (commit 2462bf2).
-- **tess_scatter_bench v2**: DRamTile zero-copy + GearLock + sig32 XOR-fold CUDA kernel — Colab benchmark done.
-  - DRamTile zero-copy: **47 GB/s** (T4, 2048B chunks, no H2D copy)
-  - Compressed 8B descriptors: **63.56 GB/s** (sig32 XOR-fold halves PCIe bandwidth)
-  - **Real model decode**: Qwen3-0.6B Q8_0 → 18.6M elements, 1771 ms, 358 MB/s decode (12.2 GB/s effective)
-
-### Pending
-- **GPU scatter decode standalone kernel**: DONE — `bench/tess_scatter_decode.cu` compiled on Colab T4 (sm_75), verified lossless on **real model**: Qwen3-0.6B Q8_0 (610 MB GGUF, 991 capos, 18.6M elements, 633 MB decode output). No llama.cpp dependency. mmap → cudaHostRegister → stride-37 scatter decode on GPU. Decode: 1771 ms, sig32 integrity: 0/991 mismatch, CPU/GPU bitwise identical. Deploy script: `colab-pack/deploy_scatter_decode.sh`.
-- **sig32 XOR-fold integrity**: Added to `tess_gguf_pack.c` (hdr[8]). Bake on Gemma 4 (601 tensors, 3792 capos, 2921 MB) + Qwen3-0.6B (310 tensors, 991 capos, 672 MB) — sig32 verified on both.
-- **Gemma 4 bake proven**: GGUF v3 (601 tensors, 601 Q4_0 capos + 289 onion). gguf_reader.h handles v3 (u64 fields) natively. No reader changes needed. Ratio 100.7%.
-- **Multi-format lossless**: 3/3 models on GPU — Qwen3-TTS Q4_K_M (426 capos, 0/426 mismatch), Qwen3-0.6B Q8_0 (991 capos, 0/991 mismatch), Bonsai-4B Q1_0 (145 capos, 0/145 mismatch). Mixed cell_sz bug fixed (per-capo byte offsets).
-
-### Branches STOCKED (ห้ามเปิดก่อน mainline เสร็จ)
-- docs/ARCHIMEDEAN-STOCK-2026-08-22.md — Hosoya/circle view · snub chiral · Zeckendorf · circle-config catalog
-
-### Tools Reference
-| Tool | Command | Purpose |
-|------|---------|---------|
-| tess-bake | `make tess-bake` | GGUF → .tess files |
-| tess-load | `make tess-load` | .tess → raw weights |
-| tess-stream | `make tess-stream` | streaming per-capo reader |
-| tess-assemble | `make tess-assemble` | .tess + metadata → GGUF |
-| tess-packer | `make tess-packer` | dir → .tesspack / unpack / info |
-| tess-gguf-pack | `make tess-gguf-pack` | GGUF → .tesspack directly |
-| moe-bake | `make moe-bake` | GGUF → DtSlotRegion |
-| moe-graft | `make moe-graft` | DtSlotRegion → GGUF |
-| moe-stream | `make moe-stream` | streaming top-K experts |
-| moe-route | `make moe-route` | combined bake+route+graft |
-| tess-graft | `make tess-graft` | .tesspack → GGUF |
-| tess-view | `make tess-view` | .tesspack → assemble + inference verify |
-| tess-breathe | `make tess-breathe` | mmap RSS measurement |
-| scale-follow | `make scale-follow` | sequential vs random page-touch (window memory proof, HDD-bounded) |
-| docs-svg | `make docs-svg` | re-render `docs/*.svg` from `docs/*.excalidraw` masters (never drift) |
-
-##etc##
--some tool located at I:\tools
-## Build
-
-```bash
-# Tests
-gcc -O2 -Wall -o tests/kis_codec_v4_test tests/kis_codec_v4_test.c -lm
-./tests/kis_codec_v4_test
-```
+## Shared core (so every app agrees)
+- MAP not COMPRESS — coordinate = address. 20736 = one cell. ★ 6ico/144 protagonist.
+- Working dirs: `I:\DWGLS-native-fs`, `I:\model`, `F:\model`, `I:\llama`. English/Thai only.

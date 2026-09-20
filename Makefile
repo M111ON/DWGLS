@@ -41,6 +41,7 @@ TIER1 := \
   test_planet_detach \
   test_goldberg_frame \
   test_net_walk \
+  test_poly11_oracle \
   test_wonder_cube \
   test_planet12 \
   test_saturn_ring \
@@ -165,7 +166,8 @@ TIER1 := \
   test_lblock_bridge \
   test_rr_gate \
     test_fractal_addr \
-    test_entropy_quadtree
+    test_entropy_quadtree \
+  test_window_ladder
 
 # ── เทสต์ที่เหลือ (ไม่ได้อยู่ใน TIER1/TIER2) = legacy ประวัติการพัฒนา ──
 # เขียนก่อน rescope 2026-08-14 — เก็บไว้ย้อนดูเท่านั้น ไม่ใช้ยืนยันระบบปัจจุบัน
@@ -204,7 +206,7 @@ TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   t
 
 # GEO: geometry core + address space + hyperbolic
 # GEO_FAST: <0.5s each — run often
-GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop
+GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle
 # GEO_SLOW: >1s each — run before commit only
 GEO_SLOW :=   test_geo_bfs_hub   test_geo_fs_mdim   test_goldberg_mmap
 # GEO: full set
@@ -498,6 +500,10 @@ gguf_hybrid_bench: tools/gguf_hybrid_bench.c core/gguf_reader.h | $(BUILD)
 	@echo "▶ BUILD  gguf_hybrid_bench"
 	$(CC) $(CFLAGS) -o $(BUILD)/gguf_hybrid_bench tools/gguf_hybrid_bench.c $(LDFLAGS)
 	@echo "✅ gguf_hybrid_bench ready → ./$(BUILD)/gguf_hybrid_bench <model.gguf>"
+tess_window_bench: tools/tess_window_bench.c core/geo_tess_container.h core/geo_tess_window.h core/geo_tesseract_addr.h | $(BUILD)
+	@echo "▶ BUILD  tess_window_bench"
+	$(CC) $(CFLAGS) -o $(BUILD)/tess_window_bench tools/tess_window_bench.c $(LDFLAGS)
+	@echo "✅ tess_window_bench ready → ./$(BUILD)/tess_window_bench <pack.tesspack> [--mb N]"
 
 # ── Housekeeping ──────────────────────────────────────
 $(BUILD):

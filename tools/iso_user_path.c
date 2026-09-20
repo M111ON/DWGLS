@@ -98,7 +98,7 @@ int main(int argc, char **argv) {
     const char *prompt = (argc > 2) ? argv[2] : "The capital of France is";
     int n_gen = (argc > 3) ? atoi(argv[3]) : 6;
     llama_backend_init();
-    ggml_backend_load_all_from_path(NULL); /* auto-detect from exe path */
+    ggml_backend_load_all_from_path("I:/llama/llama.cpp/build_zc2/bin/Release");
     GgufReader r;
     if (gguf_open(gguf, &r) != 0) { printf("open fail\n"); return 1; }
     struct ggml_context *meta_ctx = NULL;

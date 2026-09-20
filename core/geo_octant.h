@@ -116,7 +116,8 @@ static inline int oct_is_valid(uint32_t cube) {
 /* Get the tetra-active octant for a given cube index.
  * If cube is already valid (sum ∈ {0,1}), return it.
  * If cube is invalid (sum > 1), strip bits until sum ≤ 1.
- *   7(111)→0(000), 6(110)→2(010), 5(101)→4(100), 3(011)→1(001) */
+ *   7(111)→4(100), 6(110)→4(100), 5(101)→4(100), 3(011)→2(010)
+ *   (keep-highest: lowest set bit cleared until sum ≤ 1) */
 static inline uint32_t oct_tetra_of(uint32_t cube) {
     uint32_t sum = oct_zero_sum(cube);
     if (sum <= 1u) return cube;  /* already valid */

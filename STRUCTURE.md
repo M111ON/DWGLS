@@ -1,0 +1,119 @@
+# Codebase Structure
+
+## Directory Layout
+
+```
+DWGLS-native-fs/
+├── `core/`            # Header-only geometric address space (161 headers)
+├── `core/infra/`      # Zero-copy tiles, GPU pipeline, rail sync
+├── `tools/`           # Pack/serve/bench/probe CLIs (C + Python)
+├── `tests/`           # Tiered C tests (259 sources, `make test-*`)
+├── `test/`            # Single legacy C test
+├── `bench/`           # Deploy and benchmark scripts
+├── `scripts/`         # Shell staging and deploy helpers
+├── `docs/`            # Design notes, handoffs, specs, excalidraw masters
+├── `graft/`           # Local graft cache and index (git-ignored)
+├── `colab-pack/`      # Colab LoRA training pack and deploy scripts
+├── `beam_addressing/` # Beam timer header
+├── `collection/`      # Beam/RDH/tw collections
+├── `build/`           # Compiled binaries and test outputs (generated)
+├── `tess_out/`        # `.tess` bake output (generated)
+├── `deprecated/`      # Frozen history, never delete
+├── `Makefile`         # Tiered test runner and CLI builders
+├── `config.json`      # Runtime configuration
+├── `dwgls_gui_server.py` # Browser GUI server
+├── `dwgls_gui.html`   # Browser GUI page
+```
+
+## Directory Purposes
+
+**`core/`:**
+- Purpose: Hold the entire address-space implementation as self-contained headers
+- Contains: `*.h` only, `static inline` logic, no compiled library
+- Key files: `core/geo_param_grid.h`, `core/kis_codec_v6.h`, `core/geo_box_axes.h`, `core/geo_tess_container.h`, `core/geofs_mdim.h`, `core/breathing_fs.h`, `core/gguf_reader.h`, `core/gguf_box.h`, `core/scale_bridge.h`, `core/zone_card_v3.h`, `core/moe_expert_addr.h`
+
+**`core/infra/`:**
+- Purpose: Hold zero-copy and sync primitives under the geometry layer
+- Contains: DRAM tile, GPU scatter, rail/phase sync, trialty serve headers
+- Key files: `core/infra/geo_dram_tile.h`, `core/infra/geo_gpu_pipeline.h`, `core/infra/geo_rail_sync.h`
+
+**`tools/`:**
+- Purpose: Hold every runnable entry point except tests
+- Contains: `*.c` CLIs, `*.py` servers and converters
+- Key files: `tools/tess_bake.c`, `tools/tess_load.c`, `tools/tess_assemble.c`, `tools/tess_gguf_pack.c`, `tools/tesspack_assemble.c`, `tools/tesspack_server.c`, `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/moe_expert_bake.c`, `tools/moe_expert_route.c`, `tools/mdim_cli.c`, `tools/dwgls_server.py`
+
+**`tests/`:**
+- Purpose: Hold tiered verification sources compiled on demand by `Makefile`
+- Contains: `*.c` tests, one file per subsystem check
+- Key files: `tests/test_tesspack.c`, `tests/test_scale_bridge.c`
+
+**`docs/`:**
+- Purpose: Hold design records, handoffs, specs, and visual masters
+- Contains: `*.md` notes, `*.excalidraw` sources, rendered `*.svg`
+- Key files: `docs/PIPELINE-MAP.md`, `docs/LEGACY_TESTS.md`, `docs/HYBRID-GATE-DOCTRINE-2026-09-18.md`, `docs/DUALWORLD-GENESIS-2026-09-18.md`
+
+**`bench/`:**
+- Purpose: Hold deploy-pack and benchmark scripts
+- Contains: `make_*.py` packagers, `*_bench.c`, `fs_bench.c`
+
+**`scripts/`:**
+- Purpose: Hold staging and environment helpers
+- Contains: shell and cmd scripts
+- Key files: `scripts/stage-zc2-dlls.cmd`, `scripts/build_termux.sh`, `scripts/deploy_termux.sh`
+
+**`colab-pack/`:**
+- Purpose: Hold LoRA training and remote-GPU deploy bundle
+- Contains: training scripts, trace JSONL, deploy shells
+
+**`deprecated/`:**
+- Purpose: Preserve frozen experiments and superseded code as history
+- Contains: old `core/`, `docs/`, `tests/`, `PasteBin/` snapshots
+- Rule: Move dead code here. Never delete it.
+
+**`build/`, `tess_out/`:**
+- Purpose: Hold generated binaries and baked `.tess` output
+- Contains: compiled test binaries, CLI executables, capo files
+- Rule: Regenerate with `make`. Never hand-edit.
+
+## Key File Locations
+
+**Entry Points:** `tools/tess_bake.c`: GGUF to `.tess` encode
+**Entry Points:** `tools/tess_load.c`: `.tess` decode and verify, with `--dram` tile path
+**Entry Points:** `tools/tess_assemble.c`: `.tess` directory to GGUF rebuild
+**Entry Points:** `tools/tess_gguf_pack.c`: GGUF direct to `.tesspack`
+**Entry Points:** `tools/tesspack_assemble.c`: `.tesspack` to standalone GGUF
+**Entry Points:** `tools/tesspack_server.c`: OpenAI-compatible HTTP serve from `.tesspack`
+**Entry Points:** `tools/gguf_lazy_serve.c`: single-model lazy mmap serve
+**Entry Points:** `tools/dual_lazy_serve.c`: two-model co-serve with isolated evict
+**Entry Points:** `tools/moe_expert_bake.c`: MoE expert bake by geometric address
+**Entry Points:** `tools/moe_expert_route.c`: top-K expert routing and serve
+**Entry Points:** `tools/mdim_cli.c`: GeoFS volume CRUD
+**Entry Points:** `dwgls_gui_server.py`: browser GUI server with `dwgls_gui.html`
+**Configuration:** `config.json`: runtime settings
+**Configuration:** `Makefile`: test tiers, group runners, all CLI build rules
+**Core Logic:** `core/geo_param_grid.h`: shape family and codec sizing
+**Core Logic:** `core/kis_codec_v6.h`: index-to-slot helix and residuals
+**Core Logic:** `core/geo_tess_container.h`: `.tess` and `.tesspack` formats
+**Core Logic:** `core/geofs_mdim.h`: multidimensional volume and journal
+**Core Logic:** `core/gguf_box.h`: llama.cpp graft routing
+**Tests:** `tests/test_tesspack.c`: pack roundtrip proof
+**Tests:** `tests/test_scale_bridge.c`: scale-ring alignment oracle
+
+## Naming Conventions
+
+**Files:** `snake_case` with subsystem prefix: `geo_*` geometry, `kis_*` codec, `tess*` container, `gguf_*` model ingest, `moe_*` experts, `kv_*` cache remap, `test_*` verification, `bench_*` measurement
+**Examples:** `core/geo_tess_container.h`, `core/kis_codec_v6.h`, `tools/moe_expert_route.c`, `tests/test_scale_bridge.c`
+**Directories:** lowercase single words: `core`, `tools`, `tests`, `docs`, `bench`, `scripts`
+**Tests:** `tests/<subsystem>_<check>.c`, built as `build/test-<name>`, run with `make test-<name>`
+**Binaries:** `build/` holds compiled tools without extension on MSYS2 and with `.exe` on Windows shell paths
+
+## Where to Add New Code
+
+**New geometry header:** `core/geo_<name>.h` — keep std-only includes, expose `static inline` functions, add no build step
+**New codec version:** `core/kis_codec_v<name>.h` — keep slot math integer-only, preserve 20736 grid constants
+**New pack/serve CLI:** `tools/<name>.c` — include from `core/` with `-Icore`, add a `Makefile` target beside the existing pack rules
+**New probe:** `tools/<name>_probe.c` — follow `tools/lora_accuracy_probe.c` shape: parse args, run on real model bytes, print run receipts
+**New test:** `tests/test_<name>.c` — derive expectations from spec or math, add the name to the correct `Makefile` group (`KIS`, `TESS`, `GEO`, `GGUF`, `BFS`, `CAP`, `GHOST`, `KV`, `SIXICO`, `FIBO`, `WALK`)
+**New bench:** `bench/<name>.c` or `tools/<name>_bench.c` — follow `tools/geo_speed_bench.c` shape
+**New docs:** `docs/<TOPIC>-YYYY-MM-DD.md` — record runs and receipts, never restate code without verifying it
+**Shared infra:** `core/infra/<name>.h` — use for zero-copy, sync, and pipeline primitives shared across tools

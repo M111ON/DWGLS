@@ -73,6 +73,39 @@ static inline void tess_unflat(uint32_t flat,
     if (slot) *slot = flat % TESS_SLOTS;
 }
 
+/* ── memory window: the 144 x 144 unfolding of the field ───────── */
+/* The field is ONE flat array of TESS_GEO_FULL slots.  Read row-major
+   with TESS_WIN_COLS columns and the row index IS the (tesseract, cube)
+   pair:
+       row = tess*8 + cell        flat = row*144 + col
+   so the window needs no stride table — asserted for all 20736 slots in
+   tests/test_window_ladder.c.  Out of the 22 other equal-area windows
+   this is the only one that is whole tesseracts, aligned with the BFS
+   144-blocks x 144-slots grid, whole cache lines per row at
+   TESS_CELL_F32, and on the 144-cycle the stride-37 walk lives on.
+   128 x 162 is the *address route* split (Hilbert 2x64 x ico 162), not a
+   window: it satisfies none of those. */
+#define TESS_WIN_COLS   TESS_SLOTS                      /* 144 */
+#define TESS_WIN_ROWS   (TESS_GEO_FULL / TESS_WIN_COLS) /* 144 */
+static inline uint32_t tess_win_flat(uint32_t row, uint32_t col) {
+    return (row % TESS_WIN_ROWS) * TESS_WIN_COLS + (col % TESS_WIN_COLS);
+}
+static inline uint32_t tess_win_row(uint32_t flat) { return flat / TESS_WIN_COLS; }
+static inline uint32_t tess_win_col(uint32_t flat) { return flat % TESS_WIN_COLS; }
+static inline uint32_t tess_row_tess(uint32_t row) { return row / TESS_3D_CELLS; }
+static inline uint32_t tess_row_cell(uint32_t row) { return row % TESS_3D_CELLS; }
+
+/* Whole 4 KiB pages in one window: 0 when this cell size cannot page-align.
+   A cell size page-aligns iff it is a multiple of 16 B: with 20736 = 2^8*3^4
+   and 4096 = 2^12 we need 16 | c.  Examples (see tests): c=4 -> 0, c=16 -> 81
+   (= 9^2, a square page grid), c=34 (Q8_0 block) -> 0, c=64 -> 324 (= 18^2). */
+#define TESS_WIN_PAGE_BYTES 4096u
+static inline uint32_t tess_win_pages(uint32_t cell_size) {
+    unsigned long long b = (unsigned long long)TESS_GEO_FULL * (unsigned long long)cell_size;
+    if (b % TESS_WIN_PAGE_BYTES) return 0u;
+    return (uint32_t)(b / TESS_WIN_PAGE_BYTES);
+}
+
 /* ── verification (call from tests) ─────────────────────────────── */
 static inline int geo_tesseract_verify(void) {
     /* encode/decode roundtrip */
@@ -99,6 +132,14 @@ static inline int geo_tesseract_verify(void) {
     }
     if (TESS_GEO_FULL != 20736u) return -7;
     if (TESS_PER_TESS * TESS_COUNT != TESS_GEO_FULL) return -8;
+    /* window == flat(), and row decodes to (tess, cube) */
+    if (TESS_WIN_ROWS * TESS_WIN_COLS != TESS_GEO_FULL) return -9;
+    for (uint32_t f = 0; f < TESS_GEO_FULL; f += 331) {
+        uint32_t row = tess_win_row(f), col = tess_win_col(f);
+        uint32_t t, c, s; tess_unflat(f, &t, &c, &s);
+        if (tess_row_tess(row) != t || tess_row_cell(row) != c || col != s) return -10;
+        if (tess_win_flat(row, col) != f) return -11;
+    }
     return 0;
 }
 

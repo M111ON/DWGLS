@@ -215,6 +215,7 @@ int main(int argc, char **argv) {
     const char *prompt = (argc > 2) ? argv[2] : "The capital of France is";
     int n_gen = (argc > 3) ? atoi(argv[3]) : 40;
     if (n_gen <= 0) n_gen = 40;
+    const char *dll_dir = (argc > 4) ? argv[4] : "I:/llama/llama-v040-bin-win-vulkan-x64";
     const char *out_path = "build/graft_field.gguf";
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -223,7 +224,11 @@ int main(int argc, char **argv) {
 
     llama_backend_init();
     llama_log_set(quiet_log, NULL);
-    ggml_backend_load_all_from_path("I:/llama/llama-b9733-bin-win-vulkan-x64");
+    printf("  [debug] loading backends from: %s\n", dll_dir);
+    fflush(stdout);
+    ggml_backend_load_all_from_path(dll_dir);
+    printf("  [debug] backend load returned\n");
+    fflush(stdout);
 
     GGUFBox box;
     if (gguf_box_open(&box, gguf) != 0) {

@@ -269,6 +269,7 @@ int main(int argc, char **argv) {
     const char *prompt = (argc > 2) ? argv[2] : "The capital of France is";
     int n_gen = (argc > 3) ? atoi(argv[3]) : 40;
     if (n_gen <= 0) n_gen = 40;
+    const char *dll_dir = (argc > 4) ? argv[4] : "I:/llama/llama-v040-bin-win-vulkan-x64";
     const char *page_path = "build/graft_page.gguf";
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -277,7 +278,7 @@ int main(int argc, char **argv) {
 
     llama_backend_init();
     llama_log_set(quiet_log, NULL);
-    ggml_backend_load_all_from_path("I:/llama/llama-b9733-bin-win-vulkan-x64");
+    ggml_backend_load_all_from_path(dll_dir);
 
     GGUFBox box;
     if (gguf_box_open(&box, gguf) != 0) {
@@ -519,73 +520,60 @@ int main(int argc, char **argv) {
     printf("\n═ SERVE — full GGUF ประกอบจาก field → temp file → llama ═\n");
     {
         /* full buffer = header (24) + small KV + 3 tokenizer arrays + tensor
-         * infos + pad + field bytes */
-        size_t small_kv_sz = (size_t)(small_total + 6 * 24);
-        size_t tinfo_sz = 0;
-        for (uint32_t i = 0; i < N; i++) {
-            const GGUFBoxEntry *e = &box.entries[i];
-            tinfo_sz += 8 + strlen(e->name) + 4 + (size_t)e->n_dims * 8 + 4 + 8;
-        }
-        size_t arr_hdr = 12; /* u32 type + u64 count per array */
-        size_t buf_sz = 24 + small_kv_sz + 3 * arr_hdr + (size_t)(tok_total - 3 * 12)
-                      + tinfo_sz + ALIGN + (size_t)cursor;
-        uint8_t *buf = (uint8_t *)large_alloc(buf_sz);
-        size_t pos = 0;
-        uint32_t magic = GGUF_MAGIC, version = 3;
-        uint64_t nt = N, nkv_full = n_kv;
-        memcpy(buf + pos, &magic, 4); pos += 4;
-        memcpy(buf + pos, &version, 4); pos += 4;
-        memcpy(buf + pos, &nt, 8); pos += 8;
-        memcpy(buf + pos, &nkv_full, 8); pos += 8;
-        for (uint32_t i = 0; i < n_kv; i++) {
-            if (kvs[i].is_tok) continue;
-            size_t len = kvs[i].end - kvs[i].start;
-            memcpy(buf + pos, src + kvs[i].start, len);
-            pos += len;
-        }
-        for (int t = 0; t < 3; t++) {
-            /* find the tok KV slot to get its name + arr type */
-            uint64_t klen = strlen(tok_names[t]);
-            memcpy(buf + pos, &klen, 8); pos += 8;
-            memcpy(buf + pos, tok_names[t], klen); pos += klen;
-            uint32_t vt = 9; /* ARRAY */
-            memcpy(buf + pos, &vt, 4); pos += 4;
-            memcpy(buf + pos, &tok_type[t], 4); pos += 4;
-            memcpy(buf + pos, &tok_count[t], 8); pos += 8;
-            /* elements verbatim from the field */
-            memcpy(buf + pos, field + tok_addr[t], tok_elen[t]);
-            pos += tok_elen[t];
-        }
-        for (uint32_t r = 0; r < N; r++) {
-            const GGUFBoxEntry *e = &box.entries[order[r]];
-            uint64_t nlen = strlen(e->name);
-            memcpy(buf + pos, &nlen, 8); pos += 8;
-            memcpy(buf + pos, e->name, nlen); pos += nlen;
-            uint32_t nd = e->n_dims;
-            memcpy(buf + pos, &nd, 4); pos += 4;
-            for (uint32_t d = 0; d < nd; d++) {
-                int64_t dv = (int64_t)e->dims[d];
-                memcpy(buf + pos, &dv, 8); pos += 8;
-            }
-            memcpy(buf + pos, &e->dtype, 4); pos += 4;
-            memcpy(buf + pos, &chain_off[r], 8); pos += 8;
-        }
-        size_t data_off = align32(pos);
-        memset(buf + pos, 0, data_off - pos);
-        /* data section = field bytes */
-        memcpy(buf + data_off, field, (size_t)cursor);
-        printf("  in-memory GGUF: %zu B (header %zu B + field body %llu B)\n",
-               buf_sz, data_off, (unsigned long long)cursor);
-
-        (void)buf_sz;
-        /* write the full GGUF (header from field-tokenizer KV + field body) */
+         * infos + pad + field bytes.
+         * NOTE: was large_alloc(675MB) + memcpy → crash (VirtualAlloc pages
+         * uncommitted). Now stream header pieces + field body straight to
+         * the file — zero extra RAM, one fwrite per section. */
         const char *full_path = "build/graft_full.gguf";
         FILE *f = fopen(full_path, "wb");
-        if (!f || fwrite(buf, 1, data_off + (size_t)cursor, f) != data_off + (size_t)cursor) {
-            printf("(cannot write %s)\n", full_path);
-            return 1;
+        if (!f) { printf("(cannot write %s)\n", full_path); return 1; }
+        int wok = 1;
+#define WCHUNK(p, n) do { if (wok && fwrite((p), 1, (n), f) != (size_t)(n)) wok = 0; } while (0)
+        uint32_t magic = GGUF_MAGIC, version = 3;
+        uint64_t nt = N, nkv_full = n_kv;
+        WCHUNK(&magic, 4); WCHUNK(&version, 4); WCHUNK(&nt, 8); WCHUNK(&nkv_full, 8);
+        size_t hpos = 24;
+        for (uint32_t i = 0; i < n_kv && wok; i++) {
+            if (kvs[i].is_tok) continue;
+            size_t len = kvs[i].end - kvs[i].start;
+            WCHUNK(src + kvs[i].start, len);
+            hpos += len;
         }
+        for (int t = 0; t < 3 && wok; t++) {
+            uint64_t klen = strlen(tok_names[t]);
+            uint32_t vt = 9; /* ARRAY */
+            WCHUNK(&klen, 8);
+            WCHUNK(tok_names[t], (size_t)klen);
+            WCHUNK(&vt, 4);
+            WCHUNK(&tok_type[t], 4);
+            WCHUNK(&tok_count[t], 8);
+            /* elements verbatim from the field */
+            WCHUNK(field + tok_addr[t], tok_elen[t]);
+            hpos += 8 + (size_t)klen + 4 + 4 + 8 + tok_elen[t];
+        }
+        for (uint32_t r = 0; r < N && wok; r++) {
+            const GGUFBoxEntry *e = &box.entries[order[r]];
+            uint64_t nlen = strlen(e->name);
+            WCHUNK(&nlen, 8);
+            WCHUNK(e->name, (size_t)nlen);
+            uint32_t nd = e->n_dims;
+            WCHUNK(&nd, 4);
+            for (uint32_t d = 0; d < nd; d++) {
+                int64_t dv = (int64_t)e->dims[d];
+                WCHUNK(&dv, 8);
+            }
+            WCHUNK(&e->dtype, 4);
+            WCHUNK(&chain_off[r], 8);
+            hpos += 8 + (size_t)nlen + 4 + (size_t)nd * 8 + 4 + 8;
+        }
+        size_t data_off = align32(hpos);
+        for (size_t z = hpos; z < data_off && wok; z++) fputc(0, f);
+        if (wok && fwrite(field, 1, (size_t)cursor, f) != (size_t)cursor) wok = 0;
         fclose(f);
+        if (!wok) { printf("(cannot write %s)\n", full_path); return 1; }
+        printf("  in-memory GGUF: header %zu B + field body %llu B (streamed)\n",
+               data_off, (unsigned long long)cursor);
+#undef WCHUNK
         struct llama_model_params mp = llama_model_default_params();
         mp.n_gpu_layers = 0;
         struct llama_model *model = llama_model_load_from_file(full_path, mp);
@@ -653,7 +641,6 @@ int main(int argc, char **argv) {
                 llama_model_free(model);
             }
             remove(full_path);
-            free(buf);
         }
 
     /* clean up */

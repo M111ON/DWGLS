@@ -39,6 +39,111 @@ comes from the mirror formula, not from compression.
 
 ---
 
+### 2.1 Equal-area window ladder  (verified: `tests/test_window_ladder.c`, 38/38)
+
+20736 has 45 divisors → **23 equal-area factor pairs** `(w, 20736/w)`. Every one
+has aspect ratio exactly `(w/144)²`, so only *squared* ratios can appear:
+16:9 = (4:3)² at **192 × 108**, 64:81 = (8:9)² at **128 × 162**. The screen
+ratios themselves (4:3, 3:2) can never be a rectangle of this area.
+
+The two roles are **not interchangeable**:
+
+| Use | Window | Why it fits |
+|-----|--------|-------------|
+| Address route split | **128 × 162** | 128 = 2 × 64 (Hilbert 4×4×4), 162 = icosahedron frequency-4 vertices; also the minimal-shear rectangle (closest to the square) — one 2³↔3² trade away from it |
+| Memory / paging window | **144 × 144** | the only window whose row index decodes to `(tesseract, cube)` (`row = tess*8 + cube`, `flat = row*144 + col`), the only one aligned with the BFS 144 blocks × 144 slots grid, whole tesseracts (18 × 8×144), whole cache lines per row at `TESS_CELL_F32`, and it sits on the 144-cycle the stride-37 walk lives on |
+
+Scored against the existing axes (tesseract / BFS grid / 32×36 GPU tile / cache
+line / 144-cycle) `144 × 144` is the unique maximum (5/5) while `128 × 162`
+satisfies **none** of them (0/5): it is an addressing shape, not a window.
+
+Tesseract boundaries that land exactly on a row when the flat array is read
+row-major (18/18 = perfect): 144 → 18/18, 192 → 18/18, 162 → 2/18.
+
+Page math: a window is a whole number of 4 KiB pages **iff** `cell_size` is a
+multiple of 16 B (`20736·c ≡ 0 (mod 4096)` ⟺ `c ≡ 0 (mod 16)`):
+
+| cell_size | window bytes | pages | note |
+|-----------|--------------|-------|------|
+| 4 B (`TESS_CELL_F32`) | 82,944 | 20.25 | **not** page-aligned (rows are 9 cache lines) |
+| 16 B | 331,776 | **81 = 9²** | 16 rows = 9 pages exactly → 9 × 9 page grid |
+| 34 B (Q8_0 block) | 705,024 | 172.125 | **not** page-aligned |
+| 64 B | 1,327,104 | **324 = 18²** | 4 rows = 9 pages |
+
+The window is first-class in the addressing header — `core/geo_tesseract_addr.h`:
+`TESS_WIN_COLS` / `TESS_WIN_ROWS` (144 × 144), `tess_win_flat/row/col()`,
+`tess_row_tess/cell()`, and `geo_tesseract_verify()` now returns -9/-10/-11 if the
+window ever stops agreeing with `flat()`.
+
+### 2.2 Window views — the page-aligned read path
+
+*verified by `tests/test_window_ladder.c` T29–T38 · measured by `tools/tess_window_bench.c`*
+
+A capo's cube data starts at `capo_off + 128` with an **arbitrary phase mod 4096**
+(measured on a real pack: *windows starting exactly on a page: 0/158*), while
+Windows `MapViewOfFile()` only accepts a file offset that is a multiple of
+`GetSystemInfo()->dwAllocationGranularity` = **65536**. A window view is therefore:
+offset rounded **down** to 64 KiB, length rounded **up** to whole pages, released
+the moment the walk leaves it. (`core/geo_tess_window.h`; POSIX maps at page
+granularity — `gran = page` — since it has no such rule.)
+
+```c
+TESS_WinMap wm;
+tess_winmap_open(&wm, pack);                                   /* pack stays open   */
+const uint8_t *w = tess_winmap_window(&wm, capo_off + 128, h->cell_size);
+/* w[row * 144 * cell + col * cell] — row = tess*8 + cube, no stride table (T14) */
+tess_winmap_unmap(&wm);                                       /* pages may leave   */
+```
+
+| helper | what it guarantees |
+|--------|--------------------|
+| `tess_win_view_align()` | pure math: which view covers `[off,off+len)`; `view_off % 65536 == 0` and `view_len % 4096 == 0` (T31), always covers the range without exploding (T32) |
+| `tess_winmap_view()` | maps — or reuses — that view and returns the pointer at `off`; one syscall per view, `n_views` / `n_reuse` stats |
+| `tess_winmap_window()` | one whole 144 × 144 window as one view |
+| `tess_winmap_unmap()` | frees the view → working set drops back to ~0 |
+| `tess_winmap_copy()` | contiguous window buffer, the drop-in for consumers that must have one |
+| `tess_winmap_prefetch/discard()` | Win8 hints — **opt-in**, see measurement below |
+
+Measured on 256 MB of `qwen2.5-0.5b.tesspack` (cell 34 B → 173-page windows),
+best of 5 passes × 3 runs, page cache warm:
+
+| read path | want MB/s | peak working set | faults per MB |
+|-----------|-----------|------------------|---------------|
+| `old-fread` (fread → malloc → scan) | 3194 | 1.5 MB (one reused buffer) | 1 |
+| `old-fread-row0` (wants 1/144) | 27 | 1.2 MB | 151 |
+| whole-file mmap, linear | 2527 | 256.4 MB | 257 |
+| whole-file mmap, window rows | 2759–2829 | 256.4 MB | 257 |
+| **window views, one window per view** | **2141–2280** | **0.8 MB** | 258 |
+| window views, row 0 only | 765 | 0.2 MB | 476 |
+
+- **Working set is bounded**: 0.8 MB instead of 256.4 MB (**320× smaller**) for
+  −22 % throughput. Whole-file mmap cannot give pages back; a view can.
+- **Subset reads**: row 0 of every window is 1.8 MB of the file, but `fread`
+  cannot skip — the old path moves 256 MB to deliver it. Views move 1.8 MB+
+  padding: **77× less I/O** (`winview-row0` 3.3 MB vs `old-fread-row0` 256.2 MB).
+- **Prefetch hurts here**: enabling `PrefetchVirtualMemory` on a one-window view
+  drops 2239 → 1583 MB/s, so it is off by default and the walk lets sequential
+  faults do the read-ahead.
+- On a cell-144 pack (729-page windows, *exactly* page-aligned) the same shape
+  holds: 1966–2084 vs 2526–2577 MB/s, peak ws 4.3 MB → 0.2 MB, row-0 4.2 MB vs
+  512.6 MB (**122× less**).
+- Cold disk (`F:` ≈ 91 MB/s) is where this matters most: 512 MB of first touch
+  costs the old path 5.6 s, the row-0 walk 0.05 s.
+
+Caveats worth stating plainly: `winview-copy` (view + `memcpy`) runs ~1.7 GB/s vs
+~3.2 GB/s for `fread` — a consumer that copies anyway is not helped on throughput,
+only on the subset case and the RSS ceiling. Group views (`--view-mb`) only pay
+off for windows smaller than ~64 KiB (cell ≤ 8 B); the page-aligned group sizes
+are 4 windows at cell 4 B and 8 at cell 34 B (T38).
+
+```bash
+make tess_window_bench
+./build/tess_window_bench /f/model/qwen2.5-0.5b.tesspack --mb 256
+./build/tess_window_bench /f/model/huihui-moe-1b-q4_k_m.tesspack --mb 512 --only winview,winview-row0
+```
+
+---
+
 ## 3. Binary Format Layout
 
 ### 3.1 File Structure

@@ -54,6 +54,16 @@ cube 1..7 = DATA      (7 × 144 = 1008 slots)      — ข้อมูลกร�
 20736 = 144² = 1728 × 12 = 18 tesseracts × 8 cube × 144
 1 tesseract (ที่ implement แล้ว) = 1152;  18 tesseracts = 20736 (อนาคต)
 20736 = หน้าต่าง (window) — payload ต่อ slot เป็น policy อิสระ (ขยายได้)
+
+อ่านแบบ **144×144** (row-major) คือหน้าต่างหน่วยความจำ: `row = tess*8 + cube`,
+`flat = row*144 + col` — ตรงกับ `tess_flat()` ทุกช่อง ไม่ต้องมี stride table,
+และเป็นหน้าต่างเดียวใน 23 แบบพื้นที่เท่ากันที่ลงตัวกับ 144 blocks × 144 slots ของ BFS,
+เป็น tesseract เต็มก้อน, แถวเป็น cache line เต็มที่ `TESS_CELL_F32`,
+และอยู่บนวัฏจักร 144 ของ stride-37
+
+ส่วน **128×162** (128 = 2×64 Hilbert, 162 = ico freq-4) เป็น *การแบ่งเส้นทางแอดเดรส*
+ไม่ใช่หน้าต่าง — ได้ 0/5 เกณฑ์ I/O ดู `tests/test_window_ladder.c` (26/26)
+และ `docs/tess-format-spec.md` §2.1
 ```
 
 ### 2.3 Index frame (cube 0) — ชั้น link แรก
