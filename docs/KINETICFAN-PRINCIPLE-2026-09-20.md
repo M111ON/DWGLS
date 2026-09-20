@@ -1,6 +1,6 @@
 # Kineticfan Principle — parametric gear cartridge (ตลับเกียร์)
 
-Date: 2026-09-20 · Status: proven by test (32/32) · Test: `tests/test_poly11_oracle.c` (P11–P13)
+Date: 2026-09-20 · Status: proven by test (34/34) · Test: `tests/test_poly11_oracle.c` (P11–P14)
 
 ## 1. The principle
 
@@ -90,3 +90,19 @@ the int-only grid — only incidence / side-class / symmetry transfer.
 1. 2-hub diameter tie-break has no rule yet (demo proves 1 hub only).
 2. Fit verdict / incidence LUT get core headers only when a consumer orders them.
 3. `geo_octant.h:119` comment fixed 2026-09-20 (was stale pre-fix mapping).
+
+## 9. Resonance law — incidences ⟺ 6|a, a≥12 (P14)
+
+Inter-petal vertex coincidences (exact, e-15 class) across `a = 4,5,6,12,18,24`
+come out `{0,0,0,3,3,3}` — one triple per seed vertex at 12/18/24, nothing elsewhere.
+Index law: `i = a/6`, `j = a−i+1` (12→(2,11), 18→(3,16), 24→(4,21)); one point
+always on the mirror axis `y=π`, the other two mirror each other.
+
+Mechanism: petal exterior `e = 360/a`; after `i = a/6` steps the walk has turned
+`i·e = 60°` = one full seed corner, landing where the neighbor petal (arriving
+the long way, `j` steps) lands too. `a = 6` misses because the partner index
+`j = 6` falls off the hexagon; `a = 4, 5` miss because `360/a` never divides 60°.
+
+Use: (1) zero-tolerance oracle vectors, (2) harmonic-parameter table — which
+`(a,b)` lock (gear-ratio, not speculation), (3) shared vertices as address
+anchors, now with a generative law instead of isolated instances.

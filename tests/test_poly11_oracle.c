@@ -584,6 +584,66 @@ static void t_kinetic_family(void)
     CHECK("P13: kinetic family (a,b)x6: V=b+3a-6 E=b+3a-3 disk=1 walk=4", ok);
 }
 
+/* ── P14: resonance law — inter-petal vertex incidences ⟺ 6|a, a≥12 ──
+ * Oracle: user-circled (18,3) image + /tmp sweeps (counts 0,0,0,3,3,3
+ * for a=4,5,6,12,18,24) + index law i=a/6, j=a-i+1.
+ * Mechanism in one line: petal exterior e=360/a; after i=a/6 steps the
+ * walk has turned i·e=60° = one full seed corner, landing where the
+ * neighbor petal (arriving the long way, j steps) lands too.
+ * a=6 misses because the partner index j=6 falls off the hexagon. */
+static int kf_isjoint(Pt v)
+{
+    static const Pt *J[3];
+    static int init = 0;
+    if (!init) { J[0] = &KF_A; J[1] = &KF_B; J[2] = &KF_G; init = 1; }
+    for (int k = 0; k < 3; k++)
+        if (dist(v, *J[k]) < KF_EPS) return 1;
+    return 0;
+}
+
+static void t_resonance(void)
+{
+    double s = dist(KF_A, KF_B);
+    double pi = acos(-1.0);
+    static const int aa[6] = { 4, 5, 6, 12, 18, 24 };
+    static const int want[6] = { 0, 0, 0, 3, 3, 3 };
+    int ok = 1;
+    for (int t = 0; t < 6 && ok; t++) {
+        int a = aa[t];
+        Pt pag[25], pgb[25], pab[25];
+        kf_outward(KF_A, KF_G, a, s, pag);
+        kf_outward(KF_G, KF_B, a, s, pgb);
+        kf_outward(KF_A, KF_B, a, s, pab);
+        const Pt *pp[3] = { pag, pgb, pab };
+        int tot = 0;
+        for (int x = 0; x < 3; x++)
+            for (int y = x + 1; y < 3; y++)
+                for (int i = 0; i < a; i++) {
+                    if (kf_isjoint(pp[x][i])) continue;
+                    for (int j = 0; j < a; j++)
+                        if (dist(pp[x][i], pp[y][j]) < 1e-9) tot++;
+                }
+        if (tot != want[t]) ok = 0;
+    }
+    CHECK("P14: resonance counts a={4,5,6,12,18,24} -> {0,0,0,3,3,3}", ok);
+
+    /* index law + axis pin for the resonant trio */
+    static const int ra[3] = { 12, 18, 24 };
+    int ok2 = 1;
+    for (int t = 0; t < 3 && ok2; t++) {
+        int a = ra[t], i = a / 6, j = a - i + 1;
+        Pt pag[25], pgb[25], pab[25];
+        kf_outward(KF_A, KF_G, a, s, pag);
+        kf_outward(KF_G, KF_B, a, s, pgb);
+        kf_outward(KF_A, KF_B, a, s, pab);
+        if (dist(pag[i], pgb[j]) > 1e-9) ok2 = 0;
+        else if (dist(pag[j], pab[j]) > 1e-9) ok2 = 0;
+        else if (dist(pgb[i], pab[i]) > 1e-9) ok2 = 0;
+        else if (fabs(pag[i].y - pi) > 1e-9) ok2 = 0; /* axis pin */
+    }
+    CHECK("P14b: index law i=a/6, j=a-i+1 + axis y=pi", ok2);
+}
+
 int main(void)
 {
     printf("═ POLY11 ORACLE — distortcube2.html as independent ground truth ═\n");
@@ -600,6 +660,7 @@ int main(void)
     t_gearfit();
     t_full2412();
     t_kinetic_family();
+    t_resonance();
     printf("═ RESULT: %d pass, %d fail ═\n", pass_count, fail_count);
     return fail_count ? 1 : 0;
 }
