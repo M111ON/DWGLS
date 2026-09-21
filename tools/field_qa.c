@@ -220,10 +220,11 @@ int main(int argc, char **argv) {
     if (!fmap) { printf("(mmap failed)\n"); return 1; }
 
     /* field index header layout == dual_lazy_serve Mod baked in memory:
-     * [KV sans tokenizer][13 kis.*][tinfo] then body_off = align64 end.
+     * [KV sans tokenizer][21 kis.*: 13 ptr + 8 v2 layout][tinfo],
+     * v1 fields have 13 kis.* and no persisted layout.
      * Recover body_off + tokenizer addrs from kis.* keys. */
-    KVInfo fk[64]; uint32_t nfk = 0;
-    if (kv_walk(fmap, fk, 64, &nfk) != 0) { printf("(kv walk failed)\n"); return 1; }
+    KVInfo fk[96]; uint32_t nfk = 0;
+    if (kv_walk(fmap, fk, 96, &nfk) != 0) { printf("(kv walk failed)\n"); return 1; }
     uint64_t body_off = 0;
     for (uint32_t i = 0; i < nfk; i++)
         if (strcmp(fk[i].name, "kis.layout.body_off") == 0)
@@ -300,9 +301,74 @@ int main(int argc, char **argv) {
             int less = (ca < cb) || (ca == cb && (ba < bb || (ba == bb && order[i] < order[j])));
             if (!less) { uint32_t t = order[i]; order[i] = order[j]; order[j] = t; }
         }
+    /* layout: v2 fields carry persisted fpos+delta arrays (sourceless serve,
+       incl. delta-encoded MoE); v1 fields (no version key) fall back to
+       linear fpos, correct for dense-only v1 bakes. */
     uint64_t *fpos = (uint64_t *)calloc((size_t)N, sizeof(uint64_t));
-    { uint64_t cur = 0;
-      for (int64_t r = 0; r < N; r++) { fpos[order[r]] = cur; cur += align32(tis[order[r]].size); } }
+    uint8_t *is_delta = NULL; uint32_t *d_E = NULL; uint64_t *d_sl = NULL;
+    uint64_t *d_boff = NULL; uint64_t *d_rlen = NULL; uint64_t **d_voff = NULL;
+    {
+        KVInfo kv; int is_v2 = 0;
+        for (int64_t i = 0; i < nfk; i++)
+            if (strcmp(fk[i].name, "kis.format.version") == 0) { is_v2 = 1; break; }
+        if (!is_v2) {
+            uint64_t cur = 0;
+            for (int64_t r = 0; r < N; r++) { fpos[order[r]] = cur; cur += align32(tis[order[r]].size); }
+            printf("[qa] v1 field (no persisted layout) — linear fpos, dense only\n");
+        } else {
+            const uint64_t *afp = NULL, *asl = NULL, *abo = NULL, *arl = NULL, *avo = NULL;
+            const uint8_t *afl = NULL; const uint32_t *aE = NULL;
+            uint64_t nvo = 0;
+            for (int64_t i = 0; i < nfk; i++) {
+                if (strcmp(fk[i].name, "kis.layout.fpos") == 0 && fk[i].arr_count == (uint64_t)N)
+                    afp = (const uint64_t *)(fmap + fk[i].val_start + 12);
+                else if (strcmp(fk[i].name, "kis.delta.flags") == 0 && fk[i].arr_count == (uint64_t)N)
+                    afl = fmap + fk[i].val_start + 12;
+                else if (strcmp(fk[i].name, "kis.delta.E") == 0 && fk[i].arr_count == (uint64_t)N)
+                    aE = (const uint32_t *)(fmap + fk[i].val_start + 12);
+                else if (strcmp(fk[i].name, "kis.delta.sl") == 0 && fk[i].arr_count == (uint64_t)N)
+                    asl = (const uint64_t *)(fmap + fk[i].val_start + 12);
+                else if (strcmp(fk[i].name, "kis.delta.boff") == 0 && fk[i].arr_count == (uint64_t)N)
+                    abo = (const uint64_t *)(fmap + fk[i].val_start + 12);
+                else if (strcmp(fk[i].name, "kis.delta.rlen") == 0 && fk[i].arr_count == (uint64_t)N)
+                    arl = (const uint64_t *)(fmap + fk[i].val_start + 12);
+                else if (strcmp(fk[i].name, "kis.delta.voff") == 0) {
+                    avo = (const uint64_t *)(fmap + fk[i].val_start + 12);
+                    nvo = fk[i].arr_count;
+                }
+            }
+            int ok = (afp && afl && aE && asl && abo && arl && avo);
+            uint64_t vo_need = 0;
+            if (ok) for (int64_t i = 0; i < N; i++) if (afl[i]) vo_need += aE[i];
+            if (ok && nvo < vo_need) ok = 0;
+            if (!ok) { printf("[qa] v2 layout keys incomplete — refuse (rebake field)\n"); return 1; }
+            memcpy(fpos, afp, (size_t)N * 8);
+            is_delta = (uint8_t *)calloc((size_t)N, 1);
+            d_E = (uint32_t *)calloc((size_t)N, 4);
+            d_sl = (uint64_t *)calloc((size_t)N, 8);
+            d_boff = (uint64_t *)calloc((size_t)N, 8);
+            d_rlen = (uint64_t *)calloc((size_t)N, 8);
+            d_voff = (uint64_t **)calloc((size_t)N, sizeof(uint64_t *));
+            if (!is_delta || !d_E || !d_sl || !d_boff || !d_rlen || !d_voff) return 1;
+            memcpy(is_delta, afl, (size_t)N);
+            memcpy(d_E, aE, (size_t)N * 4);
+            memcpy(d_sl, asl, (size_t)N * 8);
+            memcpy(d_boff, abo, (size_t)N * 8);
+            memcpy(d_rlen, arl, (size_t)N * 8);
+            {
+                uint64_t vp = 0; int ndl = 0;
+                for (int64_t i = 0; i < N; i++) {
+                    if (!is_delta[i]) continue;
+                    ndl++;
+                    d_voff[i] = (uint64_t *)calloc(aE[i], sizeof(uint64_t));
+                    if (!d_voff[i]) return 1;
+                    for (uint32_t e = 0; e < aE[i]; e++) d_voff[i][e] = avo[vp++];
+                }
+                printf("[qa] v2 layout: %d/%lld delta tensors, %llu voff entries\n",
+                       ndl, (long long)N, (unsigned long long)vp);
+            }
+        }
+    }
 
     /* GGUFBox shim for provide_tensor (name+size lookup) */
     GGUFBox box; memset(&box, 0, sizeof(box));
@@ -314,6 +380,8 @@ int main(int argc, char **argv) {
     }
     ServeCtx sc; memset(&sc, 0, sizeof(sc));
     sc.box = &box; sc.field = fmap; sc.body_off = body_off; sc.fpos = fpos;
+    sc.is_delta = is_delta; sc.d_E = d_E; sc.d_sl = d_sl;
+    sc.d_boff = d_boff; sc.d_voff = d_voff; sc.d_rlen = d_rlen;
     /* win_bits for touch_window (matching dual_lazy_serve pattern) */
     {
         DWORD fsz_hi = 0;

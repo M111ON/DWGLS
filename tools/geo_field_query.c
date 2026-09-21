@@ -107,8 +107,8 @@ int main(int argc, char **argv) {
     /* field body_off from kis.layout.body_off */
     uint64_t body_off = 0;
     {
-        KVInfo fk[64]; uint32_t nfk = 0;
-        if (kv_walk(fld.reader.base, fk, 64, &nfk) != 0) { printf("(field kv walk failed)\n"); return 1; }
+        KVInfo fk[96]; uint32_t nfk = 0;
+        if (kv_walk(fld.reader.base, fk, 96, &nfk) != 0) { printf("(field kv walk failed)\n"); return 1; }
         for (uint32_t i = 0; i < nfk; i++)
             if (strcmp(fk[i].name, "kis.layout.body_off") == 0)
                 memcpy(&body_off, fld.reader.base + fk[i].val_start, 8);

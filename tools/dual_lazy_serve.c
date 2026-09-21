@@ -227,6 +227,38 @@ static const char *kis_key(int t, const char *field_) {
     return buf;
 }
 
+/* format v2 layout-array keys: scalar u64 or numeric array value */
+static size_t wr_key_u64(uint8_t *dst, const char *key, uint64_t v) {
+    uint64_t klen = strlen(key); uint32_t vt = 10;
+    size_t p = 0;
+    memcpy(dst + p, &klen, 8); p += 8;
+    memcpy(dst + p, key, klen); p += klen;
+    memcpy(dst + p, &vt, 4); p += 4;
+    memcpy(dst + p, &v, 8); p += 8;
+    return p;
+}
+static size_t wr_key_arr(uint8_t *dst, const char *key, uint32_t etype,
+                         uint64_t n, const void *data, size_t esz) {
+    uint64_t klen = strlen(key); uint32_t vt = 9;
+    size_t p = 0;
+    memcpy(dst + p, &klen, 8); p += 8;
+    memcpy(dst + p, key, klen); p += klen;
+    memcpy(dst + p, &vt, 4); p += 4;
+    memcpy(dst + p, &etype, 4); p += 4;
+    memcpy(dst + p, &n, 8); p += 8;
+    memcpy(dst + p, data, n * esz); p += n * esz;
+    return p;
+}
+static size_t key_arr_bytes(const char *key, uint64_t n, size_t esz) {
+    return 8 + strlen(key) + 4 + 4 + 8 + n * esz;
+}
+/* find a KV by name in a walked table; returns 1 if found */
+static int kv_find(KVInfo *fks, uint32_t nfk, const char *name, KVInfo *out) {
+    for (uint32_t i = 0; i < nfk; i++)
+        if (strcmp(fks[i].name, name) == 0) { *out = fks[i]; return 1; }
+    return 0;
+}
+
 /* ── callback: serve tensor bytes from the field mmap ─────── */
 typedef struct {
     const GGUFBox *box;
@@ -425,7 +457,7 @@ typedef struct {
     HANDLE hf, hm; const uint8_t *fmap;
     uint8_t *reb; size_t reb_final; uint64_t nkv_reb;
     uint64_t fbody_off; uint64_t *fpos;
-    KVInfo fk[64]; uint32_t nfk;
+    KVInfo fk[96]; uint32_t nfk;
     ServeCtx sc;
     struct gguf_context *meta;
     struct llama_model *model;
@@ -514,6 +546,24 @@ static int mod_bake(Mod *m) {
         }
         m->body_sz += tsz;
     }
+    /* format v2: per-file-idx layout arrays for sourceless readers.
+       fpos_fi[fi] = body position; voff_flat = d_voff rows concatenated
+       in file-idx order (d_E[fi] entries each, delta tensors only). */
+    uint64_t *fpos_fi = (uint64_t *)calloc(m->N, sizeof(uint64_t));
+    for (uint32_t r = 0; r < m->N; r++) fpos_fi[m->order[r]] = m->chain_off[r];
+    uint64_t voff_total = 0;
+    for (uint32_t i = 0; i < m->N; i++)
+        if (m->is_delta[i]) voff_total += m->d_E[i];
+    uint64_t *voff_flat = voff_total ? (uint64_t *)calloc(voff_total, sizeof(uint64_t)) : NULL;
+    if (voff_total && !voff_flat) return -1;
+    if (!fpos_fi) { free(voff_flat); return -1; }
+    {
+        uint64_t vp = 0;
+        for (uint32_t i = 0; i < m->N; i++) {
+            if (!m->is_delta[i]) continue;
+            for (uint32_t e = 0; e < m->d_E[i]; e++) voff_flat[vp++] = m->d_voff[i][e];
+        }
+    }
 
     size_t kv_len = m->src_kv_end - 24;
     size_t kis_slots = 13;
@@ -522,11 +572,20 @@ static int mod_bake(Mod *m) {
         const char *key = (k == 0) ? "kis.layout.body_off" : kis_key((k - 1) / 4, (const char *[]){"addr","len","count","arrtype"}[(k - 1) % 4]);
         kis_bytes += 8 + strlen(key) + 4 + 8;
     }
+    /* v2 layout keys: version scalar + 7 arrays */
+    kis_bytes += 8 + strlen("kis.format.version") + 4 + 8;
+    kis_bytes += key_arr_bytes("kis.layout.fpos", m->N, 8);
+    kis_bytes += key_arr_bytes("kis.delta.flags", m->N, 1);
+    kis_bytes += key_arr_bytes("kis.delta.E", m->N, 4);
+    kis_bytes += key_arr_bytes("kis.delta.sl", m->N, 8);
+    kis_bytes += key_arr_bytes("kis.delta.boff", m->N, 8);
+    kis_bytes += key_arr_bytes("kis.delta.rlen", m->N, 8);
+    kis_bytes += key_arr_bytes("kis.delta.voff", voff_total, 8);
     size_t idx_cap = 24 + kv_len + kis_bytes + m->tinfo_len + 64;
     m->idx = (uint8_t *)calloc(1, idx_cap);
     size_t pos = 0;
     uint32_t magic = GGUF_MAGIC, version = 3;
-    uint64_t nt = m->N, nkv_small = (m->n_src_kv - 3) + 13;
+    uint64_t nt = m->N, nkv_small = (m->n_src_kv - 3) + 21;   /* drop 3 tok keys, add 21 kis.* keys */
     memcpy(m->idx + pos, &magic, 4); pos += 4;
     memcpy(m->idx + pos, &version, 4); pos += 4;
     memcpy(m->idx + pos, &nt, 8); pos += 8;
@@ -547,6 +606,17 @@ static int mod_bake(Mod *m) {
         kis_val[k] = (uint64_t *)(m->idx + pos);
         memcpy(m->idx + pos, &vzero, 8); pos += 8;
     }
+    /* v2 layout keys (all values final — write directly, no patch step) */
+    pos += wr_key_u64(m->idx + pos, "kis.format.version", 2);
+    pos += wr_key_arr(m->idx + pos, "kis.layout.fpos", 10, m->N, fpos_fi, 8);
+    pos += wr_key_arr(m->idx + pos, "kis.delta.flags", 0, m->N, m->is_delta, 1);
+    pos += wr_key_arr(m->idx + pos, "kis.delta.E", 4, m->N, m->d_E, 4);
+    pos += wr_key_arr(m->idx + pos, "kis.delta.sl", 10, m->N, m->d_sl, 8);
+    pos += wr_key_arr(m->idx + pos, "kis.delta.boff", 10, m->N, m->d_boff, 8);
+    pos += wr_key_arr(m->idx + pos, "kis.delta.rlen", 10, m->N, m->d_rlen, 8);
+    pos += wr_key_arr(m->idx + pos, "kis.delta.voff", 10, voff_total,
+                      voff_flat ? voff_flat : fpos_fi, 8);
+    free(fpos_fi); free(voff_flat);
     memcpy(m->idx + pos, m->src_base + m->src_kv_end, m->tinfo_len);
     pos += m->tinfo_len;
     m->idx_data_off = align64(pos);
@@ -651,11 +721,11 @@ static int mod_mmap(Mod *m) {
     return 0;
 }
 
-/* durable-artifact checks: no tokenizer keys, 13 kis.* keys, payloads == source */
+/* durable-artifact checks: no tokenizer keys, 21 kis.* keys, payloads == source */
 static int mod_hcheck(Mod *m) {
-    KVInfo fk[64]; uint32_t nfk = 0;
+    KVInfo fk[96]; uint32_t nfk = 0;
     int tok_found = 0, kis_found = 0, ok_payload = 1;
-    if (kv_walk(m->fmap, fk, 64, &nfk) != 0) return -1;
+    if (kv_walk(m->fmap, fk, 96, &nfk) != 0) return -1;
     for (uint32_t i = 0; i < nfk; i++) {
         if (fk[i].is_tok) tok_found++;
         if (strncmp(fk[i].name, "kis.", 4) == 0) kis_found++;
@@ -670,16 +740,16 @@ static int mod_hcheck(Mod *m) {
         if (memcmp(m->fmap + addr, m->src_base + m->tok_elem_off[t], (size_t)len) != 0) ok_payload = 0;
     }
     char d1[64], d2[64];
-    snprintf(d1, sizeof(d1), "[%s] H1: durable header sans tokenizer + 13 kis.*", m->tag);
+    snprintf(d1, sizeof(d1), "[%s] H1: durable header sans tokenizer + 21 kis.*", m->tag);
     snprintf(d2, sizeof(d2), "[%s] H2: tokenizer payload windows == source", m->tag);
-    CHECK(d1, tok_found == 0 && kis_found == 13);
+    CHECK(d1, tok_found == 0 && kis_found == 21);
     CHECK(d2, ok_payload);
-    return (tok_found == 0 && kis_found == 13 && ok_payload) ? 0 : -1;
+    return (tok_found == 0 && kis_found == 21 && ok_payload) ? 0 : -1;
 }
 
 /* rebuild full header in memory from the field */
 static int mod_rebuild(Mod *m) {
-    if (kv_walk(m->fmap, m->fk, 64, &m->nfk) != 0) return -1;
+    if (kv_walk(m->fmap, m->fk, 96, &m->nfk) != 0) return -1;
     size_t fkv_end = m->fk[m->nfk - 1].end;
     m->fbody_off = 0;
     for (uint32_t i = 0; i < m->nfk; i++)
@@ -713,6 +783,48 @@ static int mod_rebuild(Mod *m) {
     m->reb_final = (size_t)align32(rp);
     m->fpos = (uint64_t *)calloc(m->N, sizeof(uint64_t));
     for (uint32_t r = 0; r < m->N; r++) m->fpos[m->order[r]] = m->chain_off[r];
+    /* L0: persisted v2 layout == re-derived layout (sourceless readers
+       trust these keys; fail LOUD on divergence, not silent). v1 fields
+       (no version key) skip — dual re-derives from source anyway. */
+    {
+        KVInfo kv; int layout_ok = 1;
+        if (!kv_find(m->fk, m->nfk, "kis.format.version", &kv)) {
+            printf("[%s] L0: v1 field (no persisted layout) — verify skipped\n", m->tag);
+        } else {
+            const uint8_t *B = m->fmap;
+            KVInfo kfp, kfl, kE, ksl, kbo, krl, kvo;
+            int has = kv_find(m->fk, m->nfk, "kis.layout.fpos", &kfp)
+                   && kv_find(m->fk, m->nfk, "kis.delta.flags", &kfl)
+                   && kv_find(m->fk, m->nfk, "kis.delta.E", &kE)
+                   && kv_find(m->fk, m->nfk, "kis.delta.sl", &ksl)
+                   && kv_find(m->fk, m->nfk, "kis.delta.boff", &kbo)
+                   && kv_find(m->fk, m->nfk, "kis.delta.rlen", &krl)
+                   && kv_find(m->fk, m->nfk, "kis.delta.voff", &kvo);
+            if (!has) layout_ok = 0;
+            if (has && (kfp.arr_count != m->N || kfl.arr_count != m->N ||
+                        kE.arr_count != m->N || ksl.arr_count != m->N ||
+                        kbo.arr_count != m->N || krl.arr_count != m->N)) layout_ok = 0;
+            if (layout_ok && memcmp(B + kfp.val_start + 12, m->fpos, (size_t)m->N * 8) != 0) layout_ok = 0;
+            if (layout_ok && memcmp(B + kfl.val_start + 12, m->is_delta, m->N) != 0) layout_ok = 0;
+            if (layout_ok && memcmp(B + kE.val_start + 12, m->d_E, (size_t)m->N * 4) != 0) layout_ok = 0;
+            if (layout_ok && memcmp(B + ksl.val_start + 12, m->d_sl, (size_t)m->N * 8) != 0) layout_ok = 0;
+            if (layout_ok && memcmp(B + kbo.val_start + 12, m->d_boff, (size_t)m->N * 8) != 0) layout_ok = 0;
+            if (layout_ok && memcmp(B + krl.val_start + 12, m->d_rlen, (size_t)m->N * 8) != 0) layout_ok = 0;
+            if (layout_ok) {
+                const uint64_t *vf = (const uint64_t *)(B + kvo.val_start + 12);
+                uint64_t vp = 0;
+                for (uint32_t i = 0; i < m->N && layout_ok; i++) {
+                    if (!m->is_delta[i]) continue;
+                    for (uint32_t e = 0; e < m->d_E[i]; e++, vp++)
+                        if (vf[vp] != m->d_voff[i][e]) { layout_ok = 0; break; }
+                }
+            }
+            char d0[64];
+            snprintf(d0, sizeof(d0), "[%s] L0: persisted layout == re-derived", m->tag);
+            CHECK(d0, layout_ok);
+            if (!layout_ok) return -1;
+        }
+    }
     return 0;
 }
 
