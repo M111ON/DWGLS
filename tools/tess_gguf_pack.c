@@ -341,15 +341,20 @@ int main(int argc, char **argv) {
     hdr[8] = (uint32_t)((pack_sig64 >> 32) ^ (pack_sig64 & 0xFFFFFFFF));  /* sig32 integrity */
     hdr[9] = (uint32_t)scale_log_off;
     hdr[10] = n_scale_log;
+    /* high 32 bits for packs over 4GB (paired with hdr[3,4,6,9]) */
+    hdr[11] = (uint32_t)(idx_off >> 32);
+    hdr[12] = (uint32_t)((onion_data_start ? onion_data_start : 0) >> 32);
+    hdr[13] = (uint32_t)(residual_off >> 32);
+    hdr[14] = (uint32_t)(scale_log_off >> 32);
     fwrite(hdr, 1, 64, fout);
     fclose(fout);
 
-    long fsize = 0;
+    int64_t fsize = 0;
     fout = fopen(out_path, "rb");
-    if (fout) { _fseeki64(fout, 0, SEEK_END); fsize = (long)_ftelli64(fout); fclose(fout); }
+    if (fout) { _fseeki64(fout, 0, SEEK_END); fsize = (int64_t)_ftelli64(fout); fclose(fout); }
 
     printf("Packed %u tensors, %u capos, %u onion → %s (%.1f MB) sig32=0x%08X\n",
-           filtered, total_capos, n_onion, out_path, fsize / (1024.0 * 1024.0),
+           filtered, total_capos, n_onion, out_path, (double)fsize / (1024.0 * 1024.0),
            hdr[8]);
 
     free(capo_buf); free(entries);

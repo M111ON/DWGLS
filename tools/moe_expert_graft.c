@@ -253,6 +253,8 @@ static void provide_moe_tensor(struct ggml_tensor *t, void *ud) {
     const char *name = ggml_get_name(t);
     size_t nb = ggml_nbytes(t);
 
+    /* Patched DLL passes t->data=NULL: the callback must SET the pointer
+     * (zero-copy), never memcpy into it (#914 pattern). */
     /* Check pool first (baked MoE tensors) */
     for (uint32_t i = 0; i < zw->n_pool; i++) {
         if (strcmp(zw->pool_map[i].name, name) == 0) {
@@ -262,13 +264,13 @@ static void provide_moe_tensor(struct ggml_tensor *t, void *ud) {
                 zw->missing++;
                 return;
             }
-            memcpy(t->data, zw->pool_map[i].ptr, nb);
+            t->data = (void *)zw->pool_map[i].ptr;
             zw->matched++;
             return;
         }
     }
 
-    /* Not baked → serve from source GGUF mmap */
+    /* Not baked → point at source GGUF mmap (read-only zero-copy) */
     for (uint32_t i = 0; i < zw->n_tensors; i++) {
         if (strcmp(zw->names[i], name) == 0) {
             if (nb != zw->sizes[i]) {
@@ -279,23 +281,26 @@ static void provide_moe_tensor(struct ggml_tensor *t, void *ud) {
             }
             uint64_t src_off = zw->src_data_offset + zw->offsets[i];
             if (src_off + nb <= zw->src_mmap_size) {
-                memcpy(t->data, zw->src_mmap + src_off, nb);
+                t->data = (void *)(zw->src_mmap + src_off);
                 zw->matched++;
                 return;
             }
             break;
         }
     }
-    /* Tensor not found at all — log first few, fill defaults */
+    /* Tensor not found at all — log first few, fill defaults in owned buf */
     if (zw->missing < 20)
         fprintf(stderr, "  [zw] missing: %s type=%d nb=%zu\n", name, (int)t->type, nb);
     /* fill defaults: bias→0, scale/input_scale/rope_freqs→1.0 */
-    if (strstr(name, ".bias")) {
-        memset(t->data, 0, nb);
-    } else {
-        float *fd = (float *)t->data;
-        size_t nf = nb / sizeof(float);
-        for (size_t i = 0; i < nf; i++) fd[i] = 1.0f;
+    {
+        uint8_t *fb = (uint8_t *)calloc(1, nb ? nb : 1);
+        if (!fb) { zw->missing++; return; }
+        if (!strstr(name, ".bias")) {
+            float *fd = (float *)fb;
+            size_t nf = nb / sizeof(float);
+            for (size_t i = 0; i < nf; i++) fd[i] = 1.0f;
+        }
+        t->data = (void *)fb; /* intentionally owned till process exit */
     }
     zw->missing++;
 }
@@ -553,8 +558,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Load model A (original) for baseline logits */
-    struct llama_model *mA2 = load_model(gguf_path);
+    /* Load model A (original) for baseline logits — CPU, same as model B,
+     * so the compare is kernel-identical (Vulkan vs CPU kernels differ). */
+    struct llama_model *mA2 = NULL;
+    {
+        struct llama_model_params mpA = llama_model_default_params();
+        mpA.n_gpu_layers = 0;
+        mA2 = llama_model_load_from_file(gguf_path, mpA);
+    }
     if (!mA2) {
         printf("  FAIL: load original model\n");
         gguf_free(gctx);
@@ -577,11 +588,16 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Load model B via callback (pool for MoE, source mmap for rest) */
+    /* Load model B via callback (pool for MoE, source mmap for rest).
+     * CPU-only: callback pointers are plain host mmaps, not Vulkan-pinned
+     * staging buffers (4b proves numerical identity, not GPU placement). */
+    struct llama_model_params mpB = llama_model_default_params();
+    mpB.n_gpu_layers = 0;
+    mpB.no_host = true; /* callback pointers are plain mmaps, not Vulkan_Host staging */
     struct llama_model *mB2 = llama_model_init_from_user(
         gctx,
         provide_moe_tensor, &zw,
-        llama_model_default_params());
+        mpB);
     if (!mB2) {
         printf("  FAIL: callback model init\n");
         llama_free(ctxA2);

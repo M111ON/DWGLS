@@ -696,6 +696,10 @@ static inline int tess_capo_verify_crc(const TESS_CapoReader *r) {
 
 #define TPAK_MAGIC   0x5450414Bu  /* "TPAK" little-endian */
 #define TPAK_VERSION 1u
+/* 64-bit pack offsets (>4GB fix): hdr[3,4,6,9] hold low 32 bits;
+ * hdr[11,12,13,14] hold the matching high 32 bits (zero in older packs,
+ * so old files read back identically). Packs over 4GB REQUIRE hi slots. */
+#define TPAK_OFF64(hdr, lo, hi) ((uint64_t)(hdr)[lo] | ((uint64_t)(hdr)[hi] << 32))
 
 /* Open a specific capo from a .tesspack file.
  * Scans the index for matching tensor_name + capo_id.
@@ -714,7 +718,7 @@ static inline int tess_capo_open_pack(TESS_CapoReader *r, const char *pack_path,
         fclose(f); return -2;
     }
     uint32_t n_capos = hdr[2];
-    uint64_t index_offset = hdr[3];
+    uint64_t index_offset = TPAK_OFF64(hdr, 3, 11);
 
     /* scan index for matching entry */
     _fseeki64(f, (int64_t)index_offset, SEEK_SET);
@@ -886,7 +890,7 @@ static inline int tess_pack_open(TESS_PackIndex *pi, const char *pack_path) {
         fclose(f); return -2;
     }
     pi->n_capos = hdr[2];
-    pi->index_offset = hdr[3];
+    pi->index_offset = TPAK_OFF64(hdr, 3, 11);
 
     /* get file size */
 #if defined(_WIN32)
@@ -950,9 +954,9 @@ static inline int tess_pack_open(TESS_PackIndex *pi, const char *pack_path) {
     pi->fd = fd;
 #endif
 
-    /* residual section (version 2+) — hdr[6]=offset, hdr[7]=count */
+    /* residual section (version 2+) — hdr[6]+hdr[13]=offset, hdr[7]=count */
     {
-        uint32_t r_off = hdr[6];
+        uint64_t r_off = TPAK_OFF64(hdr, 6, 13);
         uint32_t r_cnt = hdr[7];
         if (r_off > 0 && r_cnt > 0 && r_off + (uint64_t)r_cnt * 522 <= pi->file_sz) {
             pi->residual_data  = pi->base + r_off;
@@ -960,10 +964,10 @@ static inline int tess_pack_open(TESS_PackIndex *pi, const char *pack_path) {
         }
     }
 
-    /* scale log section (version 3+) — hdr[9]=offset, hdr[10]=count */
+    /* scale log section (version 3+) — hdr[9]+hdr[14]=offset, hdr[10]=count */
     pi->pack_version = hdr[1];
     {
-        uint32_t sl_off = hdr[9];
+        uint64_t sl_off = TPAK_OFF64(hdr, 9, 14);
         uint32_t sl_cnt = hdr[10];
         if (sl_off > 0 && sl_cnt > 0 && sl_off + (uint64_t)sl_cnt * 8 <= pi->file_sz) {
             pi->scale_log_data  = pi->base + sl_off;
@@ -1025,11 +1029,11 @@ static inline int tess_pack_open_mmap(TESS_PackIndex *pi, const char *pack_path)
     const uint32_t *hdr = (const uint32_t *)pi->base;
     if (hdr[0] != TPAK_MAGIC) return -2;
     pi->n_capos     = hdr[2];
-    pi->index_offset = hdr[3];
+    pi->index_offset = TPAK_OFF64(hdr, 3, 11);
 
     /* residual section (version 2+) */
     {
-        uint32_t r_off = hdr[6];
+        uint64_t r_off = TPAK_OFF64(hdr, 6, 13);
         uint32_t r_cnt = hdr[7];
         if (r_off > 0 && r_cnt > 0 && r_off + (uint64_t)r_cnt * sizeof(TESS_ResidualEntry) <= pi->file_sz) {
             pi->residual_data  = pi->base + r_off;
@@ -1040,7 +1044,7 @@ static inline int tess_pack_open_mmap(TESS_PackIndex *pi, const char *pack_path)
     /* scale log section (version 3+) */
     pi->pack_version = hdr[1];
     {
-        uint32_t sl_off = hdr[9];
+        uint64_t sl_off = TPAK_OFF64(hdr, 9, 14);
         uint32_t sl_cnt = hdr[10];
         if (sl_off > 0 && sl_cnt > 0 && sl_off + (uint64_t)sl_cnt * 8 <= pi->file_sz) {
             pi->scale_log_data  = pi->base + sl_off;

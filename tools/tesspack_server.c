@@ -486,7 +486,7 @@ int main(int argc, char **argv) {
     /* ── load model from assembled temp GGUF ── */
     t0 = now_ms();
     struct llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = 99; /* use Vulkan for everything */
+    mp.n_gpu_layers = n_gpu; /* TESS_NGPU env (default 0=CPU, set 40-50 for GTX 1050 Ti 4GB) */
     struct llama_model *model = llama_model_load_from_file(tmp_gguf, mp);
     double load_ms = now_ms() - t0;
     if (!model) {

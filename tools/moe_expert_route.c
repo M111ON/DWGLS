@@ -147,6 +147,7 @@ static const char *find_llama_dll(const char *dir) {
 #endif
 
 #include "llama.h"
+#include "ggml-backend.h"
 
 static struct llama_model *load_model(const char *gguf_path) {
     struct llama_model_params mparams = llama_model_default_params();
@@ -157,86 +158,94 @@ static struct llama_model *load_model(const char *gguf_path) {
 
 static int compare_logits(const char *path_a, const char *path_b, const char *llama_dir,
                            const char *prompt) {
-    struct llama_model *mA = load_model(path_a);
-    struct llama_model *mB = load_model(path_b);
-    if (!mA || !mB) { llama_model_free(mA); llama_model_free(mB); return 1; }
+    /* Sequential eval: two resident models split VRAM differently and go
+     * down different kernel paths, so evaluate one at a time. */
+    llama_backend_init();
+    ggml_backend_load_all_from_path(llama_dir);
 
     struct llama_context_params cparams = llama_context_default_params();
     cparams.n_batch = 2048;
-    struct llama_context *ctxA = llama_init_from_model(mA, cparams);
-    struct llama_context *ctxB = llama_init_from_model(mB, cparams);
-    if (!ctxA || !ctxB) {
-        fprintf(stderr, "  FAIL: init context\n");
-        llama_free(ctxA); llama_free(ctxB);
-        llama_model_free(mA); llama_model_free(mB);
-        return 1;
-    }
 
-    struct llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
-
+    /* tokenize once (vocab identical in both files) */
+    struct llama_model *mT = load_model(path_a);
+    if (!mT) return 1;
     llama_token tokens[256];
-    const struct llama_vocab *vocab = llama_model_get_vocab(mA);
+    const struct llama_vocab *vocab = llama_model_get_vocab(mT);
     int n = llama_tokenize(vocab, prompt, (int32_t)strlen(prompt), tokens, 250, true, false);
-    if (n <= 0) {
-        fprintf(stderr, "  FAIL: tokenize prompt (n=%d)\n", n);
-        llama_sampler_free(smpl); llama_free(ctxA); llama_free(ctxB);
-        llama_model_free(mA); llama_model_free(mB);
-        return 1;
-    }
+    int n_vocab = llama_vocab_n_tokens(vocab);
+    llama_model_free(mT);
+    if (n <= 0) { fprintf(stderr, "  FAIL: tokenize prompt (n=%d)\n", n); return 1; }
 
-    if (llama_decode(ctxA, llama_batch_get_one(tokens, n)) != 0 ||
-        llama_decode(ctxB, llama_batch_get_one(tokens, n)) != 0) {
-        fprintf(stderr, "  FAIL: decode prompt\n");
-        llama_sampler_free(smpl); llama_free(ctxA); llama_free(ctxB);
-        llama_model_free(mA); llama_model_free(mB);
-        return 1;
-    }
+    float *logA = (float *)malloc((size_t)n_vocab * sizeof(float));
+    float *logB = (float *)malloc((size_t)n_vocab * sizeof(float));
+    llama_token toksA[40], toksB[40];
+    int n_gen = 40;
 
-    const float *logitsA = llama_get_logits(ctxA);
-    const float *logitsB = llama_get_logits(ctxB);
-    int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(mA));
+    const char *paths[2] = { path_a, path_b };
+    for (int side = 0; side < 2; side++) {
+        struct llama_model *m = load_model(paths[side]);
+        if (!m) { free(logA); free(logB); return 1; }
+        struct llama_context *ctx = llama_init_from_model(m, cparams);
+        if (!ctx) {
+            fprintf(stderr, "  FAIL: init context\n");
+            llama_model_free(m); free(logA); free(logB); return 1;
+        }
+        struct llama_sampler *smpl =
+            llama_sampler_chain_init(llama_sampler_chain_default_params());
+        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+
+        if (llama_decode(ctx, llama_batch_get_one(tokens, n)) != 0) {
+            fprintf(stderr, "  FAIL: decode prompt\n");
+            llama_sampler_free(smpl); llama_free(ctx); llama_model_free(m);
+            free(logA); free(logB); return 1;
+        }
+        const float *lg = llama_get_logits(ctx);
+        memcpy(side == 0 ? logA : logB, lg, (size_t)n_vocab * sizeof(float));
+
+        llama_token *toks = side == 0 ? toksA : toksB;
+        for (int g = 0; g < n_gen; g++) {
+            llama_token tk = llama_sampler_sample(smpl, ctx, -1);
+            llama_sampler_accept(smpl, tk);
+            toks[g] = tk;
+            if (side == 0 && g == 0) printf("  ");
+            if (side == 0) {
+                char buf[64];
+                int k = llama_token_to_piece(llama_model_get_vocab(m), tk,
+                                             buf, sizeof(buf) - 1, 0, false);
+                if (k < 0) k = 0;
+                buf[k] = '\0';
+                printf("%s", buf);
+            }
+            llama_batch batch = llama_batch_get_one(&tk, 1);
+            if (llama_decode(ctx, batch) != 0) {
+                fprintf(stderr, "\n  FAIL: decode step %d\n", g);
+                break;
+            }
+        }
+        if (side == 0) printf("\n");
+        llama_sampler_free(smpl); llama_free(ctx); llama_model_free(m);
+    }
 
     int match = 1;
     float maxdiff = 0.0f;
     for (int i = 0; i < n_vocab; i++) {
-        float diff = logitsA[i] > logitsB[i] ? logitsA[i] - logitsB[i] : logitsB[i] - logitsA[i];
+        float diff = logA[i] > logB[i] ? logA[i] - logB[i] : logB[i] - logA[i];
         if (diff > maxdiff) maxdiff = diff;
         if (diff > 0.001f) { match = 0; break; }
     }
     printf("  logits: n_vocab=%d  maxdiff=%.6f  %s\n", n_vocab, maxdiff,
            match ? "BITWISE OK" : "MISMATCH");
 
-    int n_gen = 40;
-    printf("\n  Generate %d tokens:\n", n_gen);
+    printf("  Generate %d tokens:\n", n_gen);
     for (int g = 0; g < n_gen; g++) {
-        llama_token tokA = llama_sampler_sample(smpl, ctxA, -1);
-        llama_token tokB = llama_sampler_sample(smpl, ctxB, -1);
-        llama_sampler_accept(smpl, tokA);
-
-        if (tokA != tokB) {
-            printf("  token %d: A=%d B=%d MISMATCH\n", g, tokA, tokB);
+        if (toksA[g] != toksB[g]) {
+            printf("  token %d: A=%d B=%d MISMATCH\n", g, toksA[g], toksB[g]);
             match = 0;
             break;
         }
-
-        char buf[64];
-        int k = llama_token_to_piece(llama_model_get_vocab(mA), tokA, buf, sizeof(buf) - 1, 0, false);
-        if (k < 0) k = 0;
-        buf[k] = '\0';
-        printf("%s", buf);
-
-        llama_batch batch = llama_batch_get_one(&tokA, 1);
-        if (llama_decode(ctxA, batch) != 0 || llama_decode(ctxB, batch) != 0) {
-            fprintf(stderr, "\n  FAIL: decode step %d\n", g);
-            break;
-        }
     }
-    printf("\n");
-
-    llama_sampler_free(smpl);
-    llama_free(ctxA); llama_free(ctxB);
-    llama_model_free(mA); llama_model_free(mB);
+    if (match) printf("  tokens: 40/40 identical\n");
+    free(logA); free(logB);
     return match ? 0 : 1;
 }
 
@@ -327,30 +336,37 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        /* read router gate, compute expert scores */
+        /* read router gate, compute expert scores (dims from file, not hardcoded) */
         uint32_t gate_sz = gguf.sizes[router_idx];
+        int n_embd = (int)gguf.dims[(size_t)router_idx * 4 + 0];
+        int n_exp  = (int)gguf.dims[(size_t)router_idx * 4 + 1];
+        if (n_embd <= 0 || n_exp <= 0) {
+            for (int k = 0; k < TOP_K; k++) routing[layer][k] = k;
+            continue;
+        }
         uint8_t *gate_buf = (uint8_t *)malloc(gate_sz);
-        float *gate_f32 = (float *)malloc(N_EXPERTS * sizeof(float));
+        float *gate_f32 = (float *)malloc((size_t)n_exp * sizeof(float));
 
         if (gguf_read_tensor(gguf_path, &gguf, router_idx, gate_buf, gate_sz) == 0) {
-            int n_embd = 2560;
-            if (gate_sz == (uint32_t)(n_embd * N_EXPERTS * 2)) {
+            if (gate_sz == (uint32_t)(n_embd * n_exp * 2)) {
                 const uint16_t *gw = (const uint16_t *)gate_buf;
-                for (int e = 0; e < N_EXPERTS; e++) {
+                for (int e = 0; e < n_exp; e++) {
                     double sum = 0;
                     for (int j = 0; j < n_embd; j++)
-                        sum += fp16_to_fp32(gw[j * N_EXPERTS + e]);
+                        sum += fp16_to_fp32(gw[j * n_exp + e]);
                     gate_f32[e] = (float)sum;
                 }
             } else {
                 const float *gf = (const float *)gate_buf;
-                for (int e = 0; e < N_EXPERTS; e++) {
+                for (int e = 0; e < n_exp; e++) {
                     double sum = 0;
-                    for (int j = 0; j < n_embd; j++) sum += gf[j * N_EXPERTS + e];
+                    for (int j = 0; j < n_embd; j++) sum += gf[j * n_exp + e];
                     gate_f32[e] = (float)sum;
                 }
             }
-            topk(gate_f32, N_EXPERTS, TOP_K, routing[layer]);
+            int k_eff = TOP_K < n_exp ? TOP_K : n_exp;
+            topk(gate_f32, n_exp, k_eff, routing[layer]);
+            for (int k = k_eff; k < TOP_K; k++) routing[layer][k] = routing[layer][k_eff - 1];
         } else {
             for (int k = 0; k < TOP_K; k++) routing[layer][k] = k;
         }
