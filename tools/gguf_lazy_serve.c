@@ -273,6 +273,177 @@ static void lz_index_free(LZEntry *a, int n) {
     for (int i = 0; i < n; i++) free(a[i].vec);
     free(a);
 }
+/* ── lz-mem-search shared core ──
+ * Sid-scoped memory selection over build/kv_index.jsonl, shared by the
+ * /v1/state/search handler and the generate path (LZ_MEMORY_CTX=1) — no HTTP
+ * loopback, no duplication, no RNG: same index → same hits, deterministic.
+ * topk is clamped to 1..8 (generate passes 3). top_* arrays hold 8 rows.
+ * Metadata outs are optional (NULL = skip). Returns hit count 0..topk,
+ * or -1 when the query is unusable (qv NULL / qd <= 0). */
+static int lz_mem_search(const float *qv, int qd,
+                         const char *sid_filter, int topk,
+                         char top_sid[][64], char top_file[][256],
+                         int top_np[], double top_sc[],
+                         char route_mode[16], int route_bk[8], int *route_nb_out,
+                         int *block_reads_out, int *items_scored_out, int *nent_out,
+                         int *budget_out, int *truncated_out, double *us_per_item_out) {
+    if (top_sc) for (int ti = 0; ti < 8; ti++) top_sc[ti] = -2;
+    if (top_sid) for (int ti = 0; ti < 8; ti++) top_sid[ti][0] = '\0';
+    if (top_file) for (int ti = 0; ti < 8; ti++) top_file[ti][0] = '\0';
+    if (!qv || qd <= 0) return -1;
+    if (topk < 1) topk = 1;
+    if (topk > 8) topk = 8;
+    if (!sid_filter) sid_filter = "";
+    double qn = 0;
+    for (int qi = 0; qi < qd; qi++) qn += (double)qv[qi] * qv[qi];
+    qn = sqrt(qn);
+    /* route via anchors if fresh, else brute scan */
+    LZEntry *ents = NULL;
+    int nent = 0;
+    lz_index_load(&ents, &nent);
+    char rm[16];
+    snprintf(rm, sizeof(rm), "%s", "brute");
+    int rb[8];
+    for (int ri = 0; ri < 8; ri++) rb[ri] = 0;
+    int rnb = 0, breads = 1, scored = 0;
+    int truncated = 0;
+    /* G survivor: single-round cutoff — fixed candidate
+     * budget per scan (env LZ_SEARCH_BUDGET, default 512). */
+    int budget = LZ_SEARCH_BUDGET_DEF;
+    { const char *be = getenv("LZ_SEARCH_BUDGET");
+      if (be && atoi(be) > 0) budget = atoi(be);
+      /* bench 2026-09-25: walk-order cutoff at fixed 512
+       * truncates 999/1000 on large nent; default must
+       * cover the index (explicit env still wins). */
+      else if (nent > budget) budget = nent; }
+    double us_per_item = 0;
+    if (ents && qn > 0) {
+        /* anchor order: node-sorted .order perm if present */
+        uint32_t *ord = (uint32_t *)malloc((nent ? (size_t)nent : 1) * sizeof(uint32_t));
+        for (int i = 0; i < nent; i++) ord[i] = (uint32_t)i;
+        float C[ANCHR_MAXK * ANCHR_MAXD];
+        int adim = 0, antr = 0;
+        int K = anch_load(LZ_ANCH_PATH, C, ANCHR_MAXK, ANCHR_MAXD, &adim, &antr);
+        int routed = 0;
+        if (K > 0 && adim == qd && antr == nent) {
+            FILE *of = fopen(LZ_ORDER_PATH, "rb");
+            if (of) {
+                size_t nr = fread(ord, sizeof(uint32_t), (size_t)nent, of);
+                fclose(of);
+                if (nr != (size_t)nent)
+                    for (int i = 0; i < nent; i++) ord[i] = (uint32_t)i;
+            }
+            int topb = topk < K ? topk : K;
+            rnb = anch_route(qv, C, K, qd, topb, rb);
+            routed = 1;
+            snprintf(rm, sizeof(rm), "%s", "anchor");
+        }
+        LARGE_INTEGER qf, qt0, qt1;
+        QueryPerformanceFrequency(&qf);
+        QueryPerformanceCounter(&qt0);
+        int in_run = 0;
+        breads = 0;
+        for (int oi = 0; oi < nent; oi++) {
+            int ei = (int)ord[oi];
+            if (ei < 0 || ei >= nent) continue;
+            int sel = 1;
+            /* sid pre-filter BEFORE anchor check (RNG-free,
+             * deterministic; miss resets block run so
+             * block_reads accounting is unchanged). */
+            if (sid_filter[0] && strcmp(ents[ei].sid, sid_filter) != 0) sel = 0;
+            if (sel && routed) {
+                sel = (ents[ei].anchor < 0);
+                for (int rbi = 0; rbi < rnb && !sel; rbi++)
+                    if (ents[ei].anchor == rb[rbi] ||
+                        ents[ei].anchor2 == rb[rbi]) sel = 1;
+            }
+            if (!sel) { in_run = 0; continue; }
+            if (!in_run) { breads++; in_run = 1; }
+            if (ents[ei].dim != qd) continue;
+            double dot = 0, wn2 = 0;
+            for (int wi = 0; wi < qd; wi++) { dot += (double)qv[wi] * ents[ei].vec[wi]; wn2 += (double)ents[ei].vec[wi] * ents[ei].vec[wi]; }
+            double sc = (wn2 > 0) ? dot / (qn * sqrt(wn2)) : -1;
+            scored++;
+            for (int ti = 0; ti < topk; ti++) {
+                if (sc > top_sc[ti]) {
+                    for (int tj = topk - 1; tj > ti; tj--) {
+                        top_sc[tj] = top_sc[tj-1];
+                        if (top_sid) snprintf(top_sid[tj], 64, "%s", top_sid[tj-1]);
+                        if (top_file) snprintf(top_file[tj], 256, "%s", top_file[tj-1]);
+                        if (top_np) top_np[tj] = top_np[tj-1];
+                    }
+                    top_sc[ti] = sc;
+                    if (top_sid) snprintf(top_sid[ti], 64, "%s", ents[ei].sid);
+                    if (top_file) snprintf(top_file[ti], 256, "%s", ents[ei].file);
+                    if (top_np) top_np[ti] = ents[ei].npast;
+                    break;
+                }
+            }
+            if (scored >= budget) { truncated = 1; break; }
+        }
+        QueryPerformanceCounter(&qt1);
+        if (scored > 0 && qf.QuadPart > 0)
+            us_per_item = (double)(qt1.QuadPart - qt0.QuadPart) * 1e6 / (double)qf.QuadPart / scored;
+        free(ord);
+        if (!routed) breads = nent ? 1 : 0;
+    }
+    lz_index_free(ents, nent);
+    if (route_mode) snprintf(route_mode, 16, "%s", rm);
+    if (route_bk) for (int ri = 0; ri < 8; ri++) route_bk[ri] = rb[ri];
+    if (route_nb_out) *route_nb_out = rnb;
+    if (block_reads_out) *block_reads_out = breads;
+    if (items_scored_out) *items_scored_out = scored;
+    if (nent_out) *nent_out = nent;
+    if (budget_out) *budget_out = budget;
+    if (truncated_out) *truncated_out = truncated;
+    if (us_per_item_out) *us_per_item_out = us_per_item;
+    int nh = 0;
+    if (top_sc) for (int ti = 0; ti < topk && top_sc[ti] > -2; ti++) nh++;
+    return nh;
+}
+/* deterministic context block for the generate-path memory injection:
+ * "\n[session-memory sid=...]\n- <file> <npast>\n...[/session-memory]\n".
+ * Returns bytes written (0 when nhits <= 0). No RNG. */
+static int lz_mem_ctx_format(const char *sid,
+                             char top_file[][256], const int top_np[], int nhits,
+                             char *out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    if (nhits <= 0) return 0;
+    if (nhits > 8) nhits = 8;
+    int w = snprintf(out, cap, "\n[session-memory sid=%s]\n", sid ? sid : "");
+    for (int i = 0; i < nhits && w > 0 && (size_t)w < cap; i++)
+        w += snprintf(out + w, cap - (size_t)w, "- %s %d\n", top_file[i], top_np[i]);
+    if (w > 0 && (size_t)w < cap)
+        w += snprintf(out + w, cap - (size_t)w, "[/session-memory]\n");
+    return w;
+}
+/* generate-path session-memory gate (env LZ_MEMORY_CTX==1 enables).
+ * OFF (default): out = byte-identical copy of prompt, return 0.
+ * ON: sid-scoped search (topk=3, same budget default); hits → out is the
+ * context block prepended to the prompt, return 1; no hits / no embed →
+ * verbatim copy, return 0. Deterministic, no RNG, no HTTP loopback. */
+static int lz_mem_prompt(const char *prompt, const char *sid, char *out, size_t cap) {
+    if (out && cap > 0) out[0] = '\0';
+    if (!prompt) prompt = "";
+    if (out && cap > 0) snprintf(out, cap, "%s", prompt);
+    const char *e = getenv("LZ_MEMORY_CTX");
+    if (!e || strcmp(e, "1") != 0) return 0;
+    if (!sid || !sid[0]) return 0;
+    float qv[1024];
+    int qd = lz_embed(prompt, qv, 1024);
+    if (qd <= 0) return 0;
+    char top_sid[8][64]; char top_file[8][256];
+    int top_np[8]; double top_sc[8];
+    int nh = lz_mem_search(qv, qd, sid, 3,
+                           top_sid, top_file, top_np, top_sc,
+                           NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    if (nh <= 0) return 0;
+    char blk[2048];
+    lz_mem_ctx_format(sid, top_file, top_np, nh, blk, sizeof(blk));
+    if (out && cap > 0) snprintf(out, cap, "%s%s", blk, prompt);
+    return 1;
+}
 /* refresh anchors + node-sorted order. 0=anchored, 1=brute (too few), -1=err.
  * Kout/nout report K + entry count for the regrow hook (may be NULL). */
 static int lz_anchor_refresh(int *Kout, int *nout) {
@@ -1575,100 +1746,19 @@ int main(int argc, char **argv) {
                                     float qv[1024];
                                     int qd = lz_embed(sq, qv, 1024);
                                     if (qd > 0) {
-                                        double qn = 0;
-                                        for (int qi = 0; qi < qd; qi++) qn += (double)qv[qi] * qv[qi];
-                                        qn = sqrt(qn);
-                                        /* route via anchors if fresh, else brute scan */
+                                        /* shared selection core (also serves the
+                                         * generate path when LZ_MEMORY_CTX=1) */
                                         char top_sid[8][64]; char top_file[8][256];
                                         int top_np[8]; double top_sc[8];
-                                        for (int ti = 0; ti < 8; ti++) top_sc[ti] = -2;
-                                        LZEntry *ents = NULL;
-                                        int nent = 0;
-                                        lz_index_load(&ents, &nent);
-                                        char route_mode[16] = "brute";
-                                        int route_bk[8], route_nb = 0, block_reads = 1, items_scored = 0;
-                                        int truncated = 0;
-                                        /* G survivor: single-round cutoff — fixed candidate
-                                         * budget per scan (env LZ_SEARCH_BUDGET, default 512). */
-                                         int budget = LZ_SEARCH_BUDGET_DEF;
-                                         { const char *be = getenv("LZ_SEARCH_BUDGET");
-                                           if (be && atoi(be) > 0) budget = atoi(be);
-                                           /* bench 2026-09-25: walk-order cutoff at fixed 512
-                                            * truncates 999/1000 on large nent; default must
-                                            * cover the index (explicit env still wins). */
-                                           else if (nent > budget) budget = nent; }
+                                        char route_mode[16];
+                                        int route_bk[8], route_nb = 0, block_reads = 0;
+                                        int items_scored = 0, nent = 0, budget = 0, truncated = 0;
                                         double us_per_item = 0;
-                                        if (ents && qn > 0) {
-                                            /* anchor order: node-sorted .order perm if present */
-                                            uint32_t *ord = (uint32_t *)malloc((nent ? (size_t)nent : 1) * sizeof(uint32_t));
-                                            for (int i = 0; i < nent; i++) ord[i] = (uint32_t)i;
-                                            float C[ANCHR_MAXK * ANCHR_MAXD];
-                                            int adim = 0, antr = 0;
-                                            int K = anch_load(LZ_ANCH_PATH, C, ANCHR_MAXK, ANCHR_MAXD, &adim, &antr);
-                                            int routed = 0;
-                                            if (K > 0 && adim == qd && antr == nent) {
-                                                FILE *of = fopen(LZ_ORDER_PATH, "rb");
-                                                if (of) {
-                                                    size_t nr = fread(ord, sizeof(uint32_t), (size_t)nent, of);
-                                                    fclose(of);
-                                                    if (nr != (size_t)nent)
-                                                        for (int i = 0; i < nent; i++) ord[i] = (uint32_t)i;
-                                                }
-                                                int topb = stopk < K ? stopk : K;
-                                                route_nb = anch_route(qv, C, K, qd, topb, route_bk);
-                                                routed = 1;
-                                                snprintf(route_mode, sizeof(route_mode), "%s", "anchor");
-                                            }
-                                            LARGE_INTEGER qf, qt0, qt1;
-                                            QueryPerformanceFrequency(&qf);
-                                            QueryPerformanceCounter(&qt0);
-                                            int in_run = 0;
-                                            block_reads = 0;
-                                            for (int oi = 0; oi < nent; oi++) {
-                                                int ei = (int)ord[oi];
-                                                if (ei < 0 || ei >= nent) continue;
-                                                int sel = 1;
-                                                /* sid pre-filter BEFORE anchor check (RNG-free,
-                                                 * deterministic; miss resets block run so
-                                                 * block_reads accounting is unchanged). */
-                                                if (sid_filter[0] && strcmp(ents[ei].sid, sid_filter) != 0) sel = 0;
-                                                if (sel && routed) {
-                                                    sel = (ents[ei].anchor < 0);
-                                                    for (int rb = 0; rb < route_nb && !sel; rb++)
-                                                        if (ents[ei].anchor == route_bk[rb] ||
-                                                            ents[ei].anchor2 == route_bk[rb]) sel = 1;
-                                                }
-                                                if (!sel) { in_run = 0; continue; }
-                                                if (!in_run) { block_reads++; in_run = 1; }
-                                                if (ents[ei].dim != qd) continue;
-                                                double dot = 0, wn2 = 0;
-                                                for (int wi = 0; wi < qd; wi++) { dot += (double)qv[wi] * ents[ei].vec[wi]; wn2 += (double)ents[ei].vec[wi] * ents[ei].vec[wi]; }
-                                                double sc = (wn2 > 0) ? dot / (qn * sqrt(wn2)) : -1;
-                                                items_scored++;
-                                                for (int ti = 0; ti < stopk; ti++) {
-                                                    if (sc > top_sc[ti]) {
-                                                        for (int tj = stopk - 1; tj > ti; tj--) {
-                                                            top_sc[tj] = top_sc[tj-1];
-                                                            snprintf(top_sid[tj], 64, "%s", top_sid[tj-1]);
-                                                            snprintf(top_file[tj], 256, "%s", top_file[tj-1]);
-                                                            top_np[tj] = top_np[tj-1];
-                                                        }
-                                                        top_sc[ti] = sc;
-                                                        snprintf(top_sid[ti], 64, "%s", ents[ei].sid);
-                                                        snprintf(top_file[ti], 256, "%s", ents[ei].file);
-                                                        top_np[ti] = ents[ei].npast;
-                                                        break;
-                                                    }
-                                                }
-                                                if (items_scored >= budget) { truncated = 1; break; }
-                                            }
-                                            QueryPerformanceCounter(&qt1);
-                                            if (items_scored > 0 && qf.QuadPart > 0)
-                                                us_per_item = (double)(qt1.QuadPart - qt0.QuadPart) * 1e6 / (double)qf.QuadPart / items_scored;
-                                            free(ord);
-                                            if (!routed) block_reads = nent ? 1 : 0;
-                                        }
-                                        lz_index_free(ents, nent);
+                                        lz_mem_search(qv, qd, sid_filter, stopk,
+                                            top_sid, top_file, top_np, top_sc,
+                                            route_mode, route_bk, &route_nb,
+                                            &block_reads, &items_scored, &nent,
+                                            &budget, &truncated, &us_per_item);
                                         srlen = snprintf(sresp, sizeof(sresp), "{\"status\":\"ok\",\"hits\":[");
                                         for (int ti = 0; ti < stopk && top_sc[ti] > -2; ti++) {
                                             srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
@@ -2116,7 +2206,15 @@ int main(int argc, char **argv) {
                                     FILE *lf = fopen("build/lzserve_req.log", "a");
                                     if (lf) { fprintf(lf, "[req %llu] sid=%s prompt=%.40s gen=%d\n", (unsigned long long)req_id, rq_sid, rq_prompt, rq_gen); fclose(lf); }
                                 }
-                                llama_token *rt = generate_session(model, rq_sid, rq_prompt, rq_gen, &rnl, &reused);
+                                /* session-memory (kill criterion #1): gated prepend —
+                                 * LZ_MEMORY_CTX=1 forwards rq_sid into a sid-scoped
+                                 * scan; default OFF = rq_prompt reaches generate
+                                 * byte-identical (eff_prompt aliases rq_prompt). */
+                                const char *eff_prompt = rq_prompt;
+                                char gen_prompt[8192];
+                                if (lz_mem_prompt(rq_prompt, rq_sid, gen_prompt, sizeof(gen_prompt)) == 1)
+                                    eff_prompt = gen_prompt;
+                                llama_token *rt = generate_session(model, rq_sid, eff_prompt, rq_gen, &rnl, &reused);
                                 {
                                     FILE *lf = fopen("build/lzserve_req.log", "a");
                                     if (lf) { fprintf(lf, "[req %llu] generated=%d reused=%d\n", (unsigned long long)req_id, rnl, reused); fclose(lf); }
