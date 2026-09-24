@@ -160,6 +160,9 @@ TIER1 := \
   test_tess_moe_bridge \
   test_tesspack \
   test_gpu_pipeline \
+  test_gpu_small_batch \
+  test_jet_phase_align \
+  test_jet_select_prod \
   test_d4_linesum_bridge \
   test_twin_rebalance \
   test_triality_serve \
@@ -206,7 +209,7 @@ TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   t
 
 # GEO: geometry core + address space + hyperbolic
 # GEO_FAST: <0.5s each — run often
-GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field
+GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang
 # GEO_SLOW: >1s each — run before commit only
 GEO_SLOW :=   test_geo_bfs_hub   test_geo_fs_mdim   test_goldberg_mmap
 # GEO: full set
@@ -235,7 +238,7 @@ CAP :=   test_cap_account   test_cap_tune_real   test_cap_tune_safetensors   tes
 GHOST :=   test_ghost_gear_adapter   test_ghost_lift   test_ghost_envelope   test_ghost_direct
 
 # KV: remap + hybrid + rail bridge
-KV :=   test_kv_remap   test_kv_remap_diamond   test_kv_geofs_bridge   test_kv_rail_geofs   test_kv_dramtile   test_hybrid_kv
+KV :=   test_kv_remap   test_kv_remap_diamond   test_kv_geofs_bridge   test_kv_rail_geofs   test_kv_dramtile   test_hybrid_kv   test_anchor_route   test_anchor_routed
 
 # 6ICO: compound field + MoE
 SIXICO :=   test_6ico_tesseract   test_18tes_field   test_moe_expert   test_6ico_integration
@@ -573,6 +576,27 @@ graft-llama:
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
 	PATH="$(LLAMA_DLL):$$PATH" ./build/test_gguf_graft_llama $(LLAMA_GGUF) $(LLAMA_DLL)
+
+# Anchor-bucket router C port: project → route → exact-rank on SIFT1M.
+# Artifacts from python proof: build/sift1m_c/ (export via build/export_hier_c.py)
+anchor-route: | $(BUILD)
+	@test -f build/sift1m/sift/sift_base.fvecs || { echo "  (skip: SIFT1M not in build/sift1m)"; exit 0; }
+	@test -f build/sift1m_c/C1.bin || { echo "  (skip: run python build/export_hier_c.py first)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-format \
+	    -I . -I core -o $(BUILD)/anchor_route_cli tools/anchor_route_cli.c -lm
+	./$(BUILD)/anchor_route_cli 1000
+
+# KV logical-delta: base dump + token-id chain restores byte-identical state
+# (serializer re-packs globally so byte-prefix is dead; decode determinism
+# makes token-id deltas exact). Proves RESULT == FULL + wrong-base diverges.
+kv-delta-proof: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found)"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-format \
+	    -I core -I $(LLAMA_INC) -o $(BUILD)/test_kv_delta tests/test_kv_delta.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lm
+	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/test_kv_delta $(LLAMA_GGUF)
 
 # Tesspack graft: load original + tesspack-graft GGUF, compare logits+tokens bitwise
 # Note: uses cmd.exe to run test (MSYS2 sh cannot resolve Windows DLLs correctly)
@@ -1057,6 +1081,41 @@ kv-real-multiturn: tools/kv_real_multiturn_bench.c core/kv_dramtile_bridge.h cor
 	@echo "▶ BUILD  kv_real_multiturn_bench"
 	$(CC) $(CFLAGS) -o $(BUILD)/kv_real_multiturn_bench tools/kv_real_multiturn_bench.c core/dramtile_store.c $(LDFLAGS)
 	@echo "✅ kv-real-multiturn ready → ./$(BUILD)/kv_real_multiturn_bench <kvslots dir>"
+
+kv-cold-base: tools/kv_cold_base.c core/kv_cold_base.h | $(BUILD)
+	@echo "▶ BUILD  kv_cold_base (COLD-KV step 1: base HOLD)"
+	$(CC) $(CFLAGS) -I core -I $(LLAMA_INC) -o $(BUILD)/kv_cold_base tools/kv_cold_base.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lm
+	@echo "✅ kv-cold-base ready → ./$(BUILD)/kv_cold_base <model.gguf> [out.kvcb]"
+
+kv-cold-delta: tools/kv_cold_delta.c core/kv_cold_base.h | $(BUILD)
+	@echo "▶ BUILD  kv_cold_delta (COLD-KV step 2: token-suffix spill)"
+	$(CC) $(CFLAGS) -I core -I $(LLAMA_INC) -o $(BUILD)/kv_cold_delta tools/kv_cold_delta.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lm
+	@echo "✅ kv-cold-delta ready → ./$(BUILD)/kv_cold_delta <model.gguf> [outdir] [backend_dir]"
+
+kv-cold-reanchor: tools/kv_cold_reanchor.c core/kv_cold_base.h | $(BUILD)
+	@echo "▶ BUILD  kv_cold_reanchor (COLD-KV step 3: re-anchor @10 + L2)"
+	$(CC) $(CFLAGS) -I core -I $(LLAMA_INC) -o $(BUILD)/kv_cold_reanchor tools/kv_cold_reanchor.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lm
+	@echo "✅ kv-cold-reanchor ready → ./$(BUILD)/kv_cold_reanchor <model.gguf> [outdir] [backend_dir]"
+
+kv-cold-prefix: tools/kv_cold_prefix.c core/kv_cold_base.h | $(BUILD)
+	@echo "▶ BUILD  kv_cold_prefix (COLD-KV step 4: prefix-shared base)"
+	$(CC) $(CFLAGS) -I core -I $(LLAMA_INC) -o $(BUILD)/kv_cold_prefix tools/kv_cold_prefix.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lm
+	@echo "✅ kv-cold-prefix ready → ./$(BUILD)/kv_cold_prefix save|loadA|loadB [model] [outdir] [backend]"
+
+kv-cold-chat: tools/kv_cold_chat.c core/kv_cold_base.h | $(BUILD)
+	@echo "▶ BUILD  kv_cold_chat (cold-KV interactive chat wiring)"
+	$(CC) $(CFLAGS) -I core -I $(LLAMA_INC) -o $(BUILD)/kv_cold_chat tools/kv_cold_chat.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lm
+	@echo "✅ kv-cold-chat ready → ./$(BUILD)/kv_cold_chat [model.gguf] [outdir] [backend_dir]"
 
 ggf_ckpt: tools/ggf_checkpoint_replay.c core/geo_ggf_ckpt.h core/geo_ggf_walk.h core/geo_goldberg_file.h core/tied_dedup.h core/gguf_box.h | $(BUILD)
 	@echo "▶ BUILD  ggf_checkpoint_replay"

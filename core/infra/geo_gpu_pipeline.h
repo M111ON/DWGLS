@@ -38,6 +38,7 @@
 #include "geo_dram_tile.h"
 #include "fibo_spine.h"
 #include "gear_lock.h"
+#include "jet_select.h"
 
 /* ═══════════════════════════════════════════════════════════════════════════
    CONSTANTS
@@ -81,6 +82,11 @@ typedef struct {
     uint32_t     bridges;    /* total bridge events                         */
     uint32_t     chunks;     /* total chunks dispatched                     */
     uint32_t     errors;     /* address/crc errors                          */
+    /* jet_select integration (owner policy 2026-09-24) */
+    uint32_t     wants_ready;    /* wants arrived, not yet coalesced         */
+    uint32_t     wants_coalesced;/* wants merged into a bridge dispatch      */
+    int          jet_strat_last; /* last jet_select pick (JET_C3/B/C1)       */
+    uint32_t     last_merge_tick;/* merge tick of last want                  */
     uint8_t      is_init;    /* 1 = initialized                             */
 } GeoPipelineCtx;
 
@@ -94,6 +100,7 @@ static inline void geo_pipeline_init(GeoPipelineCtx *ctx)
     memset(ctx, 0, sizeof(*ctx));
     fibo_spine_init(&ctx->spine);
     ctx->gear.c144_ref = NULL;
+    ctx->jet_strat_last = -1;
     ctx->is_init = 1;
 }
 
@@ -106,6 +113,29 @@ static inline void geo_pipeline_reset(GeoPipelineCtx *ctx)
     ctx->bridges = 0;
     ctx->chunks  = 0;
     ctx->errors  = 0;
+    ctx->wants_ready = 0;
+    ctx->wants_coalesced = 0;
+    ctx->jet_strat_last = -1;
+    ctx->last_merge_tick = 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   JET WANT — a want arrives at tick t with jet travel L; select strategy
+   ═══════════════════════════════════════════════════════════════════════════
+   Production wire-in of jet_select (owner policy, proven T19-T22).
+   Returns the selected strategy (JET_C3 / JET_B / JET_C1).
+   Records merge tick so callers can group coalesce batches.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+static inline int geo_pipeline_want(GeoPipelineCtx *ctx, uint32_t t, uint32_t L)
+{
+    if (!ctx || !ctx->is_init) return -1;
+    int strat = jet_select((int)GP_PIPE_TICKS, (int)L);
+    ctx->jet_strat_last   = strat;
+    ctx->last_merge_tick  = (uint32_t)jet_merge(strat, (int)GP_PIPE_TICKS,
+                                                (int)t, (int)L);
+    ctx->wants_ready++;
+    return strat;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -225,6 +255,9 @@ static inline uint32_t geo_pipeline_tick(GeoPipelineCtx *ctx)
         uint32_t n = geo_pipeline_build_index_spine(ctx);
         ctx->bridges++;
         ctx->chunks += n;
+        /* coalesce: every ready want joins this bridge dispatch */
+        ctx->wants_coalesced += ctx->wants_ready;
+        ctx->wants_ready = 0;
         gear_gpu_tick(&ctx->gear, n);
         return 1;
     }
@@ -303,6 +336,9 @@ typedef struct {
     uint32_t gear_gpu_ops;
     uint32_t gear_cpu_worlds;
     uint32_t gear_gpu_worlds;
+    uint32_t wants_ready;
+    uint32_t wants_coalesced;
+    int      jet_strat_last;
     FiboSpineStats spine;
 } GeoPipelineStats;
 
@@ -321,7 +357,10 @@ static inline GeoPipelineStats geo_pipeline_stats(const GeoPipelineCtx *ctx)
     s.gear_gpu_ops   = ctx->gear.gpu_ops;
     s.gear_cpu_worlds = ctx->gear.cpu_worlds;
     s.gear_gpu_worlds = ctx->gear.gpu_worlds;
-    s.spine          = fibo_spine_stats(&ctx->spine);
+    s.wants_ready     = ctx->wants_ready;
+    s.wants_coalesced = ctx->wants_coalesced;
+    s.jet_strat_last  = ctx->jet_strat_last;
+    s.spine           = fibo_spine_stats(&ctx->spine);
 
     return s;
 }
@@ -341,6 +380,8 @@ static inline void geo_pipeline_print_stats(const GeoPipelineCtx *ctx)
     printf("  Gear: cpu=%u(%u) gpu=%u(%u)\n",
            s.gear_cpu_ops, s.gear_cpu_worlds,
            s.gear_gpu_ops, s.gear_gpu_worlds);
+    printf("  Jet: wants_ready=%u coalesced=%u strat=%d\n",
+           s.wants_ready, s.wants_coalesced, s.jet_strat_last);
     printf("  Spine: active=%u bridged=%u resident=%u frozen=%u\n",
            s.spine.active_pipes, s.spine.bridged_pipes,
            s.spine.resident_pipes, s.spine.frozen_pipes);
