@@ -4,10 +4,10 @@
 
 ```
 DWGLS-native-fs/
-├── `core/`            # Header-only geometric address space (187 headers)
+├── `core/`            # Header-only geometric address space (188 headers)
 ├── `core/infra/`      # Zero-copy tiles, GPU pipeline, rail sync
 ├── `tools/`           # Pack/serve/bench/probe CLIs (C + Python)
-├── `tests/`           # Tiered C tests (269 sources, `make test-*`)
+├── `tests/`           # Tiered C tests (272 sources, `make test-*`)
 ├── `test/`            # Single legacy C test
 ├── `bench/`           # Deploy and benchmark scripts
 ├── `scripts/`         # Shell staging and deploy helpers
@@ -39,8 +39,8 @@ DWGLS-native-fs/
 
 **`core/infra/`:**
 - Purpose: Hold zero-copy and sync primitives under the geometry layer
-- Contains: DRAM tile, GPU scatter, rail/phase sync, trialty serve headers
-- Key files: `core/infra/geo_dram_tile.h`, `core/infra/geo_gpu_pipeline.h`, `core/infra/geo_rail_sync.h`
+- Contains: DRAM tile, GPU scatter, rail/phase sync, jet phase select, trialty serve headers
+- Key files: `core/infra/geo_dram_tile.h`, `core/infra/geo_gpu_pipeline.h`, `core/infra/geo_rail_sync.h`, `core/infra/jet_select.h`
 
 **`tools/`:**
 - Purpose: Hold every runnable entry point except tests
@@ -59,12 +59,12 @@ DWGLS-native-fs/
 
 **`bench/`:**
 - Purpose: Hold deploy-pack and benchmark scripts
-- Contains: `make_*.py` packagers, `*_bench.c`, `fs_bench.c`
+- Contains: `make_*.py` packagers, `*_bench.c`, `fs_bench.c`, CUDA `gpu_*_bench*.cu` and `gpu_batch_break_even.cu`, `tpu_jax_bench.py`
 
 **`scripts/`:**
 - Purpose: Hold staging and environment helpers
 - Contains: shell and cmd scripts
-- Key files: `scripts/stage-zc2-dlls.cmd`, `scripts/build_termux.sh`, `scripts/deploy_termux.sh`
+- Key files: `scripts/stage-zc2-dlls.cmd`, `scripts/build_termux.sh`, `scripts/deploy_termux.sh`, `scripts/run_gpu_benches.sh`
 
 **`colab-pack/`:**
 - Purpose: Hold LoRA training and remote-GPU deploy bundle
@@ -115,6 +115,8 @@ DWGLS-native-fs/
 **Tests:** `tests/test_tesspack.c`: pack roundtrip proof
 **Tests:** `tests/test_scale_bridge.c`: scale-ring alignment oracle
 **Tests:** `tests/test_kineticfan_field.c`: kineticfan field fit (net-walk + fan24 gear)
+**Tests:** `tests/test_jet_select_prod.c`: `jet_select` policy grid vs independent oracles and `geo_pipeline_tick` wire-in
+**Tests:** `tests/test_jet_coalesce_bench.c`: `geo_pipeline_want` coalesce ratio (sparse/dense/sustained vs bridge dispatch)
 
 ## Naming Conventions
 

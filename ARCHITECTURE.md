@@ -112,11 +112,11 @@
 - Used by: gate probes and LoRA eval harnesses (`tools/lora_accuracy_probe.c`)
 
 **Zero-copy infra:**
-- Purpose: Move bytes without copies. DRAM tile slots, GPU scatter descriptors, rail sync.
-- Location: `core/infra/geo_dram_tile.h`, `core/infra/geo_gpu_pipeline.h`
-- Contains: tile containers, scatter descriptors, phase/rail sync primitives
+- Purpose: Move bytes without copies. DRAM tile slots, GPU scatter descriptors, rail sync, jet merge phase selection.
+- Location: `core/infra/geo_dram_tile.h`, `core/infra/geo_gpu_pipeline.h`, `core/infra/jet_select.h`
+- Contains: tile containers, scatter descriptors, phase/rail sync primitives, `jet_select` strategy picker (C1 in-place, C3 spin at `WIN ≤ 2L-1`, B phase-align) wired into `geo_pipeline_tick`
 - Depends on: core geometry headers
-- Used by: bench tools and `--dram` decode paths
+- Used by: bench tools, `--dram` decode paths, `tests/test_gpu_small_batch.c`, `tests/test_jet_phase_align.c`, `tests/test_jet_select_prod.c`, `tests/test_jet_coalesce_bench.c`
 
 ## Data Flow
 
@@ -237,9 +237,9 @@
 - Responsibilities: Compile and run tiered test groups (`test-smoke`, `test-kis`, `test-tess`, `test-geo`, `test-gguf`, `test-bfs`, `test-cap`, `test-ghost`, `test-kv`, `test-6ico`, `test-fibo`, `test-walk`, `GEO_FAST` including `test_kineticfan_field`, `test_clim_record`, `test_mv_node`, `test_mm_route`, `test_mm_wang`), build serve/pack/bench binaries (`dual-lazy-serve`, `tess-bake`, `tess-gguf-pack`, `tesspack-assemble`, `tess-window-bench`, `moe-bake`, `moe-route`, `graft-*`, `anchor-route`, `kv-delta-proof`, `kv-cold-base`, `kv-cold-delta`, `kv-cold-reanchor`, `kv-cold-prefix`, `kv-cold-chat`)
 
 **Pack and serve CLIs:**
-- Location: `tools/tess_bake.c`, `tools/tess_load.c`, `tools/tess_assemble.c`, `tools/tess_gguf_pack.c`, `tools/tesspack_assemble.c`, `tools/tesspack_server.c`, `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/field_qa.c`, `tools/geo_field_query.c`, `tools/tess_window_bench.c`
+- Location: `tools/tess_bake.c`, `tools/tess_load.c`, `tools/tess_assemble.c`, `tools/tess_gguf_pack.c`, `tools/tesspack_assemble.c`, `tools/tesspack_server.c`, `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/field_qa.c`, `tools/geo_field_query.c`, `tools/tess_window_bench.c`, `tools/gguf_tnames.c`, `tools/bake_q4.c`
 - Triggers: `make <target>` or direct binary invocation with GGUF/pack/field paths
-- Responsibilities: Encode, decode, assemble, pack, serve, query, bench, and verify model bytes
+- Responsibilities: Encode, decode, assemble, pack, quantize, serve, query, bench, and verify model bytes
 
 **MoE CLIs:**
 - Location: `tools/moe_expert_bake.c`, `tools/moe_expert_route.c`, `tools/moe_expert_graft.c`
@@ -247,9 +247,9 @@
 - Responsibilities: Bake experts, route top-K with file-derived dims, rebuild through the zero-copy callback and verify inference
 
 **Cold-KV CLIs:**
-- Location: `tools/kv_cold_base.c`, `tools/kv_cold_delta.c`, `tools/kv_cold_reanchor.c`, `tools/kv_cold_prefix.c`, `tools/kv_cold_chat.c`, `tools/kv_delta_map.c`, `tools/kv_dump_turns.c`
+- Location: `tools/kv_cold_base.c`, `tools/kv_cold_delta.c`, `tools/kv_cold_reanchor.c`, `tools/kv_cold_prefix.c`, `tools/kv_cold_chat.c`, `tools/kv_delta_map.c`, `tools/kv_dump_turns.c`, `tools/kv_quant_3level.c`, `tools/kv_quant_threshold.c`
 - Triggers: `make kv-cold-base`, `make kv-cold-delta`, `make kv-cold-reanchor`, `make kv-cold-prefix`, `make kv-cold-chat`, `make kv-delta-proof`, direct invocation
-- Responsibilities: Hold and resume the F16 base, spill token-suffix deltas, re-anchor cold generation, share prefix bases, and map the one-token footprint
+- Responsibilities: Hold and resume the F16 base, spill token-suffix deltas, re-anchor cold generation, share prefix bases, map the one-token footprint, and measure KV-quant deviation with the 3-level (KL / greedy-match / seeded divergence) gate
 
 **Retrieval CLIs:**
 - Location: `tools/anchor_route_cli.c`, `tools/maze_walk_cli.c`
@@ -267,9 +267,9 @@
 - Responsibilities: Serve browser GUI over the working tree
 
 **Eval probes:**
-- Location: `tools/lora_accuracy_probe.c`, `tools/lora_diverge_probe.c`
-- Triggers: Direct binary invocation with base model and adapter paths
-- Responsibilities: Measure per-token delta, free-run divergence, and paired accuracy
+- Location: `tools/lora_accuracy_probe.c`, `tools/lora_diverge_probe.c`, `tools/merge_probe.c`
+- Triggers: Direct binary invocation with base model, adapter, or single-model paths
+- Responsibilities: Measure per-token delta, free-run divergence, paired accuracy, and issue a mechanical load + greedy-decode graft verdict
 
 ## Error Handling
 
