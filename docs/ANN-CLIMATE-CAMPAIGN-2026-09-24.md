@@ -248,3 +248,15 @@ server on :8095): no-cutoff SINGLE 0.6501 @5244 → OVERLAP **0.7537 (+0.104)**
 cutoff at 512 truncates 999/1000, recall → 0.26 (−0.49); safe at serve scale
 (nent ~ hundreds, budget rarely binds) but default should become `max(512,nent)`
 — one-line fix pending, not applied. Board card #27.
+
+---
+
+## 11. Session-memory wiring (2026-09-25)
+
+Closed kill criterion #1 from section 10: the generate path forwards `rq_sid` to
+the sid-scoped search behind `LZ_MEMORY_CTX=1` (default OFF = byte-identical).
+Scan extracted to shared `lz_mem_search()` (both call sites, no loopback); hits
+prepend as delimited `[session-memory]` block (topk=3); generate stays read-only
+(no LRU touch, conv-log keeps raw prompt). Receipt: FLAG_OFF_IDENTICAL yes,
+CTX_PRESENT yes (3/3 own-session, no cross-session leak), UNKNOWN_SID_CLEAN yes;
+`make test-kv` 9/9. Commit `2d8f326`. Board card #28.
