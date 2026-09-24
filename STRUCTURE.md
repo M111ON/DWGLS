@@ -4,10 +4,10 @@
 
 ```
 DWGLS-native-fs/
-├── `core/`            # Header-only geometric address space (161 headers)
+├── `core/`            # Header-only geometric address space (187 headers)
 ├── `core/infra/`      # Zero-copy tiles, GPU pipeline, rail sync
 ├── `tools/`           # Pack/serve/bench/probe CLIs (C + Python)
-├── `tests/`           # Tiered C tests (259 sources, `make test-*`)
+├── `tests/`           # Tiered C tests (269 sources, `make test-*`)
 ├── `test/`            # Single legacy C test
 ├── `bench/`           # Deploy and benchmark scripts
 ├── `scripts/`         # Shell staging and deploy helpers
@@ -17,7 +17,12 @@ DWGLS-native-fs/
 ├── `beam_addressing/` # Beam timer header
 ├── `collection/`      # Beam/RDH/tw collections
 ├── `build/`           # Compiled binaries and test outputs (generated)
+├── `build_arm/`       # ARM-compiled test binaries (generated)
 ├── `tess_out/`        # `.tess` bake output (generated)
+├── `tess_out_fresh/`  # Fresh `.tess` bake output (generated)
+├── `DWGLS-portable/`  # Portable binary + model bundle
+├── `DWGLS-portable-test/` # Portable bundle test harness
+├── `_recovery/`       # Recovery scripts and gap archives
 ├── `deprecated/`      # Frozen history, never delete
 ├── `Makefile`         # Tiered test runner and CLI builders
 ├── `config.json`      # Runtime configuration
@@ -30,7 +35,7 @@ DWGLS-native-fs/
 **`core/`:**
 - Purpose: Hold the entire address-space implementation as self-contained headers
 - Contains: `*.h` only, `static inline` logic, no compiled library
-- Key files: `core/geo_param_grid.h`, `core/kis_codec_v6.h`, `core/geo_box_axes.h`, `core/geo_tess_container.h`, `core/geofs_mdim.h`, `core/breathing_fs.h`, `core/gguf_reader.h`, `core/gguf_box.h`, `core/scale_bridge.h`, `core/zone_card_v3.h`, `core/moe_expert_addr.h`
+- Key files: `core/geo_param_grid.h`, `core/kis_codec_v6.h`, `core/geo_box_axes.h`, `core/geo_tess_container.h`, `core/clim_record.h`, `core/geofs_mdim.h`, `core/breathing_fs.h`, `core/gguf_reader.h`, `core/gguf_box.h`, `core/scale_bridge.h`, `core/zone_card_v3.h`, `core/moe_expert_addr.h`, `core/geo_net_walk.h`, `core/anchor_route.h`, `core/kv_cold_base.h`, `core/mv_node.h`, `core/mm_route.h`, `core/mm_wang.h`
 
 **`core/infra/`:**
 - Purpose: Hold zero-copy and sync primitives under the geometry layer
@@ -40,7 +45,7 @@ DWGLS-native-fs/
 **`tools/`:**
 - Purpose: Hold every runnable entry point except tests
 - Contains: `*.c` CLIs, `*.py` servers and converters
-- Key files: `tools/tess_bake.c`, `tools/tess_load.c`, `tools/tess_assemble.c`, `tools/tess_gguf_pack.c`, `tools/tesspack_assemble.c`, `tools/tesspack_server.c`, `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/moe_expert_bake.c`, `tools/moe_expert_route.c`, `tools/mdim_cli.c`, `tools/dwgls_server.py`
+- Key files: `tools/tess_bake.c`, `tools/tess_load.c`, `tools/tess_assemble.c`, `tools/tess_gguf_pack.c`, `tools/tesspack_assemble.c`, `tools/tesspack_server.c`, `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/field_qa.c`, `tools/geo_field_query.c`, `tools/tess_window_bench.c`, `tools/moe_expert_bake.c`, `tools/moe_expert_route.c`, `tools/moe_expert_graft.c`, `tools/anchor_route_cli.c`, `tools/maze_walk_cli.c`, `tools/kv_cold_base.c`, `tools/kv_cold_delta.c`, `tools/kv_cold_reanchor.c`, `tools/kv_cold_prefix.c`, `tools/kv_cold_chat.c`, `tools/kv_delta_map.c`, `tools/kv_quant_3level.c`, `tools/kv_quant_threshold.c`, `tools/bake_q4.c`, `tools/gguf_tnames.c`, `tools/merge_probe.c`, `tools/mdim_cli.c`, `tools/dwgls_server.py`
 
 **`tests/`:**
 - Purpose: Hold tiered verification sources compiled on demand by `Makefile`
@@ -70,10 +75,18 @@ DWGLS-native-fs/
 - Contains: old `core/`, `docs/`, `tests/`, `PasteBin/` snapshots
 - Rule: Move dead code here. Never delete it.
 
-**`build/`, `tess_out/`:**
+**`build/`, `build_arm/`, `tess_out/`, `tess_out_fresh/`:**
 - Purpose: Hold generated binaries and baked `.tess` output
 - Contains: compiled test binaries, CLI executables, capo files
 - Rule: Regenerate with `make`. Never hand-edit.
+
+**`DWGLS-portable/`, `DWGLS-portable-test/`:**
+- Purpose: Hold portable binary + model bundle and its test harness
+- Contains: `bin/` executables, `models/` GGUF files
+
+**`_recovery/`:**
+- Purpose: Hold recovery scripts and gap archives
+- Contains: extraction scripts, `gap_*` date-range snapshots
 
 ## Key File Locations
 
@@ -85,8 +98,11 @@ DWGLS-native-fs/
 **Entry Points:** `tools/tesspack_server.c`: OpenAI-compatible HTTP serve from `.tesspack`
 **Entry Points:** `tools/gguf_lazy_serve.c`: single-model lazy mmap serve
 **Entry Points:** `tools/dual_lazy_serve.c`: two-model co-serve with isolated evict
+**Entry Points:** `tools/field_qa.c`: prompt answering from baked field with sourceless delta MoE
+**Entry Points:** `tools/geo_field_query.c`: tensor name to chain position to field bytes
 **Entry Points:** `tools/moe_expert_bake.c`: MoE expert bake by geometric address
 **Entry Points:** `tools/moe_expert_route.c`: top-K expert routing and serve
+**Entry Points:** `tools/moe_expert_graft.c`: MoE expert graft, rebuild GGUF, verify inference
 **Entry Points:** `tools/mdim_cli.c`: GeoFS volume CRUD
 **Entry Points:** `dwgls_gui_server.py`: browser GUI server with `dwgls_gui.html`
 **Configuration:** `config.json`: runtime settings
@@ -98,6 +114,7 @@ DWGLS-native-fs/
 **Core Logic:** `core/gguf_box.h`: llama.cpp graft routing
 **Tests:** `tests/test_tesspack.c`: pack roundtrip proof
 **Tests:** `tests/test_scale_bridge.c`: scale-ring alignment oracle
+**Tests:** `tests/test_kineticfan_field.c`: kineticfan field fit (net-walk + fan24 gear)
 
 ## Naming Conventions
 

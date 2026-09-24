@@ -1,34 +1,73 @@
 {
   "$schema": "https://raw.githubusercontent.com/cortexkit/magic-context/master/assets/magic-context.schema.json",
   "sidekick": {
-    "model": "9router/oc/mimo-v2.5-free",
+    "model": "9router/working",
     "fallback_models": [
-      "9router/openrouter/openrouter/free"
+      "9router/oc/mimo-v2.6-flash-free"
     ]
   },
+  "memory": {
+    "injection_budget_tokens": 9500,
+    "git_commit_indexing": {
+      "enabled": true,
+      "max_commits": 5000
+    }
+  },
   "dreamer": {
-    "opencode": {
-      "model": "9router/oc/mimo-v2.5-free",
-      "fallback_models": [
-        "9router/openrouter/openrouter/free"
-      ]
-    },
     "tasks": {
+      "map-memories": {
+        "schedule": "0 * * * *"
+      },
+      "verify": {
+        "schedule": "0 3 * * *"
+      },
+      "verify-broad": {
+        "schedule": "0 */6 * * *"
+      },
+      "curate": {
+        "schedule": "0 3 * * *"
+      },
+      "compress-cues": {
+        "schedule": "0 4 * * *"
+      },
+      "classify-memories": {
+        "schedule": "0 * * * *  "
+      },
       "retrospective": {
         "schedule": "0 5 * * *"
       },
-      "classify-memories": {
-        "schedule": "0 6 * * *"
-      },
-      "map-memories": {
-        "schedule": ""
-      },
       "maintain-docs": {
         "schedule": "0 3 * * *"
+      },
+      "evaluate-smart-notes": {
+        "schedule": "0 3 * * *"
+      },
+      "review-user-memories": {
+        "schedule": "0 3 * * *"
+      },
+      "promote-primers": {
+        "schedule": "0 3 * * *"
+      },
+      "refresh-primers": {
+        "schedule": "0 3 * * *"
+      }
+    },
+    "opencode": {
+      "model": "9router/oc/mimo-v2.6-flash-free",
+      "tasks": {
+        "map-memories": {
+          "model": "9router/oc/mimo-v2.6-flash-free",
+          "variant": "High"
+        }
       }
     }
   },
-  "memory": {
-    "injection_budget_tokens": 9500
+  "execute_threshold_percentage": 58,
+  "prompt_surface": {
+    "default": "full"
+  },
+  "caveman_text_compression": {
+    "enabled": true,
+    "min_chars": 1500
   }
 }

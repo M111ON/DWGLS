@@ -81,6 +81,7 @@
 #define TESS_SECTION OMAP   0x50414D4Fu  /* "OMAP" */
 #define TESS_SECTION_STAB   0x42415453u  /* "STAB" */
 #define TESS_SECTION_META   0x4154454Du  /* "META" */
+#define TESS_SECTION_CLIM   0x4D494C43u  /* "CLIM" (climate-offset record, core/clim_record.h) */
 
 /* GGML type indices (matching gguf_reader.h) */
 #define TESS_GGML_F32       0u

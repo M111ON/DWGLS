@@ -204,6 +204,122 @@ static void lz_json_escape(char *dst, size_t cap, const char *src) {
 #include "ggml-backend.h"
 #include "../core/gguf_box.h"
 #include "../core/win_cache.h"
+#include "../core/anchor_route.h"
+
+/* ── anchor-bucket routing over kv_index.jsonl ──
+ * Anchors RANK (semantic routing via centroids); geo_jump PLACES (node-sorted
+ * .order perm: bucket-major, members by slot(i)=(i*37)%m). Refresh is
+ * deterministic: same entries → byte-identical anchors + order. */
+#define LZ_ANCH_MIN 16
+#define LZ_ANCH_MAXK 8
+#define LZ_ANCH_PATH "build/kv_anchors.bin"
+#define LZ_ORDER_PATH "build/kv_index.order"
+typedef struct { char sid[64]; char file[256]; int npast; int dim; int anchor; float *vec; } LZEntry;
+
+static int lz_entry_parse(const char *line, LZEntry *e) {
+    memset(e, 0, sizeof(*e));
+    e->anchor = -1;
+    const char *pp = strstr(line, "\"sid\":\"");
+    if (pp) { pp += 7; int ii = 0; while (*pp && *pp != '"' && ii < 63) e->sid[ii++] = *pp++; e->sid[ii] = 0; }
+    pp = strstr(line, "\"file\":\"");
+    if (pp) { pp += 8; int ii = 0; while (*pp && *pp != '"' && ii < 255) e->file[ii++] = *pp++; e->file[ii] = 0; }
+    pp = strstr(line, "\"npast\":");
+    if (pp) e->npast = atoi(pp + 8);
+    pp = strstr(line, "\"anchor\":");
+    if (pp) e->anchor = atoi(pp + 9);
+    pp = strstr(line, "\"vec\":[");
+    if (!pp) return -1;
+    pp += 7;
+    e->vec = (float *)malloc(1024 * sizeof(float));
+    if (!e->vec) return -1;
+    while (*pp && *pp != ']' && e->dim < 1024) {
+        while (*pp == ' ' || *pp == ',') pp++;
+        if (*pp == ']' || !*pp) break;
+        e->vec[e->dim++] = (float)atof(pp);
+        while (*pp && *pp != ',' && *pp != ']') pp++;
+    }
+    return 0;
+}
+static int lz_index_load(LZEntry **out, int *n_out) {
+    *out = NULL; *n_out = 0;
+    FILE *ix = fopen("build/kv_index.jsonl", "r");
+    if (!ix) return 0;
+    int cap = 0, n = 0;
+    LZEntry *a = NULL;
+    char line[16384];
+    while (fgets(line, sizeof(line), ix)) {
+        if (n == cap) {
+            cap = cap ? cap * 2 : 16;
+            LZEntry *na = (LZEntry *)realloc(a, (size_t)cap * sizeof(LZEntry));
+            if (!na) break;
+            a = na;
+        }
+        if (lz_entry_parse(line, &a[n]) == 0) n++;
+    }
+    fclose(ix);
+    *out = a; *n_out = n;
+    return 0;
+}
+static void lz_index_free(LZEntry *a, int n) {
+    if (!a) return;
+    for (int i = 0; i < n; i++) free(a[i].vec);
+    free(a);
+}
+/* refresh anchors + node-sorted order. 0=anchored, 1=brute (too few), -1=err */
+static int lz_anchor_refresh(void) {
+    LZEntry *a = NULL;
+    int n = 0;
+    lz_index_load(&a, &n);
+    int rc = 1;
+    if (n >= LZ_ANCH_MIN && a[0].dim > 0 && a[0].dim <= ANCHR_MAXD) {
+        int dim = a[0].dim, K = n >= 64 ? 8 : n >= 32 ? 4 : 2;
+        if (K > LZ_ANCH_MAXK) K = LZ_ANCH_MAXK;
+        /* train on entries matching head dim */
+        int m = 0;
+        for (int i = 0; i < n; i++) if (a[i].dim == dim) m++;
+        if (m >= K) {
+            float *X = (float *)malloc((size_t)m * dim * sizeof(float));
+            float *C = (float *)malloc((size_t)K * dim * sizeof(float));
+            int *rows = (int *)malloc((size_t)n * sizeof(int));
+            if (X && C && rows) {
+                int w = 0;
+                for (int i = 0; i < n; i++)
+                    if (a[i].dim == dim) { memcpy(X + (size_t)w * dim, a[i].vec, (size_t)dim * sizeof(float)); w++; }
+                if (anch_train(X, m, dim, K, C, NULL) == 0 &&
+                    anch_save(LZ_ANCH_PATH, C, K, dim, n) == 0) {
+                    for (int i = 0; i < n; i++)
+                        rows[i] = (a[i].dim == dim) ? anch_assign(a[i].vec, C, K, dim) : -1;
+                    uint32_t *perm = (uint32_t *)malloc((size_t)n * sizeof(uint32_t));
+                    if (perm && anch_perm(rows, n, K, perm) == 0) {
+                        FILE *of = fopen(LZ_ORDER_PATH, "wb");
+                        if (of) { fwrite(perm, sizeof(uint32_t), (size_t)n, of); fclose(of); }
+                        FILE *ix = fopen("build/kv_index.tmp", "w");
+                        if (ix) {
+                            for (int i = 0; i < n; i++) {
+                                fprintf(ix, "{\"sid\":\"%s\",\"file\":\"%s\",\"npast\":%d,\"anchor\":%d,\"dim\":%d,\"vec\":[",
+                                        a[i].sid, a[i].file, a[i].npast, rows[i], a[i].dim);
+                                for (int vi = 0; vi < a[i].dim; vi++)
+                                    fprintf(ix, "%s%.6g", vi ? "," : "", (double)a[i].vec[vi]);
+                                fprintf(ix, "]}\n");
+                            }
+                            fclose(ix);
+                            remove("build/kv_index.jsonl");
+                            rename("build/kv_index.tmp", "build/kv_index.jsonl");
+                            rc = 0;
+                        }
+                        free(perm);
+                    }
+                }
+            }
+            free(X); free(C); free(rows);
+        }
+    } else if (n < LZ_ANCH_MIN) {
+        remove(LZ_ANCH_PATH);
+        remove(LZ_ORDER_PATH);
+    }
+    lz_index_free(a, n);
+    return rc;
+}
 
 #define WIN        20736u
 #define ALIGN      32u
@@ -674,11 +790,19 @@ static void provide_tensor(struct ggml_tensor *t, void *ud) {
  * Slot keeps a live llama_context + n_past. Same sid → continue where the
  * last turn stopped. Overflow → memory clear + restart at 0. */
 #define LZ_NSLOT 8
+#define LZ_HIST_CAP 2048
+#define LZ_DELTA_REBASE 128
 typedef struct {
     char sid[64];
     struct llama_context *ctx;
     int n_past;
     int used;
+    /* logical-delta bookkeeping: hist[i] = token at position i (valid for
+     * i >= hist_base); sl_base_np/ok = base this slot's prefix matches */
+    llama_token hist[LZ_HIST_CAP];
+    int hist_base;
+    int sl_base_np;
+    int sl_base_ok;
 } LZSlot;
 static LZSlot g_slots[LZ_NSLOT];
 static LZSlot * lz_slot(struct llama_model *model, const char *sid) {
@@ -695,11 +819,81 @@ static LZSlot * lz_slot(struct llama_model *model, const char *sid) {
         g_slots[i].ctx = ctx;
         g_slots[i].n_past = 0;
         g_slots[i].used = 1;
+        g_slots[i].hist_base = 0;
+        g_slots[i].sl_base_np = -1;
+        g_slots[i].sl_base_ok = 0;
         return &g_slots[i];
     }
     return NULL; /* table full */
 }
-/* greedy generation continuing a session (KV intact across turns) */
+/* ── logical-delta helpers: base file + token-id chain ── */
+static uint32_t lz_fnv(const uint8_t *p, size_t n) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 16777619u; }
+    return h;
+}
+static uint32_t lz_file_fnv(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    uint32_t h = 2166136261u;
+    uint8_t buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        for (size_t i = 0; i < n; i++) { h ^= buf[i]; h *= 16777619u; }
+    fclose(f);
+    return h;
+}
+/* meta: npast, size, cksum (FNV-1a of base file), base_npast. -1 = absent */
+static void lz_meta_read(const char *st_meta, int *np, size_t *sz, uint32_t *ck, int *base) {
+    *np = 0; *sz = 0; *ck = 0; *base = -1;
+    FILE *mf = fopen(st_meta, "r");
+    if (!mf) return;
+    unsigned long long ull = 0;
+    unsigned long ck2 = 0;
+    if (fscanf(mf, "npast=%d\nsize=%llu\ncksum=%lu\nbase=%d\n", np, &ull, &ck2, base) < 2) {
+        fseek(mf, 0, SEEK_SET);
+        if (fscanf(mf, "npast=%d\nsize=%llu\n", np, &ull) < 2) *np = 0;
+    }
+    *sz = (size_t)ull; *ck = (uint32_t)ck2;
+    fclose(mf);
+}
+static void lz_meta_write(const char *st_meta, int np, size_t sz, uint32_t ck, int base) {
+    FILE *mf = fopen(st_meta, "w");
+    if (mf) { fprintf(mf, "npast=%d\nsize=%llu\ncksum=%lu\nbase=%d\n", np, (unsigned long long)sz, (unsigned long)ck, base); fclose(mf); }
+}
+/* delta chain: {"base_npast":N,"tokens":[...]} — returns token count or -1 */
+static int lz_delta_read(const char *st_delta, int *base_np, llama_token *toks, int cap) {
+    *base_np = -1;
+    FILE *f = fopen(st_delta, "r");
+    if (!f) return -1;
+    char buf[65536];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    const char *p = strstr(buf, "\"base_npast\":");
+    if (!p) return -1;
+    *base_np = atoi(p + 13);
+    p = strstr(buf, "\"tokens\":[");
+    if (!p) return -1;
+    p += 10;
+    int nt = 0;
+    while (*p && *p != ']' && nt < cap) {
+        while (*p == ' ' || *p == ',') p++;
+        if (*p == ']' || !*p) break;
+        toks[nt++] = (llama_token)strtol(p, NULL, 10);
+        while (*p && *p != ',' && *p != ']') p++;
+    }
+    return nt;
+}
+static int lz_delta_write(const char *st_delta, int base_np, const llama_token *toks, int nt) {
+    FILE *f = fopen(st_delta, "w");
+    if (!f) return -1;
+    fprintf(f, "{\"base_npast\":%d,\"tokens\":[", base_np);
+    for (int i = 0; i < nt; i++) fprintf(f, "%s%d", i ? "," : "", (int)toks[i]);
+    fprintf(f, "]}");
+    fclose(f);
+    return 0;
+}
 static llama_token *generate_session(struct llama_model *model, const char *sid,
                                      const char *prompt, int n_gen, int *n_out,
                                      int *reused) {
@@ -721,6 +915,9 @@ static llama_token *generate_session(struct llama_model *model, const char *sid,
         /* overflow: restart this session (re-prefill from 0) */
         llama_memory_clear(llama_get_memory(ctx), true);
         sl->n_past = 0;
+        sl->hist_base = 0;
+        sl->sl_base_ok = 0;
+        sl->sl_base_np = -1;
     } else if (sl->n_past > 0 && reused) {
         *reused = 1;
     }
@@ -759,6 +956,9 @@ static llama_token *generate_session(struct llama_model *model, const char *sid,
         }
         llama_batch_free(b);
         if (brc != 0) { free(toks); return NULL; }
+        /* hist mirrors KV: record only decoded positions */
+        for (int j = 0; j < chunk && sl->n_past + off + j < LZ_HIST_CAP; j++)
+            sl->hist[sl->n_past + off + j] = toks[off + j];
         off += chunk;
     }
     sl->n_past += np;
@@ -780,6 +980,7 @@ static llama_token *generate_session(struct llama_model *model, const char *sid,
         int brc2 = llama_decode(ctx, b);
         llama_batch_free(b);
         if (brc2 != 0) break;
+        if (sl->n_past < LZ_HIST_CAP) sl->hist[sl->n_past] = best;
         sl->n_past++;
     }
     free(toks);
@@ -1313,37 +1514,58 @@ int main(int argc, char **argv) {
                                         double qn = 0;
                                         for (int qi = 0; qi < qd; qi++) qn += (double)qv[qi] * qv[qi];
                                         qn = sqrt(qn);
-                                        /* scan index, keep top-k */
+                                        /* route via anchors if fresh, else brute scan */
                                         char top_sid[8][64]; char top_file[8][256];
                                         int top_np[8]; double top_sc[8];
                                         for (int ti = 0; ti < 8; ti++) top_sc[ti] = -2;
-                                        FILE *ix = fopen("build/kv_index.jsonl", "r");
-                                        if (ix) {
-                                            char line[16384];
-                                            while (fgets(line, sizeof(line), ix)) {
-                                                char isid[64] = "", ifile[256] = "";
-                                                int inp = 0, idim = 0;
-                                                const char *pp = strstr(line, "\"sid\":\"");
-                                                if (pp) { pp += 7; int ii = 0; while (*pp && *pp != '"' && ii < 63) isid[ii++] = *pp++; isid[ii] = 0; }
-                                                pp = strstr(line, "\"file\":\"");
-                                                if (pp) { pp += 8; int ii = 0; while (*pp && *pp != '"' && ii < 255) ifile[ii++] = *pp++; ifile[ii] = 0; }
-                                                pp = strstr(line, "\"npast\":");
-                                                if (pp) inp = atoi(pp + 8);
-                                                pp = strstr(line, "\"vec\":[");
-                                                float wv[1024]; int wn = 0;
-                                                if (pp) {
-                                                    pp += 7;
-                                                    while (*pp && *pp != ']' && wn < 1024 && wn < qd) {
-                                                        while (*pp == ' ' || *pp == ',') pp++;
-                                                        if (*pp == ']' || !*pp) break;
-                                                        wv[wn++] = (float)atof(pp);
-                                                        while (*pp && *pp != ',' && *pp != ']') pp++;
-                                                    }
+                                        LZEntry *ents = NULL;
+                                        int nent = 0;
+                                        lz_index_load(&ents, &nent);
+                                        char route_mode[16] = "brute";
+                                        int route_bk[8], route_nb = 0, block_reads = 1, items_scored = 0;
+                                        double us_per_item = 0;
+                                        if (ents && qn > 0) {
+                                            /* anchor order: node-sorted .order perm if present */
+                                            uint32_t *ord = (uint32_t *)malloc((nent ? (size_t)nent : 1) * sizeof(uint32_t));
+                                            for (int i = 0; i < nent; i++) ord[i] = (uint32_t)i;
+                                            float C[ANCHR_MAXK * ANCHR_MAXD];
+                                            int adim = 0, antr = 0;
+                                            int K = anch_load(LZ_ANCH_PATH, C, ANCHR_MAXK, ANCHR_MAXD, &adim, &antr);
+                                            int routed = 0;
+                                            if (K > 0 && adim == qd && antr == nent) {
+                                                FILE *of = fopen(LZ_ORDER_PATH, "rb");
+                                                if (of) {
+                                                    size_t nr = fread(ord, sizeof(uint32_t), (size_t)nent, of);
+                                                    fclose(of);
+                                                    if (nr != (size_t)nent)
+                                                        for (int i = 0; i < nent; i++) ord[i] = (uint32_t)i;
                                                 }
-                                                if (wn != qd || qn <= 0) continue;
+                                                int topb = stopk < K ? stopk : K;
+                                                route_nb = anch_route(qv, C, K, qd, topb, route_bk);
+                                                routed = 1;
+                                                snprintf(route_mode, sizeof(route_mode), "%s", "anchor");
+                                            }
+                                            LARGE_INTEGER qf, qt0, qt1;
+                                            QueryPerformanceFrequency(&qf);
+                                            QueryPerformanceCounter(&qt0);
+                                            int in_run = 0;
+                                            block_reads = 0;
+                                            for (int oi = 0; oi < nent; oi++) {
+                                                int ei = (int)ord[oi];
+                                                if (ei < 0 || ei >= nent) continue;
+                                                int sel = 1;
+                                                if (routed) {
+                                                    sel = (ents[ei].anchor < 0);
+                                                    for (int rb = 0; rb < route_nb && !sel; rb++)
+                                                        if (ents[ei].anchor == route_bk[rb]) sel = 1;
+                                                }
+                                                if (!sel) { in_run = 0; continue; }
+                                                if (!in_run) { block_reads++; in_run = 1; }
+                                                if (ents[ei].dim != qd) continue;
                                                 double dot = 0, wn2 = 0;
-                                                for (int wi = 0; wi < qd; wi++) { dot += (double)qv[wi] * wv[wi]; wn2 += (double)wv[wi] * wv[wi]; }
+                                                for (int wi = 0; wi < qd; wi++) { dot += (double)qv[wi] * ents[ei].vec[wi]; wn2 += (double)ents[ei].vec[wi] * ents[ei].vec[wi]; }
                                                 double sc = (wn2 > 0) ? dot / (qn * sqrt(wn2)) : -1;
+                                                items_scored++;
                                                 for (int ti = 0; ti < stopk; ti++) {
                                                     if (sc > top_sc[ti]) {
                                                         for (int tj = stopk - 1; tj > ti; tj--) {
@@ -1353,15 +1575,20 @@ int main(int argc, char **argv) {
                                                             top_np[tj] = top_np[tj-1];
                                                         }
                                                         top_sc[ti] = sc;
-                                                        snprintf(top_sid[ti], 64, "%s", isid);
-                                                        snprintf(top_file[ti], 256, "%s", ifile);
-                                                        top_np[ti] = inp;
+                                                        snprintf(top_sid[ti], 64, "%s", ents[ei].sid);
+                                                        snprintf(top_file[ti], 256, "%s", ents[ei].file);
+                                                        top_np[ti] = ents[ei].npast;
                                                         break;
                                                     }
                                                 }
                                             }
-                                            fclose(ix);
+                                            QueryPerformanceCounter(&qt1);
+                                            if (items_scored > 0 && qf.QuadPart > 0)
+                                                us_per_item = (double)(qt1.QuadPart - qt0.QuadPart) * 1e6 / (double)qf.QuadPart / items_scored;
+                                            free(ord);
+                                            if (!routed) block_reads = nent ? 1 : 0;
                                         }
+                                        lz_index_free(ents, nent);
                                         srlen = snprintf(sresp, sizeof(sresp), "{\"status\":\"ok\",\"hits\":[");
                                         for (int ti = 0; ti < stopk && top_sc[ti] > -2; ti++) {
                                             srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
@@ -1378,7 +1605,15 @@ int main(int argc, char **argv) {
                                                 if (hff) { fprintf(hff, "%ld\n", hc + 1); fclose(hff); }
                                             }
                                         }
-                                        srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen, "]}");
+                                        srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen, "]");
+                                        srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
+                                            ",\"route\":{\"mode\":\"%s\",\"buckets\":[", route_mode);
+                                        for (int rb = 0; rb < route_nb; rb++)
+                                            srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
+                                                "%s%d", rb ? "," : "", route_bk[rb]);
+                                        srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
+                                            "],\"block_reads\":%d,\"items_scored\":%d,\"items_total\":%d,\"us_per_item\":%.2f}}",
+                                            block_reads, items_scored, nent, us_per_item);
                                     } else {
                                         srlen = snprintf(sresp, sizeof(sresp), "{\"error\":\"embed unavailable\"}");
                                     }
@@ -1433,10 +1668,11 @@ int main(int argc, char **argv) {
                                             "%s{\"sid\":\"%s\",\"temp\":\"%s\",\"age_s\":%ld,\"hits\":%ld}",
                                             di ? "," : "", dsid[di], temp, age, hc);
                                         if (do_sweep && strcmp(temp, "EXPIRED") == 0) {
-                                            char mf[256], cf[256];
+                                            char mf[256], cf[256], df[256];
                                             snprintf(mf, sizeof(mf), "build/kv_%s.meta", dsid[di]);
                                             snprintf(cf, sizeof(cf), "build/conv_%s.txt", dsid[di]);
-                                            remove(bf); remove(mf); remove(cf); remove(hf);
+                                            snprintf(df, sizeof(df), "build/kv_%s_delta.json", dsid[di]);
+                                            remove(bf); remove(mf); remove(cf); remove(hf); remove(df);
                                         }
                                     }
                                     lrlen += snprintf(lresp + lrlen, sizeof(lresp) - lrlen, "]}");
@@ -1458,6 +1694,7 @@ int main(int argc, char **argv) {
                                             fclose(ix3); fclose(ix4);
                                             remove("build/kv_index.jsonl");
                                             rename("build/kv_index.tmp", "build/kv_index.jsonl");
+                                            lz_anchor_refresh(); /* keep trained_n in sync after sweep */
                                         } else {
                                             if (ix3) fclose(ix3);
                                             if (ix4) fclose(ix4);
@@ -1496,11 +1733,38 @@ int main(int argc, char **argv) {
                                               (*c >= '0' && *c <= '9') || *c == '_' || *c == '-')) *c = '_';
                                     snprintf(st_path, sizeof(st_path), "build/kv_%s.bin", st_sid);
                                     snprintf(st_meta, sizeof(st_meta), "build/kv_%s.meta", st_sid);
+                                    char st_delta[256];
+                                    snprintf(st_delta, sizeof(st_delta), "build/kv_%s_delta.json", st_sid);
                                     char st_resp[512];
                                     if (is_dump) {
                                         LZSlot *dsl = lz_slot(model, st_sid);
                                         int rlen2 = 0;
                                         if (dsl && dsl->n_past > 0) {
+                                            /* base or logical-delta? base file must exist,
+                                             * match cksum, and chain must stay under rebase */
+                                            int m_np = 0, m_base = -1;
+                                            size_t m_sz = 0;
+                                            uint32_t m_ck = 0;
+                                            int dok = 0;
+                                            lz_meta_read(st_meta, &m_np, &m_sz, &m_ck, &m_base);
+                                            int use_delta = 0;
+                                            if (dsl->sl_base_ok && m_base >= 0 && dsl->sl_base_np == m_base &&
+                                                m_base <= dsl->n_past && dsl->hist_base <= m_base &&
+                                                (dsl->n_past - m_base) < LZ_DELTA_REBASE && m_ck != 0 &&
+                                                lz_file_fnv(st_path) == m_ck)
+                                                use_delta = 1;
+                                            if (use_delta) {
+                                                int nt = dsl->n_past - m_base;
+                                                if (lz_delta_write(st_delta, m_base, dsl->hist + m_base, nt) == 0) {
+                                                    struct _stat dst;
+                                                    long dbytes = (_stat(st_delta, &dst) == 0) ? (long)dst.st_size : 0;
+                                                    rlen2 = snprintf(st_resp, sizeof(st_resp),
+                                                        "{\"status\":\"ok\",\"sid\":\"%s\",\"mode\":\"delta\",\"npast\":%d,\"delta_tokens\":%d,\"bytes\":%ld}",
+                                                        st_sid, dsl->n_past, nt, dbytes);
+                                                    dok = 1;
+                                                } else use_delta = 0;
+                                            }
+                                            if (!use_delta) {
                                             size_t sz = llama_state_seq_get_size_ext(dsl->ctx, 0, 0);
                                             /* page-align the store file */
                                             size_t aligned = (sz + 4095) & ~(size_t)4095;
@@ -1512,13 +1776,23 @@ int main(int argc, char **argv) {
                                             if (sf && got == sz) {
                                                 fwrite(sbuf, 1, aligned, sf);
                                                 fclose(sf);
-                                                FILE *mf = fopen(st_meta, "w");
-                                                if (mf) { fprintf(mf, "npast=%d\nsize=%llu\n", dsl->n_past, (unsigned long long)sz); fclose(mf); }
+                                                uint32_t ck = lz_fnv(sbuf, sz);
+                                                lz_meta_write(st_meta, dsl->n_past, sz, ck, dsl->n_past);
+                                                lz_delta_write(st_delta, dsl->n_past, NULL, 0);
+                                                dsl->sl_base_np = dsl->n_past;
+                                                dsl->sl_base_ok = 1;
                                                 rlen2 = snprintf(st_resp, sizeof(st_resp),
-                                                    "{\"status\":\"ok\",\"sid\":\"%s\",\"bytes\":%llu,\"npast\":%d}",
+                                                    "{\"status\":\"ok\",\"sid\":\"%s\",\"mode\":\"base\",\"bytes\":%llu,\"npast\":%d}",
                                                     st_sid, (unsigned long long)sz, dsl->n_past);
-                                                /* index: embed conversation text → block address */
-                                                {
+                                                dok = 1;
+                                            } else {
+                                                if (sf) fclose(sf);
+                                                rlen2 = snprintf(st_resp, sizeof(st_resp), "{\"error\":\"dump failed\"}");
+                                            }
+                                            free(sbuf);
+                                            } /* base branch */
+                                            /* index: embed conversation text → block address (both modes) */
+                                            if (dok) {
                                                     char cv[256];
                                                     snprintf(cv, sizeof(cv), "build/conv_%s.txt", st_sid);
                                                     FILE *cf = fopen(cv, "rb");
@@ -1546,24 +1820,22 @@ int main(int argc, char **argv) {
                                                             fprintf(ix, "%s%.6g", vi ? "," : "", (double)ev[vi]);
                                                         fprintf(ix, "]}\n");
                                                         fclose(ix);
+                                                        /* anchors rank, geo_jump places: refresh buckets + node-sorted order */
+                                                        lz_anchor_refresh();
                                                     }
-                                                }
-                                            } else {
-                                                if (sf) fclose(sf);
-                                                rlen2 = snprintf(st_resp, sizeof(st_resp), "{\"error\":\"dump failed\"}");
                                             }
-                                            free(sbuf);
                                         } else {
                                             rlen2 = snprintf(st_resp, sizeof(st_resp), "{\"error\":\"empty session\"}");
                                         }
                                         lz_http_send(cli, "200 OK", "application/json", st_resp, rlen2);
                                     } else {
-                                        /* restore: load file into session slot */
+                                        /* restore: base file + token-id delta chain */
                                         FILE *sf = fopen(st_path, "rb");
-                                        FILE *mf = fopen(st_meta, "r");
-                                        int rlen2 = 0, m_np = 0;
+                                        int rlen2 = 0, m_np = 0, m_base = -1;
                                         size_t m_sz = 0;
-                                        if (mf) { fscanf(mf, "npast=%d\nsize=%llu\n", &m_np, (unsigned long long *)&m_sz); fclose(mf); }
+                                        uint32_t m_ck = 0;
+                                        lz_meta_read(st_meta, &m_np, &m_sz, &m_ck, &m_base);
+                                        if (m_base < 0) m_base = m_np; /* legacy meta: dump was full */
                                         if (sf && m_sz > 0) {
                                             fseek(sf, 0, SEEK_END);
                                             long fz = ftell(sf);
@@ -1573,14 +1845,58 @@ int main(int argc, char **argv) {
                                             fclose(sf);
                                             LZSlot *rsl = lz_slot(model, st_sid);
                                             size_t put = 0;
-                                            if (rsl && sbuf && rd >= m_sz)
+                                            if (rsl && sbuf && rd >= m_sz) {
+                                                if (m_ck != 0 && lz_fnv(sbuf, m_sz) != m_ck) {
+                                                    free(sbuf);
+                                                    rlen2 = snprintf(st_resp, sizeof(st_resp), "{\"error\":\"base corrupt\"}");
+                                                    lz_http_send(cli, "200 OK", "application/json", st_resp, rlen2);
+                                                    sock_close(cli); continue;
+                                                }
+                                                llama_memory_clear(llama_get_memory(rsl->ctx), true);
                                                 put = llama_state_seq_set_data_ext(rsl->ctx, sbuf, m_sz, 0, 0);
+                                            }
                                             free(sbuf);
                                             if (put == m_sz && m_sz > 0) {
                                                 rsl->n_past = m_np;
-                                                rlen2 = snprintf(st_resp, sizeof(st_resp),
-                                                    "{\"status\":\"ok\",\"sid\":\"%s\",\"bytes\":%llu,\"npast\":%d}",
-                                                    st_sid, (unsigned long long)put, m_np);
+                                                rsl->hist_base = m_np;
+                                                rsl->sl_base_np = m_np;
+                                                rsl->sl_base_ok = 1;
+                                                /* apply logical delta: decode tokens at [base, ...) */
+                                                llama_token dtoks[LZ_HIST_CAP];
+                                                int dbase = -1;
+                                                int ndt = lz_delta_read(st_delta, &dbase, dtoks, LZ_HIST_CAP);
+                                                int applied = 0, dskipped = 0;
+                                                if (ndt > 0 && dbase == m_np) {
+                                                    int okd = 1;
+                                                    for (int off = 0; off < ndt && okd; ) {
+                                                        int chunk = ndt - off > 512 ? 512 : ndt - off;
+                                                        struct llama_batch b = llama_batch_init(chunk, 0, 1);
+                                                        for (int j = 0; j < chunk; j++) {
+                                                            b.token[j] = dtoks[off + j];
+                                                            b.pos[j] = rsl->n_past + j;
+                                                            b.n_seq_id[j] = 1;
+                                                            b.seq_id[j][0] = 0;
+                                                            b.logits[j] = 0;
+                                                        }
+                                                        b.n_tokens = chunk;
+                                                        if (llama_decode(rsl->ctx, b) != 0) okd = 0;
+                                                        llama_batch_free(b);
+                                                        if (okd) {
+                                                            for (int j = 0; j < chunk && rsl->n_past + j < LZ_HIST_CAP; j++)
+                                                                rsl->hist[rsl->n_past + j] = dtoks[off + j];
+                                                            rsl->n_past += chunk;
+                                                            off += chunk;
+                                                        }
+                                                    }
+                                                    applied = okd ? ndt : -1;
+                                                } else if (ndt > 0) dskipped = 1;
+                                                if (applied >= 0)
+                                                    rlen2 = snprintf(st_resp, sizeof(st_resp),
+                                                        "{\"status\":\"ok\",\"sid\":\"%s\",\"mode\":\"%s\",\"bytes\":%llu,\"npast\":%d,\"delta_applied\":%d,\"delta_skipped\":%d}",
+                                                        st_sid, applied > 0 ? "delta" : "base",
+                                                        (unsigned long long)put, rsl->n_past, applied, dskipped);
+                                                else
+                                                    rlen2 = snprintf(st_resp, sizeof(st_resp), "{\"error\":\"delta apply failed\"}");
                                             } else {
                                                 rlen2 = snprintf(st_resp, sizeof(st_resp), "{\"error\":\"restore failed\"}");
                                             }
@@ -1709,6 +2025,9 @@ int main(int argc, char **argv) {
                                             g_slots[si2].ctx = NULL;
                                             g_slots[si2].used = 0;
                                             g_slots[si2].n_past = 0;
+                                            g_slots[si2].hist_base = 0;
+                                            g_slots[si2].sl_base_ok = 0;
+                                            g_slots[si2].sl_base_np = -1;
                                         }
                                     }
                                 }
