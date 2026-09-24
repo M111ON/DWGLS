@@ -91,6 +91,20 @@ static double rss_mb(void) {
 static int load_pack_tensor(TensorHook *h, const char *name, uint32_t cell_size,
                             uint64_t total_cells, uint8_t *dst) {
     TESS_PackIndex *pi = h->pi;
+    /* ONION path first: F32/F16 raw entries (cid 0xFFFFFFFF, no scatter) */
+    {
+        const uint8_t *onion = NULL;
+        uint32_t onion_sz = 0;
+        if (tess_pack_find_onion(pi, name, &onion, &onion_sz) == 0) {
+            uint64_t need = total_cells * (uint64_t)cell_size;
+            if (onion_sz == need) {
+                memcpy(dst, onion, onion_sz);
+                h->b_pack += onion_sz;
+                return 1;
+            }
+            return -5;
+        }
+    }
     uint32_t capo_count = 0;
     {
         const uint8_t *cur = pi->base + pi->index_offset;
