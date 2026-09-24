@@ -74,7 +74,7 @@
 - Location: `core/gguf_reader.h`, `core/gguf_index.h`, `core/gguf_box.h`
 - Contains: bulk mmap reader, tensor/offset/size/dtype tables, `GGUFBox` routing table, mock GGUF header
 - Depends on: `core/gnn_fan24_model.h`, `core/hyp_fusion.h`
-- Used by: `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/gguf_graft_generate.c`, `tools/geo_rid_graft.c`, `tools/tesspack_server.c`
+- Used by: `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/gguf_graft_generate.c`, `tools/geo_rid_graft.c`, `tools/tesspack_server.c`, `tools/probe_moe_assemble.c`
 
 **KV and ghost placement:**
 - Purpose: Route live KV-cache and small-slot data through geometric addresses. Hold one F16 base clipboard and rebuild live state by resume plus teacher-decode token suffix.
@@ -116,7 +116,7 @@
 - Location: `core/infra/geo_dram_tile.h`, `core/infra/geo_gpu_pipeline.h`, `core/infra/jet_select.h`
 - Contains: tile containers, scatter descriptors, phase/rail sync primitives, `jet_select` strategy picker (C1 in-place, C3 spin at `WIN ≤ 2L-1`, B phase-align) wired into `geo_pipeline_tick`
 - Depends on: core geometry headers
-- Used by: bench tools, `--dram` decode paths, `tests/test_gpu_small_batch.c`, `tests/test_jet_phase_align.c`, `tests/test_jet_select_prod.c`, `tests/test_jet_coalesce_bench.c`
+- Used by: bench tools, `--dram` decode paths, `tests/test_gpu_small_batch.c`, `tests/test_jet_select_prod.c`, `tests/test_jet_coalesce_bench.c` (selector math is re-derived independently in `tests/test_jet_phase_align.c`)
 
 ## Data Flow
 
@@ -134,7 +134,7 @@
 4. Serve session slots with per-sid KV reuse (`kv_reused`), page-aligned KV dump/restore, semantic index search, and lifecycle sweep — `tools/gguf_lazy_serve.c` (`POST /v1/state/search`, `GET /v1/state/lifecycle`, `/v1/state/dump`, `/v1/state/restore`, `POST /v1/route`)
 5. Route hard prompts upstream with the difficulty scorer and verbatim `TIER_UPSTREAM` forward; expand fused `attn_qkv` into F32 Q/K/V splits through `split_carve` — `tools/gguf_lazy_serve.c`
 6. Co-serve two models in one process with per-model fields, layout verification, and isolated evict — `tools/dual_lazy_serve.c`
-7. Serve OpenAI-compatible HTTP directly from `.tesspack` with `TESS_NGPU` GPU-layer control — `tools/tesspack_server.c`
+7. Serve OpenAI-compatible HTTP directly from `.tesspack` with `TESS_NGPU` GPU-layer control, resolving each tensor through the ONION path first (raw F32/F16 entry at `capo_id == 0xFFFFFFFF`, exact-size `memcpy`, no scatter) before falling back to per-capo scatter decode — `tools/tesspack_server.c`
 8. Answer prompts straight from a baked field with sourceless delta MoE decoding and no source GGUF — `tools/field_qa.c`
 9. Resolve tensor name to chain position to bytes from the field mmap with no llama.cpp — `tools/geo_field_query.c`
 
@@ -267,9 +267,9 @@
 - Responsibilities: Serve browser GUI over the working tree
 
 **Eval probes:**
-- Location: `tools/lora_accuracy_probe.c`, `tools/lora_diverge_probe.c`, `tools/merge_probe.c`
-- Triggers: Direct binary invocation with base model, adapter, or single-model paths
-- Responsibilities: Measure per-token delta, free-run divergence, paired accuracy, and issue a mechanical load + greedy-decode graft verdict
+- Location: `tools/lora_accuracy_probe.c`, `tools/lora_diverge_probe.c`, `tools/merge_probe.c`, `tools/probe_moe_assemble.c`
+- Triggers: Direct binary invocation with base model, adapter, single-model paths, or a GGUF + `.tesspack` pair
+- Responsibilities: Measure per-token delta, free-run divergence, paired accuracy, issue a mechanical load + greedy-decode graft verdict, and replicate `tesspack_server` assemble decisions per tensor with a printed `rc` receipt for every failing tensor
 
 ## Error Handling
 

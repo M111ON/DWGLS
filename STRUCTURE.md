@@ -12,6 +12,7 @@ DWGLS-native-fs/
 ├── `bench/`           # Deploy and benchmark scripts
 ├── `scripts/`         # Shell staging and deploy helpers
 ├── `docs/`            # Design notes, handoffs, specs, excalidraw masters
+├── `experiments/`     # Archived probe campaigns, one dated folder per campaign
 ├── `graft/`           # Local graft cache and index (git-ignored)
 ├── `colab-pack/`      # Colab LoRA training pack and deploy scripts
 ├── `beam_addressing/` # Beam timer header
@@ -45,7 +46,7 @@ DWGLS-native-fs/
 **`tools/`:**
 - Purpose: Hold every runnable entry point except tests
 - Contains: `*.c` CLIs, `*.py` servers and converters
-- Key files: `tools/tess_bake.c`, `tools/tess_load.c`, `tools/tess_assemble.c`, `tools/tess_gguf_pack.c`, `tools/tesspack_assemble.c`, `tools/tesspack_server.c`, `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/field_qa.c`, `tools/geo_field_query.c`, `tools/tess_window_bench.c`, `tools/moe_expert_bake.c`, `tools/moe_expert_route.c`, `tools/moe_expert_graft.c`, `tools/anchor_route_cli.c`, `tools/maze_walk_cli.c`, `tools/kv_cold_base.c`, `tools/kv_cold_delta.c`, `tools/kv_cold_reanchor.c`, `tools/kv_cold_prefix.c`, `tools/kv_cold_chat.c`, `tools/kv_delta_map.c`, `tools/kv_quant_3level.c`, `tools/kv_quant_threshold.c`, `tools/bake_q4.c`, `tools/gguf_tnames.c`, `tools/merge_probe.c`, `tools/mdim_cli.c`, `tools/dwgls_server.py`
+- Key files: `tools/tess_bake.c`, `tools/tess_load.c`, `tools/tess_assemble.c`, `tools/tess_gguf_pack.c`, `tools/tesspack_assemble.c`, `tools/tesspack_server.c`, `tools/probe_moe_assemble.c`, `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/field_qa.c`, `tools/geo_field_query.c`, `tools/tess_window_bench.c`, `tools/moe_expert_bake.c`, `tools/moe_expert_route.c`, `tools/moe_expert_graft.c`, `tools/anchor_route_cli.c`, `tools/maze_walk_cli.c`, `tools/kv_cold_base.c`, `tools/kv_cold_delta.c`, `tools/kv_cold_reanchor.c`, `tools/kv_cold_prefix.c`, `tools/kv_cold_chat.c`, `tools/kv_delta_map.c`, `tools/kv_quant_3level.c`, `tools/kv_quant_threshold.c`, `tools/bake_q4.c`, `tools/gguf_tnames.c`, `tools/merge_probe.c`, `tools/mdim_cli.c`, `tools/dwgls_server.py`
 
 **`tests/`:**
 - Purpose: Hold tiered verification sources compiled on demand by `Makefile`
@@ -55,11 +56,16 @@ DWGLS-native-fs/
 **`docs/`:**
 - Purpose: Hold design records, handoffs, specs, and visual masters
 - Contains: `*.md` notes, `*.excalidraw` sources, rendered `*.svg`
-- Key files: `docs/PIPELINE-MAP.md`, `docs/LEGACY_TESTS.md`, `docs/HYBRID-GATE-DOCTRINE-2026-09-18.md`, `docs/DUALWORLD-GENESIS-2026-09-18.md`
+- Key files: `docs/PIPELINE-MAP.md`, `docs/LEGACY_TESTS.md`, `docs/HYBRID-GATE-DOCTRINE-2026-09-18.md`, `docs/DUALWORLD-GENESIS-2026-09-18.md`, `docs/ANN-CLIMATE-CAMPAIGN-2026-09-24.md`
+
+**`experiments/`:**
+- Purpose: Hold dated probe campaigns as archived source outside the build path
+- Contains: `experiments/ann-climate-2026-09-24/sift/*.c` SIFT probes, `experiments/ann-climate-2026-09-24/chatmap/*.py` chatmap experiments, campaign record in `docs/ANN-CLIMATE-CAMPAIGN-2026-09-24.md`
+- Rule: Archive a probe campaign here under `<topic>-YYYY-MM-DD/` once its record lands in `docs/`.
 
 **`bench/`:**
 - Purpose: Hold deploy-pack and benchmark scripts
-- Contains: `make_*.py` packagers, `*_bench.c`, `fs_bench.c`, CUDA `gpu_*_bench*.cu` and `gpu_batch_break_even.cu`, `tpu_jax_bench.py`
+- Contains: `make_*.py` packagers, `*_bench.c`, `fs_bench.c`, `gpu_bandwidth_bench.cu`, `gpu_launch_bench.cu`, `gpu_batch_break_even.cu`, `tpu_jax_bench.py`
 
 **`scripts/`:**
 - Purpose: Hold staging and environment helpers
@@ -132,7 +138,8 @@ DWGLS-native-fs/
 **New codec version:** `core/kis_codec_v<name>.h` — keep slot math integer-only, preserve 20736 grid constants
 **New pack/serve CLI:** `tools/<name>.c` — include from `core/` with `-Icore`, add a `Makefile` target beside the existing pack rules
 **New probe:** `tools/<name>_probe.c` — follow `tools/lora_accuracy_probe.c` shape: parse args, run on real model bytes, print run receipts
+**New experiment:** `experiments/<topic>-YYYY-MM-DD/` — keep probe source that is out of the build path; record findings in `docs/<TOPIC>-YYYY-MM-DD.md`
 **New test:** `tests/test_<name>.c` — derive expectations from spec or math, add the name to the correct `Makefile` group (`KIS`, `TESS`, `GEO`, `GGUF`, `BFS`, `CAP`, `GHOST`, `KV`, `SIXICO`, `FIBO`, `WALK`)
-**New bench:** `bench/<name>.c` or `tools/<name>_bench.c` — follow `tools/geo_speed_bench.c` shape
+**New bench:** `bench/<name>.c`, `bench/<name>.cu`, or `tools/<name>_bench.c` — follow `tools/geo_speed_bench.c` shape; run the CUDA GPU benches through `scripts/run_gpu_benches.sh`
 **New docs:** `docs/<TOPIC>-YYYY-MM-DD.md` — record runs and receipts, never restate code without verifying it
 **Shared infra:** `core/infra/<name>.h` — use for zero-copy, sync, and pipeline primitives shared across tools
