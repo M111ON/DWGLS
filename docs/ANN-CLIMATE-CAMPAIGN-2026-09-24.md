@@ -2,7 +2,7 @@
 
 Full record of one night: from "maze vs HNSW" to the climate doctrine.
 Every number below was produced on this box and reproduced by the main agent.
-Code: `tools/probe_*.c` (SIFT, C) and `I:/tools/chat-pool/probes/e*.py` (chat map, Python).
+Code: `experiments/ann-climate-2026-09-24/sift/probe_*.c` (SIFT, C) and `experiments/ann-climate-2026-09-24/chatmap/e*.py` (chat map, Python; runnable originals in `I:/tools/chat-pool/probes/`).
 Board cards #5, #12–#23. Memory: #6233–#6236.
 
 > Same-night side quest (out of scope here, recorded for completeness):
