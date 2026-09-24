@@ -3,6 +3,8 @@
  *
  * Flow mirrors gguf_lazy_serve.c /v1/state/search: train → assign → perm →
  * save/load → route top-b → perm-walk score routed buckets → extents.
+ * Plus champion overlap: every entry in its reference top-2 buckets
+ * (P2) + save_atomic byte-identity + checksum-verified roundtrip.
  * Oracle: brute-force full qsort ranking recomputed inline in the test.
  *
  * BUILD: gcc -O2 -Wall -I. -Icore -o build/test_anchor_routed.exe tests/test_anchor_routed.c -lm
@@ -35,6 +37,84 @@ static double cos_sim(const float *a, const float *b, int d) {
     double dot = 0, na = 0, nb = 0;
     for (int j = 0; j < d; j++) { dot += (double)a[j] * b[j]; na += (double)a[j] * a[j]; nb += (double)b[j] * b[j]; }
     return (na > 0 && nb > 0) ? dot / (sqrt(na) * sqrt(nb)) : -1;
+}
+
+/* ── champion overlap (P2): every entry posted in its top-2 buckets ──
+ * Oracle: full K-way squared-L2 ranking recomputed inline (spec: nearest-
+ * centroid L2), never via anch_route. Data is hand-set literals (no RNG).
+ * Determinism: route twice → identical; save twice (direct + atomic) →
+ * byte-identical files; tamper → checksum reject (-3). */
+static void t_overlap_top2(void) {
+    float X[8 * 4] = {
+        0.10f, 0.00f, -0.10f, 0.05f,  -0.05f, 0.10f, 0.00f, -0.05f,
+        0.00f, -0.10f, 0.05f, 0.00f,   0.05f, 0.05f, -0.05f, 0.10f,
+        10.10f, 9.90f, 10.00f, 10.05f,  9.95f, 10.10f, 10.05f, 9.90f,
+        10.00f, 10.00f, 9.90f, 10.10f, 10.05f, 9.95f, 10.10f, 10.00f };
+    float C[2 * 4];
+    int lab[8];
+    check(anch_train(X, 8, 4, 2, C, lab) == 0, "overlap: train K=2 on hand-set 8x4");
+    int allok = 1, detok = 1;
+    for (int i = 0; i < 8; i++) {
+        /* reference ranking: all-K squared L2 + full sort */
+        double d[2];
+        int id[2] = { 0, 1 };
+        for (int k = 0; k < 2; k++) {
+            double s = 0;
+            for (int j = 0; j < 4; j++) { double e = X[i * 4 + j] - C[k * 4 + j]; s += e * e; }
+            d[k] = s;
+        }
+        if (d[1] < d[0]) { int t = id[0]; id[0] = id[1]; id[1] = t; }
+        int out[2] = { -9, -9 };
+        int nb = anch_route(X + i * 4, C, 2, 4, 2, out);
+        if (nb != 2) { allok = 0; continue; }
+        if (out[0] != id[0] || out[1] != id[1]) allok = 0;   /* exact order, K=2 */
+        if (out[0] == out[1]) allok = 0;                      /* exactly two distinct buckets */
+        if (out[0] < 0 || out[0] > 1 || out[1] < 0 || out[1] > 1) allok = 0;
+        if (anch_assign(X + i * 4, C, 2, 4) != id[0]) allok = 0; /* top-1 contract kept */
+        int out2[2];
+        anch_route(X + i * 4, C, 2, 4, 2, out2);
+        if (out2[0] != out[0] || out2[1] != out[1]) detok = 0;
+    }
+    check(allok, "overlap: every entry in exactly its reference top-2 buckets");
+    check(detok, "overlap: routing deterministic across calls");
+    /* save/load roundtrip: direct vs atomic byte-identical + checksum-verified */
+    const char *pa = "build/test_overlap_a.bin", *pb = "build/test_overlap_b.bin";
+    int ok = anch_save(pa, C, 2, 4, 8) == 0 && anch_save_atomic(pb, C, 2, 4, 8) == 0;
+    if (ok) {
+        FILE *fa = fopen(pa, "rb"), *fb = fopen(pb, "rb");
+        ok = (fa && fb);
+        if (ok) {
+            fseek(fa, 0, SEEK_END); fseek(fb, 0, SEEK_SET);
+            long za = ftell(fa), zb;
+            fseek(fa, 0, SEEK_SET);
+            fseek(fb, 0, SEEK_END); zb = ftell(fb); fseek(fb, 0, SEEK_SET);
+            ok = (za == zb && za == 20 + 2 * 4 * 4);
+            if (ok) {
+                char ba[64], bb[64];
+                ok = (fread(ba, 1, (size_t)za, fa) == (size_t)za &&
+                      fread(bb, 1, (size_t)zb, fb) == (size_t)zb &&
+                      memcmp(ba, bb, (size_t)za) == 0);
+            }
+        }
+        if (fa) fclose(fa);
+        if (fb) fclose(fb);
+    }
+    check(ok, "overlap: save vs save_atomic byte-identical (5-u32 hdr + K*dim f32)");
+    float L[2 * 4];
+    int ld = 0, ln = 0;
+    ok = (anch_load(pa, L, 64, 1024, &ld, &ln) == 2 && ld == 4 && ln == 8 &&
+          memcmp(C, L, sizeof(C)) == 0);
+    if (ok) { /* tamper one centroid byte → FNV-1a checksum reject */
+        FILE *f = fopen(pa, "r+b");
+        fseek(f, 20, SEEK_SET);
+        int b = fgetc(f);
+        fseek(f, 20, SEEK_SET);
+        fputc(b ^ 0xFF, f);
+        fclose(f);
+        ok = (anch_load(pa, L, 64, 1024, NULL, NULL) == -3);
+    }
+    check(ok, "overlap: load roundtrip + tamper checksum-reject");
+    remove(pa); remove(pb);
 }
 
 int main(void) {
@@ -86,6 +166,7 @@ int main(void) {
     /* routed top-3 recall vs brute top-3: all routed hits must be brute top-8 */
     check(best - bs[bo[0]] < 1e-9 && best > bs[bo[PER]], "routed best beats brute rank-9");
     remove("build/test_routed.bin");
+    t_overlap_top2();
     printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

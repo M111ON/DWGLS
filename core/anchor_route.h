@@ -190,6 +190,19 @@ static inline int anch_save(const char *path, const float *C, int K, int dim, in
     return ok ? 0 : -1;
 }
 
+/* Atomic variant: byte-identical to anch_save, written to path.tmp then
+ * renamed over path (readers never see a half-written file; after a crash
+ * either the old or the new complete file survives). 0=ok, -1=err. */
+static inline int anch_save_atomic(const char *path, const float *C, int K, int dim, int ntr) {
+    if (!path || !C || K <= 0 || dim <= 0) return -1;
+    char tmp[512];
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) return -1;
+    if (anch_save(tmp, C, K, dim, ntr) != 0) { remove(tmp); return -1; }
+    remove(path);
+    if (rename(tmp, path) != 0) { remove(tmp); return -1; }
+    return 0;
+}
+
 /* Loads into caller buffer C (cap K*dim floats). Returns K or negative. */
 static inline int anch_load(const char *path, float *C, int capK, int capD,
                             int *dim_out, int *ntr_out) {

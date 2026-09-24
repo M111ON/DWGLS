@@ -209,16 +209,22 @@ static void lz_json_escape(char *dst, size_t cap, const char *src) {
 /* ── anchor-bucket routing over kv_index.jsonl ──
  * Anchors RANK (semantic routing via centroids); geo_jump PLACES (node-sorted
  * .order perm: bucket-major, members by slot(i)=(i*37)%m). Refresh is
- * deterministic: same entries → byte-identical anchors + order. */
+ * deterministic: same entries → byte-identical anchors + order.
+ * Champion (docs/ANN-CLIMATE-CAMPAIGN-2026-09-24.md §2 P2 + §5 E3/E5):
+ * top-2 overlap posting (P2 double-list win) + single-round cutoff (G
+ * survivor) + always-regrow hook (stale anchors die ~0.5 day). */
 #define LZ_ANCH_MIN 16
 #define LZ_ANCH_MAXK 8
+#define LZ_OVERLAP_TOPB 2
+#define LZ_SEARCH_BUDGET_DEF 512
 #define LZ_ANCH_PATH "build/kv_anchors.bin"
 #define LZ_ORDER_PATH "build/kv_index.order"
-typedef struct { char sid[64]; char file[256]; int npast; int dim; int anchor; float *vec; } LZEntry;
+typedef struct { char sid[64]; char file[256]; int npast; int dim; int anchor; int anchor2; float *vec; } LZEntry;
 
 static int lz_entry_parse(const char *line, LZEntry *e) {
     memset(e, 0, sizeof(*e));
     e->anchor = -1;
+    e->anchor2 = -1;
     const char *pp = strstr(line, "\"sid\":\"");
     if (pp) { pp += 7; int ii = 0; while (*pp && *pp != '"' && ii < 63) e->sid[ii++] = *pp++; e->sid[ii] = 0; }
     pp = strstr(line, "\"file\":\"");
@@ -227,6 +233,8 @@ static int lz_entry_parse(const char *line, LZEntry *e) {
     if (pp) e->npast = atoi(pp + 8);
     pp = strstr(line, "\"anchor\":");
     if (pp) e->anchor = atoi(pp + 9);
+    pp = strstr(line, "\"anchor2\":");
+    if (pp) e->anchor2 = atoi(pp + 10);
     pp = strstr(line, "\"vec\":[");
     if (!pp) return -1;
     pp += 7;
@@ -265,11 +273,14 @@ static void lz_index_free(LZEntry *a, int n) {
     for (int i = 0; i < n; i++) free(a[i].vec);
     free(a);
 }
-/* refresh anchors + node-sorted order. 0=anchored, 1=brute (too few), -1=err */
-static int lz_anchor_refresh(void) {
+/* refresh anchors + node-sorted order. 0=anchored, 1=brute (too few), -1=err.
+ * Kout/nout report K + entry count for the regrow hook (may be NULL). */
+static int lz_anchor_refresh(int *Kout, int *nout) {
+    if (Kout) *Kout = 0;
     LZEntry *a = NULL;
     int n = 0;
     lz_index_load(&a, &n);
+    if (nout) *nout = n;
     int rc = 1;
     if (n >= LZ_ANCH_MIN && a[0].dim > 0 && a[0].dim <= ANCHR_MAXD) {
         int dim = a[0].dim, K = n >= 64 ? 8 : n >= 32 ? 4 : 2;
@@ -281,37 +292,57 @@ static int lz_anchor_refresh(void) {
             float *X = (float *)malloc((size_t)m * dim * sizeof(float));
             float *C = (float *)malloc((size_t)K * dim * sizeof(float));
             int *rows = (int *)malloc((size_t)n * sizeof(int));
-            if (X && C && rows) {
+            int *rows2 = (int *)malloc((size_t)n * sizeof(int));
+            if (X && C && rows && rows2) {
                 int w = 0;
                 for (int i = 0; i < n; i++)
                     if (a[i].dim == dim) { memcpy(X + (size_t)w * dim, a[i].vec, (size_t)dim * sizeof(float)); w++; }
                 if (anch_train(X, m, dim, K, C, NULL) == 0 &&
-                    anch_save(LZ_ANCH_PATH, C, K, dim, n) == 0) {
-                    for (int i = 0; i < n; i++)
-                        rows[i] = (a[i].dim == dim) ? anch_assign(a[i].vec, C, K, dim) : -1;
-                    uint32_t *perm = (uint32_t *)malloc((size_t)n * sizeof(uint32_t));
-                    if (perm && anch_perm(rows, n, K, perm) == 0) {
-                        FILE *of = fopen(LZ_ORDER_PATH, "wb");
-                        if (of) { fwrite(perm, sizeof(uint32_t), (size_t)n, of); fclose(of); }
-                        FILE *ix = fopen("build/kv_index.tmp", "w");
-                        if (ix) {
-                            for (int i = 0; i < n; i++) {
-                                fprintf(ix, "{\"sid\":\"%s\",\"file\":\"%s\",\"npast\":%d,\"anchor\":%d,\"dim\":%d,\"vec\":[",
-                                        a[i].sid, a[i].file, a[i].npast, rows[i], a[i].dim);
-                                for (int vi = 0; vi < a[i].dim; vi++)
-                                    fprintf(ix, "%s%.6g", vi ? "," : "", (double)a[i].vec[vi]);
-                                fprintf(ix, "]}\n");
-                            }
-                            fclose(ix);
-                            remove("build/kv_index.jsonl");
-                            rename("build/kv_index.tmp", "build/kv_index.jsonl");
-                            rc = 0;
-                        }
-                        free(perm);
+                    anch_save_atomic(LZ_ANCH_PATH, C, K, dim, n) == 0) {
+                    /* load-back verify: FNV-1a checksum + shape + byte-identity */
+                    int okv = 0;
+                    float *V = (float *)malloc((size_t)K * dim * sizeof(float));
+                    if (V) {
+                        int vd = 0, vn = 0;
+                        okv = (anch_load(LZ_ANCH_PATH, V, K, dim, &vd, &vn) == K &&
+                               vd == dim && vn == n &&
+                               memcmp(V, C, (size_t)K * dim * sizeof(float)) == 0);
+                        free(V);
                     }
+                    if (okv) {
+                        /* P2 champion: every entry posted in its top-2 buckets */
+                        int t2[LZ_ANCH_MAXK];
+                        for (int i = 0; i < n; i++) {
+                            if (a[i].dim != dim) { rows[i] = -1; rows2[i] = -1; continue; }
+                            int nb = anch_route(a[i].vec, C, K, dim, LZ_OVERLAP_TOPB, t2);
+                            rows[i] = nb > 0 ? t2[0] : -1;
+                            rows2[i] = nb > 1 ? t2[1] : -1;
+                        }
+                        uint32_t *perm = (uint32_t *)malloc((size_t)n * sizeof(uint32_t));
+                        if (perm && anch_perm(rows, n, K, perm) == 0) {
+                            FILE *of = fopen(LZ_ORDER_PATH, "wb");
+                            if (of) { fwrite(perm, sizeof(uint32_t), (size_t)n, of); fclose(of); }
+                            FILE *ix = fopen("build/kv_index.tmp", "w");
+                            if (ix) {
+                                for (int i = 0; i < n; i++) {
+                                    fprintf(ix, "{\"sid\":\"%s\",\"file\":\"%s\",\"npast\":%d,\"anchor\":%d,\"anchor2\":%d,\"dim\":%d,\"vec\":[",
+                                            a[i].sid, a[i].file, a[i].npast, rows[i], rows2[i], a[i].dim);
+                                    for (int vi = 0; vi < a[i].dim; vi++)
+                                        fprintf(ix, "%s%.6g", vi ? "," : "", (double)a[i].vec[vi]);
+                                    fprintf(ix, "]}\n");
+                                }
+                                fclose(ix);
+                                remove("build/kv_index.jsonl");
+                                rename("build/kv_index.tmp", "build/kv_index.jsonl");
+                                if (Kout) *Kout = K;
+                                rc = 0;
+                            }
+                            free(perm);
+                        }
+                    } else rc = -1;
                 }
             }
-            free(X); free(C); free(rows);
+            free(X); free(C); free(rows); free(rows2);
         }
     } else if (n < LZ_ANCH_MIN) {
         remove(LZ_ANCH_PATH);
@@ -1475,11 +1506,27 @@ int main(int argc, char **argv) {
                                     else { lz_http_send(cli, "400 Bad Request", "application/json", "{\"error\":\"no prompt\"}", 21); }
                                     sock_close(cli); continue;
                                 }
+                                /* ── anchor regrow hook (always-regrow cadence, E3/E5:
+                                 * static anchors die in ~0.5 day on chat data).
+                                 * Rebuilds anchors deterministically + atomic swap
+                                 * + checksum-verified load-back (see refresh). */
+                                if (strcmp(method, "POST") == 0 && strcmp(path, "/v1/state/regrow") == 0) {
+                                    int rK = 0, rN = 0;
+                                    int rrc = lz_anchor_refresh(&rK, &rN);
+                                    const char *rmode = rrc == 0 ? "anchor" : (rrc == 1 ? "brute" : "error");
+                                    char rresp[256];
+                                    int rrlen = snprintf(rresp, sizeof(rresp),
+                                        "{\"status\":\"%s\",\"mode\":\"%s\",\"nent\":%d,\"K\":%d}",
+                                        rrc < 0 ? "error" : "ok", rmode, rN, rK);
+                                    lz_http_send(cli, "200 OK", "application/json", rresp, rrlen);
+                                    sock_close(cli); continue;
+                                }
                                 /* ── semantic search over KV index ── */
                                 if (strcmp(method, "POST") == 0 && strcmp(path, "/v1/state/search") == 0) {
                                     char *bd3 = strstr(rq, "\r\n\r\n");
                                     char sq[2048] = "";
                                     int stopk = 3;
+                                    char sid_filter[64] = "";
                                     if (bd3) {
                                         /* "query" key (fallback: content/prompt) */
                                         const char *qp = strstr(bd3 + 4, "\"query\"");
@@ -1502,6 +1549,23 @@ int main(int argc, char **argv) {
                                         if (!sq[0] && !lz_extract_content(bd3 + 4, sq, sizeof(sq))) { sock_close(cli); continue; }
                                         if (!sq[0]) { sock_close(cli); continue; }
                                         stopk = lz_json_int(bd3 + 4, "topk", 3);
+                                        /* optional "sid" pre-filter: co-routed with anchor
+                                         * buckets (partition = subset view, no retrain).
+                                         * Absent/empty = byte-identical to no-filter. */
+                                        {
+                                            const char *sfp = strstr(bd3 + 4, "\"sid\"");
+                                            if (sfp) {
+                                                sfp = strchr(sfp + 5, ':');
+                                                if (sfp) {
+                                                    sfp++;
+                                                    while (*sfp == ' ' || *sfp == '"') sfp++;
+                                                    int sfi = 0;
+                                                    while (*sfp && *sfp != '"' && *sfp != ',' && *sfp != '}' && sfi < 63)
+                                                        sid_filter[sfi++] = *sfp++;
+                                                    sid_filter[sfi] = '\0';
+                                                }
+                                            }
+                                        }
                                     }
                                     else { sock_close(cli); continue; }
                                     if (stopk < 1) stopk = 1;
@@ -1523,6 +1587,16 @@ int main(int argc, char **argv) {
                                         lz_index_load(&ents, &nent);
                                         char route_mode[16] = "brute";
                                         int route_bk[8], route_nb = 0, block_reads = 1, items_scored = 0;
+                                        int truncated = 0;
+                                        /* G survivor: single-round cutoff — fixed candidate
+                                         * budget per scan (env LZ_SEARCH_BUDGET, default 512). */
+                                         int budget = LZ_SEARCH_BUDGET_DEF;
+                                         { const char *be = getenv("LZ_SEARCH_BUDGET");
+                                           if (be && atoi(be) > 0) budget = atoi(be);
+                                           /* bench 2026-09-25: walk-order cutoff at fixed 512
+                                            * truncates 999/1000 on large nent; default must
+                                            * cover the index (explicit env still wins). */
+                                           else if (nent > budget) budget = nent; }
                                         double us_per_item = 0;
                                         if (ents && qn > 0) {
                                             /* anchor order: node-sorted .order perm if present */
@@ -1554,10 +1628,15 @@ int main(int argc, char **argv) {
                                                 int ei = (int)ord[oi];
                                                 if (ei < 0 || ei >= nent) continue;
                                                 int sel = 1;
-                                                if (routed) {
+                                                /* sid pre-filter BEFORE anchor check (RNG-free,
+                                                 * deterministic; miss resets block run so
+                                                 * block_reads accounting is unchanged). */
+                                                if (sid_filter[0] && strcmp(ents[ei].sid, sid_filter) != 0) sel = 0;
+                                                if (sel && routed) {
                                                     sel = (ents[ei].anchor < 0);
                                                     for (int rb = 0; rb < route_nb && !sel; rb++)
-                                                        if (ents[ei].anchor == route_bk[rb]) sel = 1;
+                                                        if (ents[ei].anchor == route_bk[rb] ||
+                                                            ents[ei].anchor2 == route_bk[rb]) sel = 1;
                                                 }
                                                 if (!sel) { in_run = 0; continue; }
                                                 if (!in_run) { block_reads++; in_run = 1; }
@@ -1581,6 +1660,7 @@ int main(int argc, char **argv) {
                                                         break;
                                                     }
                                                 }
+                                                if (items_scored >= budget) { truncated = 1; break; }
                                             }
                                             QueryPerformanceCounter(&qt1);
                                             if (items_scored > 0 && qf.QuadPart > 0)
@@ -1612,8 +1692,8 @@ int main(int argc, char **argv) {
                                             srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
                                                 "%s%d", rb ? "," : "", route_bk[rb]);
                                         srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
-                                            "],\"block_reads\":%d,\"items_scored\":%d,\"items_total\":%d,\"us_per_item\":%.2f}}",
-                                            block_reads, items_scored, nent, us_per_item);
+                                            "],\"block_reads\":%d,\"items_scored\":%d,\"items_total\":%d,\"us_per_item\":%.2f,\"budget\":%d,\"truncated\":%d}}",
+                                            block_reads, items_scored, nent, us_per_item, budget, truncated);
                                     } else {
                                         srlen = snprintf(sresp, sizeof(sresp), "{\"error\":\"embed unavailable\"}");
                                     }
@@ -1694,7 +1774,7 @@ int main(int argc, char **argv) {
                                             fclose(ix3); fclose(ix4);
                                             remove("build/kv_index.jsonl");
                                             rename("build/kv_index.tmp", "build/kv_index.jsonl");
-                                            lz_anchor_refresh(); /* keep trained_n in sync after sweep */
+                                            lz_anchor_refresh(NULL, NULL); /* keep trained_n in sync after sweep */
                                         } else {
                                             if (ix3) fclose(ix3);
                                             if (ix4) fclose(ix4);
@@ -1821,7 +1901,7 @@ int main(int argc, char **argv) {
                                                         fprintf(ix, "]}\n");
                                                         fclose(ix);
                                                         /* anchors rank, geo_jump places: refresh buckets + node-sorted order */
-                                                        lz_anchor_refresh();
+                                                        lz_anchor_refresh(NULL, NULL);
                                                     }
                                             }
                                         } else {
