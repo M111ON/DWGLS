@@ -209,7 +209,7 @@ TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   t
 
 # GEO: geometry core + address space + hyperbolic
 # GEO_FAST: <0.5s each — run often
-GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_frustum_trit   test_frustum_slot64   test_frustum_route
+GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_frustum_trit   test_frustum_slot64   test_frustum_route   test_bfs_tensor_pipeline
 # GEO_SLOW: >1s each — run before commit only
 GEO_SLOW :=   test_geo_bfs_hub   test_geo_fs_mdim   test_goldberg_mmap
 # GEO: full set
@@ -661,6 +661,11 @@ breathe-view: | $(BUILD)
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lpsapi -lzstd -lm
 	cmd //c "set PATH=$(LLAMA_DLL);%PATH%&& $(BUILD)\tesspack_breathe_view.exe $(MOE_GGUF) F:/model/qwen3moe.tesspack $(LLAMA_DLL)"
+
+# BreathingFS tensor pipeline: seeker → frustum route → tensor prefetch
+bfs-tensor-pipeline: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -o $(BUILD)/bfs_tensor_pipeline.exe tools/bfs_tensor_pipeline.c -lpsapi
 
 # ── Scale-follow: sequential vs random page-touch on a .tesspack ──
 # Proves the mmap window follows the layer pointer (window memory, not full
