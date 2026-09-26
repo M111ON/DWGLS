@@ -315,28 +315,22 @@ int main(int argc, char **argv) {
     for (int i = 0; i < TOP_K; i++) printf("%d%s", selected[i], i < TOP_K-1 ? ", " : "");
     printf("]\n\n");
 
-    /* ── 5. Load full stacked tensors from GGUF for reference ── */
-    uint8_t *full_down_raw = NULL, *full_gate_raw = NULL, *full_up_raw = NULL;
+    /* ── 5. Reference slices straight from the GGUF mmap (no full-tensor
+     * mallocs — mmap is lazy, RSS grows only with touched pages, so a
+     * 4.8 GB model never needs 4.8 GB of RAM to verify a few experts) ── */
+    const uint8_t *gguf_down_raw = NULL, *gguf_gate_raw = NULL, *gguf_up_raw = NULL;
+    if (!gguf.base) { printf("FAIL: GGUF bulk map missing\n"); return 1; }
     if (down_idx >= 0) {
-        full_down_raw = (uint8_t *)malloc(gguf.sizes[down_idx]);
-        if (!full_down_raw) { printf("FAIL: malloc down %u\n", gguf.sizes[down_idx]); return 1; }
-        printf("Reading full down tensor (%u bytes)...\n", gguf.sizes[down_idx]);
-        rc = gguf_read_tensor(gguf_path, &gguf, down_idx, full_down_raw, gguf.sizes[down_idx]);
-        printf("  rc=%d\n", rc);
+        gguf_down_raw = gguf.base + gguf.data_offset + gguf.offsets[down_idx];
+        printf("  down slice base ready (%u bytes in map)\n", gguf.sizes[down_idx]);
     }
     if (gate_exp_idx >= 0) {
-        full_gate_raw = (uint8_t *)malloc(gguf.sizes[gate_exp_idx]);
-        if (!full_gate_raw) { printf("FAIL: malloc gate_exp %u\n", gguf.sizes[gate_exp_idx]); return 1; }
-        printf("Reading full gate_exp tensor (%u bytes)...\n", gguf.sizes[gate_exp_idx]);
-        rc = gguf_read_tensor(gguf_path, &gguf, gate_exp_idx, full_gate_raw, gguf.sizes[gate_exp_idx]);
-        printf("  rc=%d\n", rc);
+        gguf_gate_raw = gguf.base + gguf.data_offset + gguf.offsets[gate_exp_idx];
+        printf("  gate_exp slice base ready (%u bytes in map)\n", gguf.sizes[gate_exp_idx]);
     }
     if (up_idx >= 0) {
-        full_up_raw = (uint8_t *)malloc(gguf.sizes[up_idx]);
-        if (!full_up_raw) { printf("FAIL: malloc up %u\n", gguf.sizes[up_idx]); return 1; }
-        printf("Reading full up tensor (%u bytes)...\n", gguf.sizes[up_idx]);
-        rc = gguf_read_tensor(gguf_path, &gguf, up_idx, full_up_raw, gguf.sizes[up_idx]);
-        printf("  rc=%d\n", rc);
+        gguf_up_raw = gguf.base + gguf.data_offset + gguf.offsets[up_idx];
+        printf("  up slice base ready (%u bytes in map)\n", gguf.sizes[up_idx]);
     }
 
     /* infer dimensions from sizes (n_embd = gate input dim from file) */
@@ -396,14 +390,14 @@ int main(int argc, char **argv) {
         float *rup_f   = (float *)malloc(gate_elems * sizeof(float));
         float *rdown_f = (float *)malloc(down_elems * sizeof(float));
 
-        const block_q4_K *ref_gate = (const block_q4_K *)(full_gate_raw + (uint64_t)e * per_expert_gate);
-        const block_q4_K *ref_up   = (const block_q4_K *)(full_up_raw   + (uint64_t)e * per_expert_up);
+        const block_q4_K *ref_gate = (const block_q4_K *)(gguf_gate_raw + (uint64_t)e * per_expert_gate);
+        const block_q4_K *ref_up   = (const block_q4_K *)(gguf_up_raw   + (uint64_t)e * per_expert_up);
         dequant_q4_k(ref_gate, rgate_f, n_embd * n_ff);
         dequant_q4_k(ref_up,   rup_f,   n_embd * n_ff);
         /* down: same dtype branch as streamed side */
         {
             int down_dtype = (down_idx >= 0) ? (int)gguf.dtypes[down_idx] : -1;
-            const uint8_t *ref_down = full_down_raw + (uint64_t)e * per_expert_down;
+            const uint8_t *ref_down = gguf_down_raw + (uint64_t)e * per_expert_down;
             int64_t n_down = (int64_t)n_ff * n_embd;
             if (down_dtype == 14) {
                 dequant_q6_k((const block_q6_K *)ref_down, rdown_f, n_down);
@@ -447,9 +441,8 @@ int main(int argc, char **argv) {
     }
 
     /* ── 7. Byte-compare (still in code for sanity) ── */
-    printf("\n=== BYTE-COMPARE (pool vs GGUF) ===\n");
+    printf("\n=== BYTE-COMPARE (pool vs GGUF map) ===\n");
     uint32_t byte_pass = 0, byte_total = 0;
-    uint8_t *ref_buf = (uint8_t *)malloc(64 * 1024 * 1024);
     for (int ki = 0; ki < TOP_K; ki++) {
         int e = selected[ki];
         const char *wtype_names[] = {"ffn_down_exps", "ffn_gate_exps", "ffn_up_exps"};
@@ -462,7 +455,7 @@ int main(int argc, char **argv) {
             if (ref_idxs[wt] < 0) continue;
             uint32_t offset = e * per_expert_sz[wt];
             uint8_t *streamed = region.base + metas[wt]->offset + offset;
-            uint8_t *ref = (uint8_t *)(wt == 0 ? full_down_raw : wt == 1 ? full_gate_raw : full_up_raw) + offset;
+            uint8_t *ref = (uint8_t *)(wt == 0 ? gguf_down_raw : wt == 1 ? gguf_gate_raw : gguf_up_raw) + offset;
             if (memcmp(streamed, ref, per_expert_sz[wt]) == 0) {
                 byte_pass++;
             } else {
@@ -478,7 +471,7 @@ int main(int argc, char **argv) {
     printf("Byte:      %u/%u PASS\n", byte_pass, byte_total);
 
     /* cleanup */
-    free(full_down_raw); free(full_gate_raw); free(full_up_raw); free(ref_buf);
+    gguf_close(&gguf);
 #if defined(_WIN32)
     UnmapViewOfFile(region.base);
     CloseHandle(region.hSlotMapping);

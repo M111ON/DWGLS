@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
     /* T1: routing — exact queries top-1 to own bucket (the serve path);
      * noise sweep must discriminate (space is structured, not collapsed). */
     {
-        int top[4], routed = 0, stable5 = 0, stable50 = 0;
+        int top[AT_K], routed = 0, stable5 = 0, stable50 = 0;
         float q[AT_DIM];
         for (uint32_t i = 0; i < n; i++) {
             const float *c0 = X + (size_t)i * AT_DIM;
@@ -70,9 +70,26 @@ int main(int argc, char **argv) {
         CHECK(stable50 < stable5, "noise discriminates (not collapsed)");
     }
 
-    /* T2: routed selective tile-load == full load (3 probe tensors). */
+    /* T2: routed selective tile-load == full load (3 probe tensors).
+     * T2 is an ADDRESSING claim, not an encoding claim: residual/ONION
+     * tensors have no plain capos by design (their decode is covered by
+     * assemble roundtrips), so probes advance to the next tensor that
+     * has capo 0. Proven need 2026-09-26: Qwen3 tensor 0 (output.weight)
+     * is residual-encoded → raw get_capo misses, T2 red for the wrong reason. */
     {
-        uint32_t probes[3] = {0, n / 2, n - 1};
+        uint32_t seeds[3] = {0, n / 2, n - 1};
+        uint32_t probes[3];
+        for (int p = 0; p < 3; p++) {
+            /* wrap-around: trailing seeds may sit inside the ONION run at the
+             * pack tail (121/291 f32 tensors in current-packer layouts). */
+            uint32_t i = seeds[p], tried = 0;
+            TESS_CapoReader skip;
+            while (tess_pack_get_capo(&pi, &skip, g.names[i], 0) != 0 && tried < n) {
+                i = (i + 1) % n; tried++;
+            }
+            CHECK(tried < n, "probe addressable");
+            probes[p] = i;
+        }
         for (int p = 0; p < 3; p++) {
             uint32_t i = probes[p];
             uint32_t csz = at_cell_size(g.dtypes[i]);

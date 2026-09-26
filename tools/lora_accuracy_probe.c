@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include "llama.h"
 
 static const char *SYS = "You are a careful math assistant. Solve the problem, then ALWAYS verify your answer by recomputing with a different method before giving the final answer.";

@@ -163,6 +163,7 @@ TIER1 := \
   test_gpu_small_batch \
   test_jet_phase_align \
   test_jet_select_prod \
+  test_jet_coalesce_bench \
   test_d4_linesum_bridge \
   test_twin_rebalance \
   test_triality_serve \
@@ -209,7 +210,7 @@ TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   t
 
 # GEO: geometry core + address space + hyperbolic
 # GEO_FAST: <0.5s each — run often
-GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_frustum_trit   test_frustum_slot64   test_frustum_route   test_frustum_memory_adapter   test_frustum_memory_resolve   test_gguf_frustum_direct   test_gguf_frustum_pointer   test_bfs_tensor_pipeline   test_bfs_gguf_frustum
+GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_frustum_trit   test_frustum_slot64   test_frustum_route   test_frustum_memory_adapter   test_frustum_memory_resolve   test_gguf_frustum_direct   test_gguf_frustum_pointer   test_bfs_tensor_pipeline   test_bfs_gguf_frustum   test_voronoi_mask
 # GEO_SLOW: >1s each — run before commit only
 GEO_SLOW :=   test_geo_bfs_hub   test_geo_fs_mdim   test_goldberg_mmap
 # GEO: full set
@@ -887,7 +888,7 @@ tess-pack: | $(BUILD)
 
 # ── GGUF → .tesspack directly ──
 tess-gguf-pack: | $(BUILD)
-	$(CC) -O2 -std=c11 -Wno-format -I core -I core/infra -o $(BUILD)/tess_gguf_pack tools/tess_gguf_pack.c -lm
+	$(CC) -O2 -std=c11 -Wno-format -I core -I core/infra -I $(TESSPACK_E2E_LLAMA_INC) -o $(BUILD)/tess_gguf_pack tools/tess_gguf_pack.c -lm
 	@echo "✅ tess_gguf_pack ready → ./$(BUILD)/tess_gguf_pack <gguf> <out.tesspack> [filter]"
 
 # ── GGUF Stream Compare: byte-level verify assembled vs original ──
@@ -1191,6 +1192,142 @@ sid-kv-compact-zc2: tools/sid_kv_compact.c core/kv_cold_base.h | $(BUILD)
 	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
 	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lm
 	PATH="I:/llama/llama.cpp/build_zc2/bin/Release:$$PATH" ./$(BUILD)/sid_kv_compact_zc2 $(LLAMA_GGUF) build/kvslots-sid "I:/llama/llama.cpp/build_zc2/bin/Release"
+
+# OpenAI-compatible HTTP serve straight from .tesspack (dense path proven
+# 2026-09-26 on Qwen2.5-0.5B: /health + /v1/completions coherent output).
+# MoE router join + KV park path NOT wired (open v1 work, dense-only).
+tesspack-server-zc2: tools/tesspack_server.c | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include \
+	    -o $(BUILD)/tesspack_server tools/tesspack_server.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lws2_32 -lpsapi -lm
+	@echo "✅ tesspack_server ready → ./$(BUILD)/tesspack_server <pack> [port] [dll_dir] [source_gguf]"
+
+# Wired 2026-09-26 (quickreview): documented entry points / probes that had
+# no build rule. Build-only targets — run manually with model/pack args.
+# tools/tess_capo_verify.c ported 2026-09-26 from stale .capo-file +
+# hash-guess to GgufReader + .tesspack spot-check (ONION→scatter→residual).
+probe-moe-assemble: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/probe_moe_assemble tools/probe_moe_assemble.c -lm
+	@echo "✅ probe_moe_assemble ready → ./$(BUILD)/probe_moe_assemble <gguf> <tesspack>"
+
+field-qa: | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I core/infra -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -I sid \
+	    -o $(BUILD)/field_qa tools/field_qa.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lpsapi -lm
+	@echo "✅ field_qa ready → ./$(BUILD)/field_qa"
+
+geo-field-query: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/geo_field_query tools/geo_field_query.c -lm
+	@echo "✅ geo_field_query ready → ./$(BUILD)/geo_field_query"
+
+maze-walk: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/maze_walk_cli tools/maze_walk_cli.c -lm
+	@echo "✅ maze_walk_cli ready → ./$(BUILD)/maze_walk_cli"
+
+kv-delta-map: | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I core/infra -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -I sid \
+	    -o $(BUILD)/kv_delta_map tools/kv_delta_map.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lpsapi -lm
+	@echo "✅ kv_delta_map ready → ./$(BUILD)/kv_delta_map"
+
+kv-quant-3level: | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I core/infra -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -I sid \
+	    -o $(BUILD)/kv_quant_3level tools/kv_quant_3level.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lpsapi -lm
+	@echo "✅ kv_quant_3level ready → ./$(BUILD)/kv_quant_3level"
+
+kv-quant-threshold: | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I core/infra -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -I sid \
+	    -o $(BUILD)/kv_quant_threshold tools/kv_quant_threshold.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lpsapi -lm
+	@echo "✅ kv_quant_threshold ready → ./$(BUILD)/kv_quant_threshold"
+
+lora-accuracy-probe: | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I core/infra -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -I sid \
+	    -o $(BUILD)/lora_accuracy_probe tools/lora_accuracy_probe.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lpsapi -lm
+	@echo "✅ lora_accuracy_probe ready → ./$(BUILD)/lora_accuracy_probe"
+
+lora-diverge-probe: | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I core/infra -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -I sid \
+	    -o $(BUILD)/lora_diverge_probe tools/lora_diverge_probe.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lpsapi -lm
+	@echo "✅ lora_diverge_probe ready → ./$(BUILD)/lora_diverge_probe"
+
+merge-probe: | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I core/infra -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -I sid \
+	    -o $(BUILD)/merge_probe tools/merge_probe.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lpsapi -lm
+	@echo "✅ merge_probe ready → ./$(BUILD)/merge_probe"
+
+tesspack-verify: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/tesspack_verify tools/tesspack_verify.c -lm
+	@echo "✅ tesspack_verify ready → ./$(BUILD)/tesspack_verify"
+
+tess-capo-verify: | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I core/infra -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -I sid \
+	    -o $(BUILD)/tess_capo_verify tools/tess_capo_verify.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lpsapi -lm
+	@echo "✅ tess_capo_verify ready → ./$(BUILD)/tess_capo_verify <model.gguf> <pack.tesspack> [--sample N]"
+
+tesspack-verify-pure-c: | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I core/infra -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -I sid \
+	    -o $(BUILD)/tesspack_verify_pure_c tools/tesspack_verify_pure_c.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lpsapi -lm
+	@echo "✅ tesspack_verify_pure_c ready → ./$(BUILD)/tesspack_verify_pure_c"
+
+tess-verify-tensor: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/tess_verify_tensor tools/tess_verify_tensor.c -lm
+	@echo "✅ tess_verify_tensor ready → ./$(BUILD)/tess_verify_tensor"
+
+mem-reserve-test: | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I core/infra -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -I sid \
+	    -o $(BUILD)/mem_reserve_test tools/mem_reserve_test.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lpsapi -lm
+	@echo "✅ mem_reserve_test ready → ./$(BUILD)/mem_reserve_test"
+
+moe-expert-demo: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/moe_expert_demo tools/moe_expert_demo.c -lm
+	@echo "✅ moe_expert_demo ready → ./$(BUILD)/moe_expert_demo"
 
 kv-cold-prefix: tools/kv_cold_prefix.c core/kv_cold_base.h | $(BUILD)
 	@echo "▶ BUILD  kv_cold_prefix (COLD-KV step 4: prefix-shared base)"

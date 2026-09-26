@@ -228,7 +228,11 @@ static inline const ZoneCardSID* tmem_record_zcsid(const TensorMemStore *s, uint
     return (const ZoneCardSID*)p;
 }
 
-/* ── Get record name ────────────────────────────────────── */
+/* ── Get record name ──────────────────────────────────────
+ * WARNING: returns a pointer to ONE shared static buffer — a second call
+ * overwrites the first result. Snapshot (copy) before calling again.
+ * (Proven footgun 2026-09-26: edge derivation in tools/kv_graph_probe.c
+ * silently failed until names were copied to locals.) */
 static inline const char* tmem_record_name(const TensorMemStore *s, uint32_t idx)
 {
     if (idx >= s->n_records) return NULL;

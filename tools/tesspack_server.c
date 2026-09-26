@@ -38,6 +38,9 @@ typedef int sock_t;
 #endif
 #include "llama.h"
 #include "ggml-backend.h"
+/* ggml.h's enum-typed ggml_type_size/blck_size win; suppress the header's
+ * int-typed forward decls (would conflict). Same pattern as tesspack_llama_view.c. */
+#define GGML_TYPE_SIZE_DECL
 #include "../core/gguf_reader.h"
 #include "../core/geo_tess_container.h"
 
@@ -147,13 +150,13 @@ static void register_cpu_backend(const char *dir) {
     const char *cpu_names[] = {"ggml-cpu.dll", "ggml-cpu-x64.dll", NULL};
     for (int i = 0; cpu_names[i]; i++) {
         snprintf(dll_path, sizeof(dll_path), "%s\\%s", dir, cpu_names[i]);
-        ggml_backend_t b = ggml_backend_load(dll_path);
+        ggml_backend_reg_t b = ggml_backend_load(dll_path);
         fprintf(stderr, "  load %s: %s\n", cpu_names[i], b ? "OK" : "FAIL");
     }
 
     /* Try Vulkan */
     snprintf(dll_path, sizeof(dll_path), "%s\\ggml-vulkan.dll", dir);
-    ggml_backend_t b = ggml_backend_load(dll_path);
+    ggml_backend_reg_t b = ggml_backend_load(dll_path);
     fprintf(stderr, "  load ggml-vulkan.dll: %s\n", b ? "OK" : "FAIL");
 
     int nvulkan = 0, ncpu = 0;
@@ -380,10 +383,17 @@ int main(int argc, char **argv) {
     }
     fprintf(stderr, "Embedded header: %llu bytes\n", (unsigned long long)hdr_sz);
 
-    /* ── parse header to get tensor metadata ── */
+    /* ── parse header to get tensor metadata ──
+     * tmp name carries PID: two server instances must never share one
+     * model file (proven collision 2026-09-26: 2nd instance died at create). */
     char tmp_gguf[MAX_PATH];
-    snprintf(tmp_gguf, sizeof(tmp_gguf), "%s\\tesspack_server.tmp",
-             getenv("TEMP") ? getenv("TEMP") : ".");
+#ifdef _WIN32
+    unsigned long srv_pid = (unsigned long)GetCurrentProcessId();
+#else
+    unsigned long srv_pid = (unsigned long)getpid();
+#endif
+    snprintf(tmp_gguf, sizeof(tmp_gguf), "%s\\tesspack_server_%lu.tmp",
+             getenv("TEMP") ? getenv("TEMP") : ".", srv_pid);
     FILE *tf = fopen(tmp_gguf, "wb");
     if (!tf) { fprintf(stderr, "FAIL: tmp create\n"); tess_pack_close(&pi); return 1; }
     fwrite(hdr_bytes, 1, (size_t)hdr_sz, tf);

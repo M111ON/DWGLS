@@ -8,6 +8,9 @@
 #include <stdint.h>
 #include "gguf_reader.h"
 #include "ggml.h"
+/* ggml.h's enum-typed ggml_type_size/blck_size win; suppress the header's
+ * int-typed forward decls (would conflict). Same pattern as tesspack_llama_view.c. */
+#define GGML_TYPE_SIZE_DECL
 #include "geo_tess_container.h"
 
 static uint32_t gguf_cell_size(uint32_t dtype) {
@@ -272,7 +275,7 @@ int main(int argc, char **argv) {
         uint8_t  dst_type;
         uint8_t  transform;
         uint8_t  _pad;
-    } ResidEntry;  /* 522 bytes, matches TESS_ResidualEntry */
+    } ResidEntry;  /* 516 bytes, matches TESS_ResidualEntry */
 
     ResidEntry residuals[32];
     uint32_t n_residual = 0;

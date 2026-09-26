@@ -381,8 +381,6 @@ static inline int vm_verify(void) {
     }
 
     /* Position-dependent mask changes cell assignment */
-    MaskedPointer p1 = {.axis=0, .cell_id=0, .local=100, .position=0};
-    MaskedPointer p2 = {.axis=1, .cell_id=0, .local=100, .position=0};
     if (vm_cell_of_axis(100, 0, 0) == vm_cell_of_axis(100, 1, 0)) return -12;
 
     /* Gravity pulls toward center */

@@ -816,16 +816,18 @@ typedef struct {
     uint8_t  dst_type;          /* GGML type callback should report */
     uint8_t  transform;         /* TESS_TRANSFORM_* enum */
     uint8_t  _pad;              /* alignment padding */
-} TESS_ResidualEntry;           /* total: 522 bytes */
+} TESS_ResidualEntry;           /* total: 516 bytes */
 #pragma pack(pop)
 
-/* fp16 → float conversion (IEEE 754 half-precision) */
+/* fp16 → float conversion (IEEE 754 half-precision).
+ * Bit-pattern transfer via memcpy (strict-aliasing safe; compiles to one mov). */
 static inline float fp16_to_float(uint16_t h) {
     uint32_t s = (h & 0x8000) << 16;
     uint32_t e = (h >> 10) & 0x1F;
     uint32_t m = h & 0x3FF;
+    float out;
     if (e == 0) {
-        if (m == 0) return *(float *)&s;
+        if (m == 0) { memcpy(&out, &s, 4); return out; }
         while (!(m & 0x400)) { m <<= 1; e++; }
         e++; m &= ~0x400;
     } else if (e == 31) {
@@ -834,7 +836,8 @@ static inline float fp16_to_float(uint16_t h) {
         e += 127 - 15;
     }
     uint32_t f = s | (e << 23) | (m << 13);
-    return *(float *)&f;
+    memcpy(&out, &f, 4);
+    return out;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -972,7 +975,7 @@ static inline int tess_pack_open(TESS_PackIndex *pi, const char *pack_path) {
     {
         uint64_t r_off = TPAK_OFF64(hdr, 6, 13);
         uint32_t r_cnt = hdr[7];
-        if (r_off > 0 && r_cnt > 0 && r_off + (uint64_t)r_cnt * 522 <= pi->file_sz) {
+        if (r_off > 0 && r_cnt > 0 && r_off + (uint64_t)r_cnt * sizeof(TESS_ResidualEntry) <= pi->file_sz) {
             pi->residual_data  = pi->base + r_off;
             pi->residual_count = r_cnt;
         }
