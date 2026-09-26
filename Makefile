@@ -1144,10 +1144,9 @@ kv-cold-reanchor-zc2: tools/kv_cold_reanchor.c core/kv_cold_base.h | $(BUILD)
 sid-kv-resume-zc2: tools/sid_kv_resume.c core/kv_cold_base.h | $(BUILD)
 	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
-	@test -d I:/FGLS_new/collection/src || { echo "  (skip: FGLS_new collection not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include \
-	    -I I:/FGLS_new/collection/src -I I:/FGLS_new/collection -I I:/FGLS_new/collection/geo_jump_module/include \
+	    -I sid \
 	    -o $(BUILD)/sid_kv_resume_zc2 tools/sid_kv_resume.c \
 	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
 	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lm
@@ -1157,10 +1156,9 @@ sid-kv-resume-zc2: tools/sid_kv_resume.c core/kv_cold_base.h | $(BUILD)
 sid-kv-reanchor-zc2: tools/sid_kv_reanchor.c core/kv_cold_base.h | $(BUILD)
 	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
-	@test -d I:/FGLS_new/collection/src || { echo "  (skip: FGLS_new collection not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include \
-	    -I I:/FGLS_new/collection/src -I I:/FGLS_new/collection -I I:/FGLS_new/collection/geo_jump_module/include \
+	    -I sid \
 	    -o $(BUILD)/sid_kv_reanchor_zc2 tools/sid_kv_reanchor.c \
 	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
 	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lm
@@ -1170,10 +1168,9 @@ sid-kv-reanchor-zc2: tools/sid_kv_reanchor.c core/kv_cold_base.h | $(BUILD)
 sid-kv-compact-zc2: tools/sid_kv_compact.c core/kv_cold_base.h | $(BUILD)
 	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
-	@test -d I:/FGLS_new/collection/src || { echo "  (skip: FGLS_new collection not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include \
-	    -I I:/FGLS_new/collection/src -I I:/FGLS_new/collection -I I:/FGLS_new/collection/geo_jump_module/include \
+	    -I sid \
 	    -o $(BUILD)/sid_kv_compact_zc2 tools/sid_kv_compact.c \
 	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
 	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lm
