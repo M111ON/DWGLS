@@ -15,7 +15,7 @@ FGLS_new @ `f19354f570fffe1701abbc65f7800884802c4fb6` (2026-08-12):
 | `zone_card_sid.h`      | `collection/zone_card_sid.h`                             | tracked, unmodified  |
 | `geo_jump.h`           | `collection/geo_jump_module/include/geo_jump.h`          | tracked, unmodified  |
 | `tensor_memory.h`      | `collection/src/tensor_memory.h`                         | tracked, unmodified  |
-| `adaptive_route_sid.h` | `collection/src/adaptive_route_sid.h`                    | untracked (DWGLS-origin adapter from Card #29, authored on our side) |
+| `adaptive_route_sid.h` | `collection/src/adaptive_route_sid.h`                    | untracked at vendor time → tracked FGLS_new-side @ `dc3c0b9` (2026-09-26); bench/test stay there, not vendored |
 
 The three byte-identical files (`zone_card.h`, `zone_card_sid.h`,
 `geo_jump.h`) match upstream byte-for-byte including CRLF endings.
