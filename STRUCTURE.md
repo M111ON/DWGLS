@@ -17,6 +17,7 @@ DWGLS-native-fs/
 ├── `colab-pack/`      # Colab LoRA training pack and deploy scripts
 ├── `beam_addressing/` # Beam timer header
 ├── `collection/`      # Beam/RDH/tw collections
+├── `sid/`             # Vendored SID tensor-memory headers (self-contained, see `sid/VENDORED.md`)
 ├── `build/`           # Compiled binaries and test outputs (generated)
 ├── `build_arm/`       # ARM-compiled test binaries (generated)
 ├── `tess_out/`        # `.tess` bake output (generated)
@@ -43,10 +44,15 @@ DWGLS-native-fs/
 - Contains: DRAM tile, GPU scatter, rail/phase sync, jet phase select, trialty serve headers
 - Key files: `core/infra/geo_dram_tile.h`, `core/infra/geo_gpu_pipeline.h`, `core/infra/geo_rail_sync.h`, `core/infra/jet_select.h`
 
+**`sid/`:**
+- Purpose: Hold the DWGLS-owned copy of the SID tensor-memory headers so cold-KV tools build with `-I sid` and never include across repos
+- Contains: `*.h` vendored from FGLS_new plus `VENDORED.md` (origin table + re-vendor rule); never edit store semantics here, fix the caller
+- Key files: `sid/tensor_memory.h`, `sid/zone_card_sid.h`, `sid/adaptive_route_sid.h`, `sid/geo_jump.h`, `sid/zone_card.h`
+
 **`tools/`:**
 - Purpose: Hold every runnable entry point except tests
 - Contains: `*.c` CLIs, `*.py` servers and converters
-- Key files: `tools/tess_bake.c`, `tools/tess_load.c`, `tools/tess_assemble.c`, `tools/tess_gguf_pack.c`, `tools/tesspack_assemble.c`, `tools/tesspack_server.c`, `tools/probe_moe_assemble.c`, `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/field_qa.c`, `tools/geo_field_query.c`, `tools/tess_window_bench.c`, `tools/moe_expert_bake.c`, `tools/moe_expert_route.c`, `tools/moe_expert_graft.c`, `tools/anchor_route_cli.c`, `tools/maze_walk_cli.c`, `tools/kv_cold_base.c`, `tools/kv_cold_delta.c`, `tools/kv_cold_reanchor.c`, `tools/kv_cold_prefix.c`, `tools/kv_cold_chat.c`, `tools/kv_delta_map.c`, `tools/kv_quant_3level.c`, `tools/kv_quant_threshold.c`, `tools/bake_q4.c`, `tools/gguf_tnames.c`, `tools/merge_probe.c`, `tools/mdim_cli.c`, `tools/dwgls_server.py`
+- Key files: `tools/tess_bake.c`, `tools/tess_load.c`, `tools/tess_assemble.c`, `tools/tess_gguf_pack.c`, `tools/tesspack_assemble.c`, `tools/tesspack_server.c`, `tools/probe_moe_assemble.c`, `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/field_qa.c`, `tools/geo_field_query.c`, `tools/tess_window_bench.c`, `tools/moe_expert_bake.c`, `tools/moe_expert_route.c`, `tools/moe_expert_graft.c`, `tools/anchor_route_cli.c`, `tools/maze_walk_cli.c`, `tools/kv_cold_base.c`, `tools/kv_cold_delta.c`, `tools/kv_cold_reanchor.c`, `tools/kv_cold_prefix.c`, `tools/kv_cold_chat.c`, `tools/kv_delta_map.c`, `tools/kv_quant_3level.c`, `tools/kv_quant_threshold.c`, `tools/bake_q4.c`, `tools/gguf_tnames.c`, `tools/merge_probe.c`, `tools/mdim_cli.c`, `tools/dwgls_server.py`, `tools/sid_kv_resume.c`, `tools/sid_kv_reanchor.c`, `tools/sid_kv_compact.c`
 
 **`tests/`:**
 - Purpose: Hold tiered verification sources compiled on demand by `Makefile`
