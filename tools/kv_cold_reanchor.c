@@ -8,10 +8,13 @@
  * base freed (EXPIRED delete shape), new base saved to file.
  * Gate: per-prompt greedy first-divergence vs F16 ref over 20 steps must
  * satisfy the L2 bar — first-div >= 10/20 (threshold doc §Reading).
- * Kernel: flash DISABLED on both ctx (fair-kernel rule). CPU-only backend.
+ * Kernel: flash ENABLED on all ctx (same-kernel rule; patched build_zc2
+ * rejects quantized V cache with flash disabled, so the v040-era
+ * flash-disabled verdicts are re-measured here under flash-enabled).
  *
- * RUN: ./build/kv_cold_reanchor [model.gguf] [outdir] [backend_dir] [coldcfg]
+ * RUN: ./build/kv_cold_reanchor [model.gguf] [outdir] [backend_dir] [coldcfg] [ngl]
  *   coldcfg: k8v4 (default COLD) | q8 (control) | q4 (negative control)
+ *   ngl: GPU layers, default 35 (patched build_zc2 runtime)
  */
 #include "llama.h"
 #include "ggml-backend.h"
@@ -38,22 +41,26 @@ static const char *PROMPTS[] = {
 
 static struct llama_context *mk_ctx(struct llama_model *m, enum ggml_type tk, enum ggml_type tv) {
     struct llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 2048; cp.n_batch = 512; cp.no_perf = true;
+    cp.n_ctx = 512; cp.n_batch = 128; cp.no_perf = true;
     cp.type_k = tk; cp.type_v = tv;
-    cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
     return llama_init_from_model(m, cp);
 }
 
 static void decode_all(struct llama_context *ctx, const llama_token *t, int32_t n) {
-    /* NOTE: prompts here are < 512 tok → single batch → batch output index
-       == absolute position, so get_logits_ith(pos) below is valid. Prompts
-       ≥ 512 tok would need per-batch output indexing. */
-    for (int32_t off = 0; off < n; off += 512) {
-        llama_batch b = llama_batch_init(512, 0, 1);
-        int32_t k = n - off > 512 ? 512 : n - off;
+    /* NOTE: only the final token requests logits (the harness reads just
+       the last prompt position). Materializing logits for every prompt
+       token costs n_vocab floats each — a 114-token prompt needs 66 MiB
+       of pinned output buffer and OOMs a 4 GB GPU with 3 live contexts.
+       Callers must therefore query with pos=-1 (last output), never
+       get_logits_ith(absolute). */
+    for (int32_t off = 0; off < n; off += 128) {
+        llama_batch b = llama_batch_init(128, 0, 1);
+        int32_t k = n - off > 128 ? 128 : n - off;
         for (int32_t i = 0; i < k; i++) {
             b.token[i] = t[off+i]; b.pos[i] = off+i;
-            b.n_seq_id[i] = 1; b.seq_id[i][0] = 0; b.logits[i] = 1;
+            b.n_seq_id[i] = 1; b.seq_id[i][0] = 0;
+            b.logits[i] = (off + i == n - 1) ? 1 : 0;
         }
         b.n_tokens = k;
         if (llama_decode(ctx, b)) { fprintf(stderr, "decode fail\n"); exit(1); }
@@ -104,7 +111,7 @@ int main(int argc, char **argv) {
     ggml_backend_load_all_from_path(backend);
 
     struct llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = 0;
+    mp.n_gpu_layers = argc > 5 ? atoi(argv[5]) : 35;
     struct llama_model *model = llama_model_load_from_file(model_path, mp);
     if (!model) { fprintf(stderr, "FAIL: model load\n"); return 1; }
     const struct llama_vocab *vocab = llama_model_get_vocab(model);
@@ -118,7 +125,7 @@ int main(int argc, char **argv) {
         PN[p] = llama_tokenize(vocab, PROMPTS[p], L, PT[p], need+16, true, true);
     }
 
-    printf("=== re-anchor @%d · REF=F16 vs COLD=%s (DISABLED kernel) ===\n", RE_ANCHOR_EVERY, coldcfg);
+    printf("=== re-anchor @%d · REF=F16 vs COLD=%s (ENABLED kernel) ===\n", RE_ANCHOR_EVERY, coldcfg);
     printf("--- first-div = free-run greedy identity (diagnostic: quantization destroys determinism by construction)\n");
     printf("--- on-track  = teacher-forced: cold top-1 in ref top-5 along the ref path, /20 (binding gate)\n");
     int worst = N_GREEDY, worst_track = N_GREEDY, all_ok = 1;
@@ -139,15 +146,15 @@ int main(int argc, char **argv) {
            position logits (no re-decode of the last token at a shifted
            position — that wart flips argmax on unnatural input and
            punishes the quantized side for methodology noise). */
-        llama_token tr = argmax_next(ref, PN[p]-1, n_vocab);
-        llama_token tc = argmax_next(cold, PN[p]-1, n_vocab);
+        llama_token tr = argmax_next(ref, -1, n_vocab);
+        llama_token tc = argmax_next(cold, -1, n_vocab);
         int div = (tr != tc) ? 0 : N_GREEDY;
         /* teacher-forced containment along the ref path (binding gate) */
         int ontrack = 0, ontrack10 = 0;
         char missbuf[256]; missbuf[0] = 0; int nmiss = 0;
-        llama_token tctf = argmax_next(cold_tf, PN[p]-1, n_vocab);
+        llama_token tctf = argmax_next(cold_tf, -1, n_vocab);
         {
-            llama_token r5[5]; top5_next(ref, PN[p]-1, n_vocab, r5);
+            llama_token r5[5]; top5_next(ref, -1, n_vocab, r5);
             int hit = 0;
             for (int k = 0; k < 5; k++) if (tctf == r5[k]) { hit = 1; break; }
             if (hit) { ontrack++; ontrack10++; }

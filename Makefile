@@ -209,7 +209,7 @@ TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   t
 
 # GEO: geometry core + address space + hyperbolic
 # GEO_FAST: <0.5s each — run often
-GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_frustum_trit   test_frustum_slot64   test_frustum_route   test_bfs_tensor_pipeline
+GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_frustum_trit   test_frustum_slot64   test_frustum_route   test_frustum_memory_adapter   test_frustum_memory_resolve   test_gguf_frustum_direct   test_gguf_frustum_pointer   test_bfs_tensor_pipeline   test_bfs_gguf_frustum
 # GEO_SLOW: >1s each — run before commit only
 GEO_SLOW :=   test_geo_bfs_hub   test_geo_fs_mdim   test_goldberg_mmap
 # GEO: full set
@@ -667,6 +667,10 @@ bfs-tensor-pipeline: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -o $(BUILD)/bfs_tensor_pipeline.exe tools/bfs_tensor_pipeline.c -lpsapi
 
+bfs-gguf-frustum: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -o $(BUILD)/bfs_gguf_frustum.exe tools/bfs_gguf_frustum.c
+
 # ── Scale-follow: sequential vs random page-touch on a .tesspack ──
 # Proves the mmap window follows the layer pointer (window memory, not full
 # load). HDD-safe: random phase bounded by --sample 8192 / --time 60 s.
@@ -941,13 +945,22 @@ lazy-serve: | $(BUILD)
 
 # Minimal control for user-owned mmap buffers; no field/tesspack path involved.
 plain-user-mmap: | $(BUILD)
-	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-format \
-	    -I $(LLAMA_INC) -I $(LLAMA_INC)/../ggml/include -o $(BUILD)/plain_user_mmap tools/plain_user_mmap.c \
-	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
-	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
-	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/plain_user_mmap $(LLAMA_GGUF) "The capital of France is" "$(LLAMA_DLL)"
+	    -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -o $(BUILD)/plain_user_mmap tools/plain_user_mmap.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lzstd -lm
+	PATH="I:/llama/llama.cpp/build_zc2/bin/Release:$$PATH" ./$(BUILD)/plain_user_mmap $(LLAMA_GGUF) "The capital of France is" "I:/llama/llama.cpp/build_zc2/bin/Release" 16 35
+
+bfs-user-mmap: | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -o $(BUILD)/bfs_user_mmap tools/bfs_user_mmap.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lzstd -lm
+	PATH="I:/llama/llama.cpp/build_zc2/bin/Release:$$PATH" ./$(BUILD)/bfs_user_mmap $(LLAMA_GGUF) "The capital of France is" "I:/llama/llama.cpp/build_zc2/bin/Release" 16 35
 
 # Dual-model co-serve: 2 models, 1 process, per-model fields (M1 co-serve,
 # M2 evict isolation, M3 recovery, M4 tokenizer analysis, M5 WS bound).
@@ -1107,6 +1120,51 @@ kv-cold-reanchor: tools/kv_cold_reanchor.c core/kv_cold_base.h | $(BUILD)
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lm
 	@echo "✅ kv-cold-reanchor ready → ./$(BUILD)/kv_cold_reanchor <model.gguf> [outdir] [backend_dir]"
+
+# Patched build_zc2 variants (proven 2026-09-26: CHAIN1+CHAIN2 PASS, re-anchor LICENSED).
+kv-cold-delta-zc2: tools/kv_cold_delta.c core/kv_cold_base.h | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -o $(BUILD)/kv_cold_delta_zc2 tools/kv_cold_delta.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lm
+	PATH="I:/llama/llama.cpp/build_zc2/bin/Release:$$PATH" ./$(BUILD)/kv_cold_delta_zc2 $(LLAMA_GGUF) build/kvslots-zc2 "I:/llama/llama.cpp/build_zc2/bin/Release"
+
+kv-cold-reanchor-zc2: tools/kv_cold_reanchor.c core/kv_cold_base.h | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include -o $(BUILD)/kv_cold_reanchor_zc2 tools/kv_cold_reanchor.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lm
+	PATH="I:/llama/llama.cpp/build_zc2/bin/Release:$$PATH" ./$(BUILD)/kv_cold_reanchor_zc2 $(LLAMA_GGUF) build/kvslots-reanchor-zc2 "I:/llama/llama.cpp/build_zc2/bin/Release" k8v4 35
+
+# SID drives llama resume: cold-KV chain travels through TensorMemStore.
+sid-kv-resume-zc2: tools/sid_kv_resume.c core/kv_cold_base.h | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	@test -d I:/FGLS_new/collection/src || { echo "  (skip: FGLS_new collection not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include \
+	    -I I:/FGLS_new/collection/src -I I:/FGLS_new/collection -I I:/FGLS_new/collection/geo_jump_module/include \
+	    -o $(BUILD)/sid_kv_resume_zc2 tools/sid_kv_resume.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lm
+	PATH="I:/llama/llama.cpp/build_zc2/bin/Release:$$PATH" ./$(BUILD)/sid_kv_resume_zc2 $(LLAMA_GGUF) build/kvslots-sid "I:/llama/llama.cpp/build_zc2/bin/Release"
+
+# SID re-anchor: free-run 20 steps, HOLD@10 into SID, resume from SID.
+sid-kv-reanchor-zc2: tools/sid_kv_reanchor.c core/kv_cold_base.h | $(BUILD)
+	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	@test -d I:/FGLS_new/collection/src || { echo "  (skip: FGLS_new collection not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -I I:/llama/llama.cpp/include -I I:/llama/llama.cpp/ggml/include \
+	    -I I:/FGLS_new/collection/src -I I:/FGLS_new/collection -I I:/FGLS_new/collection/geo_jump_module/include \
+	    -o $(BUILD)/sid_kv_reanchor_zc2 tools/sid_kv_reanchor.c \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml.dll I:/llama/llama.cpp/build_zc2/bin/Release/ggml-base.dll \
+	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lm
+	PATH="I:/llama/llama.cpp/build_zc2/bin/Release:$$PATH" ./$(BUILD)/sid_kv_reanchor_zc2 $(LLAMA_GGUF) build/kvslots-sid "I:/llama/llama.cpp/build_zc2/bin/Release"
 
 kv-cold-prefix: tools/kv_cold_prefix.c core/kv_cold_base.h | $(BUILD)
 	@echo "▶ BUILD  kv_cold_prefix (COLD-KV step 4: prefix-shared base)"
