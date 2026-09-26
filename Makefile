@@ -205,7 +205,7 @@ SMOKE :=   kis_codec_v6_standalone_test   test_tess_index_frame   test_geo_fs   
 KIS :=   kis_4d_explore   kis_alternating_verify   kis_codec_v6_standalone_test   kis_adaptive_deploy   kis_container_place   kis_birds_eye   kis_multi_container   kis_scale_test   test_v5_collision   test_kis_cube_views
 
 # TESS: tessellation pipeline (biggest group)
-TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   test_tess_scale_dedup   test_tess_scale_log_gear   test_tess_gear_full   test_tess_magnify   test_tess_hex_delta   test_tess_sacred   test_tess_subdivide   test_tess_scale_wire   test_tess_tetra_axis   test_tess_torus   test_tess_tetra_torus   test_tess_12x1728   test_tess_geo_jump_walks   test_tess_full_cycle   test_tess_belt   test_tess_tensor_belt   test_tess_ghost   test_tess_leverage   test_tess_registry_gate   test_tess_trace   test_tess_wiring   test_tess_header   test_tess_stream   test_tess_moe_bridge
+TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   test_tess_scale_dedup   test_tess_scale_log_gear   test_tess_gear_full   test_tess_magnify   test_tess_hex_delta   test_tess_sacred   test_tess_subdivide   test_tess_scale_wire   test_tess_tetra_axis   test_tess_torus   test_tess_tetra_torus   test_tess_12x1728   test_tess_geo_jump_walks   test_tess_full_cycle   test_tess_belt   test_tess_tensor_belt   test_tess_ghost   test_tess_leverage   test_tess_registry_gate   test_tess_trace   test_tess_wiring   test_tess_header   test_tess_stream   test_tess_moe_bridge   test_scatter_single   test_tess_view   test_tesspack_tiles
 
 # GEO: geometry core + address space + hyperbolic
 # GEO_FAST: <0.5s each — run often
@@ -226,10 +226,10 @@ ACTIVE := \
   test_hex_quad_dual   test_twin_rebalance   test_d4_linesum_bridge
 
 # GGUF: model loading + box routing
-GGUF :=   test_gguf_box   test_gguf_window_chain   test_gguf_real_gate   test_gguf_multi_model   test_safetensors_reader   test_ggf_walk   test_ggf_walk_mmap   test_ggf_ckpt_replay   test_ggf_fs   test_planet_real
+GGUF :=   test_gguf_box   test_gguf_window_chain   test_gguf_real_gate   test_gguf_multi_model   test_safetensors_reader   test_ggf_walk   test_ggf_walk_mmap   test_ggf_ckpt_replay   test_ggf_fs   test_planet_real   test_hyper_jump_real   test_hyper_seeker_real   test_hyper_resolve   test_hyper_request   test_vol6_hj_real   test_anchor_tess
 
 # BFS: breathing filesystem + seek
-BFS :=   test_bfs_persist   test_bfs_stability   test_bfs_seek_anchor   test_bfs_breath   test_breathing_fs   test_geo_hyper_fs   test_geo_hyper_real   test_bfs_planet_watch   test_bfs_fold   test_bfs_delete   test_bfs_persist_planets   test_bfs_migrate
+BFS :=   test_bfs_persist   test_bfs_stability   test_bfs_seek_anchor   test_bfs_breath   test_breathing_fs   test_geo_hyper_fs   test_geo_hyper_real   test_bfs_planet_watch   test_bfs_fold   test_bfs_delete   test_bfs_persist_planets   test_bfs_migrate   test_bfs_quadtree   test_bfs_wangate
 
 # CAP: capacity/accounting + chain
 CAP :=   test_cap_account   test_cap_tune_real   test_cap_tune_safetensors   test_cap_tune_fs   test_cap_chain_roundtrip   test_cap_chain_big   test_cap_scheme
@@ -241,13 +241,13 @@ GHOST :=   test_ghost_gear_adapter   test_ghost_lift   test_ghost_envelope   tes
 KV :=   test_kv_remap   test_kv_remap_diamond   test_kv_geofs_bridge   test_kv_rail_geofs   test_kv_dramtile   test_hybrid_kv   test_anchor_route   test_anchor_routed   test_anchor_determinism
 
 # 6ICO: compound field + MoE
-SIXICO :=   test_6ico_tesseract   test_18tes_field   test_moe_expert   test_6ico_integration
+SIXICO :=   test_6ico_tesseract   test_18tes_field   test_moe_expert   test_6ico_integration   test_moe_jet
 
 # FIBO: fibonacci walk + dual rail
 FIBO :=   test_fibo_checkpoint   test_fibo_walk   test_fibo_dual_rail
 
 # WALK: walk/bench/parity/cache
-WALK :=   test_walk_sync   test_walk_bench   test_parity_sector   test_cache_locality
+WALK :=   test_walk_sync   test_walk_bench   test_parity_sector   test_cache_locality   test_hyper_jump   test_occlusion_residual   test_gidpith_gates   test_gidpith_weave   test_hyper_conserve   test_hj_gj_unify   test_hyper_seeker   test_hyper_scale   test_vol6   test_vol6_res   test_vol6_stripe   test_vol6_spill   test_vol6_viewport
 
 # ── Group runner (generic) ────────────────────────────
 # Usage: make test-group GROUP="kis tess geo"
@@ -576,6 +576,22 @@ graft-llama:
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lm
 	PATH="$(LLAMA_DLL):$$PATH" ./build/test_gguf_graft_llama $(LLAMA_GGUF) $(LLAMA_DLL)
+
+# HJ inference proof: model bytes live hj-scattered (hj3 144-blocks), the
+# callback gathers each tensor back and serves it; logits+40 tokens must
+# match the direct-load baseline bitwise. Needs the patched build_zc2 DLLs
+# (stock v040 rejects callback pointers: "no host buffer for Vulkan_Host").
+ZC2_DIR = I:/llama/llama.cpp/build_zc2/bin/Release
+ZC2_INC = I:/llama/llama.cpp/include
+ZC2_GGML_INC = I:/llama/llama.cpp/ggml/include
+hj-infer: | $(BUILD)
+	@test -f $(ZC2_DIR)/llama.dll || { echo "  (skip: zc2 DLLs not found)"; exit 0; }
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I $(ZC2_INC) -I $(ZC2_GGML_INC) -o $(BUILD)/hj_infer_proof tools/hj_infer_proof.c \
+	    $(ZC2_DIR)/llama.dll $(ZC2_DIR)/ggml.dll $(ZC2_DIR)/ggml-base.dll \
+	    $(ZC2_DIR)/ggml-cpu-x64.dll -lm
+	PATH="$(ZC2_DIR):$$PATH" ./$(BUILD)/hj_infer_proof $(LLAMA_GGUF) $(ZC2_DIR)
 
 # Anchor-bucket router C port: project → route → exact-rank on SIFT1M.
 # Artifacts from python proof: build/sift1m_c/ (export via build/export_hier_c.py)

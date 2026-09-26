@@ -61,6 +61,14 @@ int main(void) {
     check(clim_invert(&r, 4u, NULL) == -1, "invert below window rejected");
     check(clim_invert(&r, 20741u, NULL) == -1, "invert above window rejected");
 
+    /* unit slide A+1,B+1: [0,20736) -> [1,20737), whole window moves. */
+    clim_init(&r, 0);
+    clim_slide(&r, 1u);
+    check(clim_apply(&r, 0) == 1u && clim_apply(&r, 20735) == 20736u, "unit slide apply");
+    check(clim_invert(&r, 0u, NULL) == -1, "old start falls out");
+    check(clim_invert(&r, 20737u, NULL) == -1, "past new end rejected");
+    check(clim_invert(&r, 20736u, &s) == 0 && s == 20735, "new end inverts");
+
     /* tamper: any byte → -2; bad magic → -1 */
     ClimRec t = r;
     ((unsigned char *)&t)[10] ^= 0xFF;

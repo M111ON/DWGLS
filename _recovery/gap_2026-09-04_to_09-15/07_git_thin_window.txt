@@ -1,0 +1,26 @@
+f405d68|2026-09-10 18:23:52 +0700|docs: session 2026-09-10 — GPU scatter decode, mixed cell_sz bug, multi-format lossless
+27ea7f7|2026-09-10 17:53:24 +0700|docs: multi-format lossless proven — Qwen3-TTS, Qwen3-0.6B, Bonsai
+1469e41|2026-09-10 17:52:13 +0700|fix: scatter decode mixed cell_sz output addressing — per-capo byte offsets
+059cc5c|2026-09-10 17:32:17 +0700|docs: update pending status — real model GPU verify + sig32 + Gemma 4 bake proven
+d3c7590|2026-09-10 17:03:25 +0700|feat: standalone CUDA scatter decode + sig32 integrity + Gemma 4 bake proven
+ca7e22f|2026-09-10 11:59:52 +0700|feat: GPU pipeline scripts + Windows Vulkan inference proven (84 t/s GTX 1050 Ti)
+53fa8bf|2026-09-10 10:27:17 +0700|feat: one-shot Kaggle build+export script for llama.cpp CUDA
+8ea973f|2026-09-10 10:01:41 +0700|docs: Kaggle T4 GPU proven — llama.cpp CUDA 136 t/s, build successful
+dfb8533|2026-09-10 05:51:04 +0700|docs: comprehensive project status — pipeline proven, GPU 47 GB/s, all tests pass
+af2d957|2026-09-10 05:35:45 +0700|feat: GPU zero-copy test + Colab deploy scripts
+56b71c3|2026-09-10 04:08:19 +0700|docs: add GPU bench numbers to AGENTS.md (47 GB/s zero-copy, 63.56 GB/s compressed)
+2a718f1|2026-09-10 04:07:45 +0700|bench: GPU scatter v2 results — DRamTile 47 GB/s, compressed 63.56 GB/s on T4
+c827d63|2026-09-10 03:26:38 +0700|fix: graft OOM via VirtualAlloc RESERVE + iso_user_path auto-detect backend
+b854447|2026-09-10 03:07:33 +0700|docs: update AGENTS.md — tesspack_assemble done, graft OOM done, Colab done
+f14fca6|2026-09-10 03:00:13 +0700|fix(tesspack_assemble): patch header offsets for non-sequential GGUF tensors
+3b6e6db|2026-09-09 13:42:03 +0700|fix: scatter bench header format (uint32 idx_off at offset 12, not uint64 at 16)
+b113635|2026-09-09 13:21:49 +0700|chore: add test_hyp_fusion_e2e to TIER1 (10/10 PASS on real GGUF)
+28d20df|2026-09-09 12:35:17 +0700|feat: GNN+Fan24 tile connectivity + tesspack_assemble + self-sim fix
+fbde498|2026-09-08 14:21:01 +0700|chore: commit bench/tests/tools scripts + gitignore generated data
+4dbf81c|2026-09-08 14:16:31 +0700|feat: Q1_0 support + multi-format tesspack + geo_tess_container Q1_0/Q4_K_M/Q8_0/Q2_K + tess_assemble rewrite + pipeline map update
+3bd1872|2026-09-05 20:44:44 +0700|feat: BFS⇄tess scale bridge on one timeline + HDD-safe scale-follow + pipeline map
+2462bf2|2026-09-05 18:21:16 +0700|feat: Phase 5 complete — graft OOM fix, fast lookup, Octagram discovery, scale-follow test
+4f311ba|2026-09-04 18:19:34 +0700|feat: Platonic Field — 4D mutual indexing, bipolar compression, Voronoi masking
+cf3f435|2026-09-04 06:07:58 +0700|feat: embed GGUF header in .tesspack + session docs + cross-session tools
+2791a83|2026-09-04 04:24:49 +0700|docs: update AGENTS.md with breathing_fs proof and session 2026-09-04 state
+590d388|2026-09-04 04:21:47 +0700|feat: breathing_fs proof — mmap RSS measurement + VirtualAlloc MEM_RESERVE

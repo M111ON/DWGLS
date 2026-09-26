@@ -13,7 +13,7 @@
  *   - No heap allocation, no float, no malloc
  *
  * Depends: frustum_trit.h, frustum_slot64.h, geo_voronoi_mask.h,
- *          geo_box_axes.h, geo_tess_container.h
+ *          geo_box_axes.h
  */
 
 #ifndef FRUSTUM_ROUTE_H
@@ -25,7 +25,6 @@
 #include "frustum_slot64.h"
 #include "geo_voronoi_mask.h"
 #include "geo_box_axes.h"
-#include "geo_tess_container.h"
 
 /* ════════════════════════════════════════════════════════════════
    CONSTANTS
@@ -38,6 +37,8 @@
 
 #define FR_CAPO_KEY_MASK    0xFFFFu  /* 16-bit capo key */
 #define FR_TENSOR_ID_MASK   0xFFFFu  /* 16-bit tensor id */
+#define FR_AXIS_STRIDE      1728u    /* 12^3 field stride */
+#define FR_CELL_BYTES       2u       /* geometry fallback: F16 cell */
 
 /* ════════════════════════════════════════════════════════════════
    OUTPUT: FrustumRouteEvent (32 bytes, packed)
@@ -183,13 +184,13 @@ static inline int fr_route_produce(const FrustumSeeker *seeker,
     evt.branch_path = trit.face;          /* 0..5 */
     evt.view = seeker->view_id;
     evt.node_id = (uint8_t)(trit.coset * FACE_COUNT + trit.face);  /* 0..53 */
-    evt.capo_key = (uint16_t)((seeker->position / TESS_AXIS_STRIDE) & FR_CAPO_KEY_MASK);
+    evt.capo_key = (uint16_t)((seeker->position / FR_AXIS_STRIDE) & FR_CAPO_KEY_MASK);
     evt.tensor_id = (uint16_t)((seeker->position / 144) & FR_TENSOR_ID_MASK);
 
     /* Span derived from frustum depth: 144 * 2^depth slots per level */
     uint32_t base_span = 144u << evt.level;
-    evt.span_offset = (seeker->position % base_span) * TESS_CELL_F16;  /* assume F16 cell */
-    evt.span_size = base_span * TESS_CELL_F16;
+    evt.span_offset = (seeker->position % base_span) * FR_CELL_BYTES;
+    evt.span_size = base_span * FR_CELL_BYTES;
 
     /* Stable reference = hash of all fields except route_ref itself */
     uint64_t ref = 14695981039346656037ull;

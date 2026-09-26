@@ -33,6 +33,10 @@ int ggml_blck_size(int type) {
     static const int bl[] = {1,1,32,32,0,0,32,32,32,32,256,256,256,256,256,256};
     return (type >= 0 && type < 16) ? bl[type] : 0;
 }
+int ggml_blck_size(int type) {
+    static const int bl[] = {1,1,32,32,0,0,32,32,32,32,256,256,256,256,256,256};
+    return (type >= 0 && type < 16) ? bl[type] : 0;
+}
 
 static double now_ms(void) {
 #if defined(_WIN32)

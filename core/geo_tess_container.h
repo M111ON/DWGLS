@@ -26,6 +26,19 @@
 /* Platonic Field: octant identity + Voronoi masking */
 #include "geo_octant.h"
 #include "geo_voronoi_mask.h"
+#include "kis_codec_v6.h"   /* single owner of the stride-37 claim (v6_slot) */
+
+/* Forward declarations for llama-provided helpers (defined by the linked
+ * llama build; header stays link-clean for tools that never call them).
+ * NOTE: translation units that ALSO include ggml.h must define
+ * GGML_TYPE_SIZE_DECL before this header (ggml.h's enum-typed prototypes
+ * win; redeclaring them with int params would conflict). */
+#ifndef GGML_TYPE_SIZE_DECL
+#define GGML_TYPE_SIZE_DECL
+#include <stddef.h>
+size_t ggml_type_size(int type);
+int ggml_blck_size(int type);
+#endif
 
 /* OS/mmap headers for the .tesspack mmap reader */
 #ifdef _WIN32
@@ -243,12 +256,11 @@ static inline uint32_t tess_resolve_octant(uint32_t slot, uint8_t octant,
     return mirrored + tess_axis_offset(axis, h);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   STRIDE-37 SCATTER (weight index → cube cell)
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* STRIDE-37 SCATTER — single claim owned by KIS (v6_slot). This is an alias,
+   not a second polynomial. Scaled form (_in) keeps its modulus (Phase 3). */
 
 static inline uint32_t tess_stride_scatter(uint32_t weight_idx) {
-    return (weight_idx * TESS_STRIDE_37) % TESS_TOTAL_SLOTS;
+    return v6_slot(weight_idx);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -271,7 +283,8 @@ static inline uint32_t tess_effective_slots(const TESS_Header *h) {
  * stride 37 is prime → coprime with any effective_slots not divisible by 37.
  * 20736 = 2^8 * 3^4, all powers-of-2 scaled values remain coprime. */
 static inline uint32_t tess_stride_scatter_in(uint32_t weight_idx, uint32_t effective_slots) {
-    return (weight_idx * TESS_STRIDE_37) % effective_slots;
+    if (effective_slots == V6_SLOTS) return v6_slot(weight_idx);
+    return (weight_idx * V6_STRIDE) % effective_slots;
 }
 
 /*
@@ -283,7 +296,7 @@ static inline uint32_t tess_stride_scatter_in(uint32_t weight_idx, uint32_t effe
  * Cost: scatter + oct_cube_of + oct_is_valid + oct_antipode_flat.
  */
 static inline uint32_t tess_stride_scatter_octant(uint32_t weight_idx) {
-    uint32_t slot = (weight_idx * TESS_STRIDE_37) % TESS_TOTAL_SLOTS;
+    uint32_t slot = tess_stride_scatter(weight_idx);
     uint8_t cube = (uint8_t)(slot / OCT_CELLS);
     if (!oct_is_valid(cube)) {
         slot = oct_antipode_flat(slot);
@@ -300,7 +313,7 @@ static inline uint32_t tess_stride_scatter_octant(uint32_t weight_idx) {
  * Cost: scatter + vm_mask + vm_unmask.
  */
 static inline uint32_t tess_stride_scatter_voronoi(uint32_t weight_idx) {
-    uint32_t slot = (weight_idx * TESS_STRIDE_37) % TESS_TOTAL_SLOTS;
+    uint32_t slot = tess_stride_scatter(weight_idx);
     MaskedPointer p = vm_mask(slot);
     return vm_unmask(p);
 }

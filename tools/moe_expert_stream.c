@@ -93,7 +93,41 @@ static void dequant_q4_k(const block_q4_K *blocks, float *out, int64_t k) {
     }
 }
 
-/* ═══════════════ HELPERS ═══════════════ */
+/* ── Q6_K dequant (true impl, oracle = llama ggml-quants.c on disk) ── */
+typedef struct {
+    uint8_t ql[128];
+    uint8_t qh[64];
+    int8_t  scales[16];
+    uint16_t d;
+} block_q6_K;
+
+static void dequant_q6_k(const block_q6_K *blocks, float *out, int64_t k) {
+    assert(k % QK_K == 0);
+    int64_t nb = k / QK_K;
+    for (int64_t i = 0; i < nb; i++) {
+        float d = fp16_to_fp32(blocks[i].d);
+        const uint8_t *ql0 = blocks[i].ql;
+        const uint8_t *qh0 = blocks[i].qh;
+        const int8_t  *sc0 = blocks[i].scales;
+        for (int n = 0; n < QK_K; n += 128) {
+            const uint8_t *ql = ql0 + (n / 128) * 64;
+            const uint8_t *qh = qh0 + (n / 128) * 32;
+            const int8_t  *sc = sc0 + (n / 128) * 8;
+            for (int l = 0; l < 32; l++) {
+                int is = l / 16;
+                int8_t q1 = (int8_t)((ql[l +  0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
+                int8_t q2 = (int8_t)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+                int8_t q3 = (int8_t)((ql[l +  0]  >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32;
+                int8_t q4 = (int8_t)((ql[l + 32]  >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32;
+                out[l +  0] = d * sc[is + 0] * q1;
+                out[l + 32] = d * sc[is + 2] * q2;
+                out[l + 64] = d * sc[is + 4] * q3;
+                out[l + 96] = d * sc[is + 6] * q4;
+            }
+            out += 128;
+        }
+    }
+}
 
 static void topk(const float *vals, int n, int k, int *out) {
     int *idx = (int *)malloc(n * sizeof(int));
@@ -196,10 +230,6 @@ int main(int argc, char **argv) {
     printf("Stacked tensor sizes: down=%u gate=%u up=%u bytes\n",
            meta_down.size, meta_gate.size, meta_up.size);
 
-    uint32_t per_expert_down = meta_down.size / N_EXPERTS;
-    uint32_t per_expert_gate = meta_gate.size / N_EXPERTS;
-    uint32_t per_expert_up   = meta_up.size / N_EXPERTS;
-
     /* ── 3. Open GGUF for reference + router gate ── */
     GgufReader gguf;
     printf("Opening GGUF: %s\n", gguf_path);
@@ -226,6 +256,20 @@ int main(int argc, char **argv) {
         if (strcmp(gguf.names[i], up_name) == 0)   up_idx   = (int)i;
     }
     printf("Tensor indices: router=%d gate_exp=%d down=%d up=%d\n", router_idx, gate_exp_idx, down_idx, up_idx);
+    /* ── dims from file, never hardcoded (huihui-1b gate = [1024,3] f32,
+     * not qwen3's [2560,64] f16 — hardcode segfaulted here) ── */
+    int n_experts = N_EXPERTS, gate_embd = 2560;
+    if (router_idx >= 0) {
+        int d0 = (int)gguf.dims[(size_t)router_idx * 4 + 0];
+        int d1 = (int)gguf.dims[(size_t)router_idx * 4 + 1];
+        if (d0 > 0 && d1 > 0) { gate_embd = d0; n_experts = d1; }
+    }
+    int k_eff = TOP_K < n_experts ? TOP_K : n_experts;
+    printf("MoE dims: n_embd=%d n_experts=%d k_eff=%d\n", gate_embd, n_experts, k_eff);
+
+    uint32_t per_expert_down = meta_down.size / (uint32_t)n_experts;
+    uint32_t per_expert_gate = meta_gate.size / (uint32_t)n_experts;
+    uint32_t per_expert_up   = meta_up.size / (uint32_t)n_experts;
     if (down_idx >= 0)      printf("  down size=%u bytes\n", gguf.sizes[down_idx]);
     if (gate_exp_idx >= 0)  printf("  gate_exp size=%u bytes\n", gguf.sizes[gate_exp_idx]);
     if (up_idx >= 0)        printf("  up size=%u bytes\n", gguf.sizes[up_idx]);
@@ -234,29 +278,30 @@ int main(int argc, char **argv) {
     int selected[TOP_K];
     if (router_idx >= 0) {
         uint32_t gate_sz = gguf.sizes[router_idx];
-        float *gate_f32 = (float *)malloc(N_EXPERTS * sizeof(float));
+        float *gate_f32 = (float *)malloc((size_t)n_experts * sizeof(float));
         uint8_t *gate_buf = (uint8_t *)malloc(gate_sz);
         if (gguf_read_tensor(gguf_path, &gguf, router_idx, gate_buf, gate_sz) == 0) {
-            int n_embd = 2560;
-            if (gate_sz == (uint32_t)(n_embd * N_EXPERTS * 2)) {
+            int n_embd = gate_embd;
+            if (gate_sz == (uint32_t)(n_embd * n_experts * 2)) {
                 const uint16_t *gate_u16 = (const uint16_t *)gate_buf;
-                for (int e = 0; e < N_EXPERTS; e++) {
+                for (int e = 0; e < n_experts; e++) {
                     double sum = 0;
                     for (int j = 0; j < n_embd; j++)
-                        sum += fp16_to_fp32(gate_u16[j * N_EXPERTS + e]);
+                        sum += fp16_to_fp32(gate_u16[j * n_experts + e]);
                     gate_f32[e] = (float)sum;
                 }
                 printf("Router gate: f16\n");
             } else {
                 const float *gf = (const float *)gate_buf;
-                for (int e = 0; e < N_EXPERTS; e++) {
+                for (int e = 0; e < n_experts; e++) {
                     double sum = 0;
-                    for (int j = 0; j < n_embd; j++) sum += gf[j * N_EXPERTS + e];
+                    for (int j = 0; j < n_embd; j++) sum += gf[j * n_experts + e];
                     gate_f32[e] = (float)sum;
                 }
                 printf("Router gate: f32\n");
             }
-            topk(gate_f32, N_EXPERTS, TOP_K, selected);
+            topk(gate_f32, n_experts, k_eff, selected);
+            for (int i = k_eff; i < TOP_K; i++) selected[i] = selected[k_eff - 1];
         } else {
             for (int i = 0; i < TOP_K; i++) selected[i] = i;
         }
@@ -294,8 +339,8 @@ int main(int argc, char **argv) {
         printf("  rc=%d\n", rc);
     }
 
-    /* infer dimensions from sizes */
-    int n_embd = 2560;
+    /* infer dimensions from sizes (n_embd = gate input dim from file) */
+    int n_embd = gate_embd;
     /* per_expert_gate = Q4_K blocks for n_embd * n_ff_per_expert values */
     /* blocks = per_expert_gate / sizeof(block_q4_K), elements = blocks * QK_K */
     /* gate shape per expert: [n_embd, n_ff] → n_ff = total_elements / n_embd */
@@ -326,11 +371,20 @@ int main(int argc, char **argv) {
         const block_q4_K *pool_up   = (const block_q4_K *)(region.base + meta_up.offset   + (uint64_t)e * per_expert_up);
         dequant_q4_k(pool_gate, gate_f, n_embd * n_ff);
         dequant_q4_k(pool_up,   up_f,   n_embd * n_ff);
-        /* down is F16 — dequant f16→f32 */
+        /* down dtype from file: Q6_K (huihui) or F16 — never assumed */
         {
-            const uint16_t *pool_down_f16 = (const uint16_t *)(region.base + meta_down.offset + (uint64_t)e * per_expert_down);
+            int down_dtype = (down_idx >= 0) ? (int)gguf.dtypes[down_idx] : -1;
+            const uint8_t *pool_down = region.base + meta_down.offset + (uint64_t)e * per_expert_down;
             int64_t n_down = (int64_t)n_ff * n_embd;
-            for (int64_t i = 0; i < n_down; i++) down_f[i] = fp16_to_fp32(pool_down_f16[i]);
+            if (down_dtype == 14) {
+                dequant_q6_k((const block_q6_K *)pool_down, down_f, n_down);
+            } else if (down_dtype == 1) {
+                const uint16_t *pd = (const uint16_t *)pool_down;
+                for (int64_t i = 0; i < n_down; i++) down_f[i] = fp16_to_fp32(pd[i]);
+            } else {
+                printf("  FAIL: unsupported down dtype %d\n", down_dtype);
+                return 1;
+            }
         }
 
         float *out_stream = (float *)malloc(n_embd * sizeof(float));
@@ -346,11 +400,20 @@ int main(int argc, char **argv) {
         const block_q4_K *ref_up   = (const block_q4_K *)(full_up_raw   + (uint64_t)e * per_expert_up);
         dequant_q4_k(ref_gate, rgate_f, n_embd * n_ff);
         dequant_q4_k(ref_up,   rup_f,   n_embd * n_ff);
-        /* down is F16 — convert f16→f32 */
+        /* down: same dtype branch as streamed side */
         {
-            const uint16_t *ref_down_f16 = (const uint16_t *)(full_down_raw + (uint64_t)e * per_expert_down);
+            int down_dtype = (down_idx >= 0) ? (int)gguf.dtypes[down_idx] : -1;
+            const uint8_t *ref_down = full_down_raw + (uint64_t)e * per_expert_down;
             int64_t n_down = (int64_t)n_ff * n_embd;
-            for (int64_t i = 0; i < n_down; i++) rdown_f[i] = fp16_to_fp32(ref_down_f16[i]);
+            if (down_dtype == 14) {
+                dequant_q6_k((const block_q6_K *)ref_down, rdown_f, n_down);
+            } else if (down_dtype == 1) {
+                const uint16_t *rd = (const uint16_t *)ref_down;
+                for (int64_t i = 0; i < n_down; i++) rdown_f[i] = fp16_to_fp32(rd[i]);
+            } else {
+                printf("  FAIL: unsupported down dtype %d\n", down_dtype);
+                return 1;
+            }
         }
 
         float *out_ref = (float *)malloc(n_embd * sizeof(float));

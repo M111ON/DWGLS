@@ -95,6 +95,23 @@ static inline uint32_t tess_win_col(uint32_t flat) { return flat % TESS_WIN_COLS
 static inline uint32_t tess_row_tess(uint32_t row) { return row / TESS_3D_CELLS; }
 static inline uint32_t tess_row_cell(uint32_t row) { return row % TESS_3D_CELLS; }
 
+/* ── capo (storage) → tess (view): byte pointer into a 20736-slot capo ──
+ * capo = bytes, tess = coordinates. No bytes move. NULL on OOB (fail-loud;
+ * tess_flat itself wraps with %, so the check lives here). */
+static inline const uint8_t *tess_capo_at(const uint8_t *capo, uint32_t cell_size,
+                                          uint32_t tess, uint32_t cell, uint32_t slot) {
+    if (!capo || !cell_size || tess >= TESS_COUNT ||
+        cell >= TESS_3D_CELLS || slot >= TESS_SLOTS) return NULL;
+    return capo + (size_t)tess_flat(tess, cell, slot) * cell_size;
+}
+static inline uint8_t *tess_capo_at_mut(uint8_t *capo, uint32_t cell_size,
+                                        uint32_t tess, uint32_t cell, uint32_t slot) {
+    return (uint8_t *)tess_capo_at(capo, cell_size, tess, cell, slot);
+}
+static inline uint32_t tess_view_row(uint32_t tess, uint32_t cell) {
+    return tess * TESS_3D_CELLS + cell;   /* == tess_win_row(tess_flat) */
+}
+
 /* Whole 4 KiB pages in one window: 0 when this cell size cannot page-align.
    A cell size page-aligns iff it is a multiple of 16 B: with 20736 = 2^8*3^4
    and 4096 = 2^12 we need 16 | c.  Examples (see tests): c=4 -> 0, c=16 -> 81

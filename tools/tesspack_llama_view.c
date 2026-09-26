@@ -28,6 +28,9 @@
 #include "llama.h"
 #include "ggml-backend.h"
 
+/* ggml.h's enum-typed ggml_type_size/blck_size win; suppress the header's
+ * int-typed forward decls (would conflict). */
+#define GGML_TYPE_SIZE_DECL
 #include "../core/gguf_reader.h"
 #include "../core/geo_tess_container.h"
 
@@ -43,6 +46,31 @@ static const uint32_t GGUF_CELL_SIZE[] = {
 
 static int is_moe_expert(const char *name) {
     return strstr(name, "_exps.weight") != NULL;
+}
+
+/* ── load tensor from .tesspack in tess-tile units (1152 slots each).
+ * Same destination layout as load_from_pack_direct — only the I/O
+ * granularity changes (view order). Byte-identical output proves the
+ * tile path is a valid serve path. ── */
+static int load_from_pack_tiles(TESS_PackIndex *pi, const char *name,
+                                uint32_t n_capos, uint32_t total_cells,
+                                uint32_t cell_size, uint8_t *body,
+                                uint64_t body_off, size_t body_sz) {
+    for (uint32_t c = 0; c < n_capos; c++) {
+        TESS_CapoReader cr;
+        if (tess_pack_get_capo(pi, &cr, name, c) != 0) return -1;
+        uint32_t cells = (c < n_capos - 1) ? TESS_TOTAL_SLOTS
+                        : (total_cells - c * TESS_TOTAL_SLOTS);
+        for (uint32_t s = 0; s < cells; s += 1152u) {
+            uint32_t n = (cells - s > 1152u) ? 1152u : (cells - s);
+            uint64_t dst = body_off + (uint64_t)c * TESS_TOTAL_SLOTS * cell_size
+                         + (uint64_t)s * cell_size;
+            if (dst + (uint64_t)n * cell_size > body_sz) return -1;
+            uint32_t bytes = tess_capo_load_range(&cr, s, n, body + dst);
+            if (bytes == 0) return -1;
+        }
+    }
+    return 0;
 }
 
 /* ── load tensor from .tesspack directly into body (no temp alloc) ── */
@@ -75,6 +103,8 @@ int main(int argc, char **argv) {
     const char *pack_path  = (argc > 2) ? argv[2] : "F:\\model\\qwen3moe.tesspack";
     const char *out_path   = (argc > 3) ? argv[3] : "F:\\model\\moe_tessview_out.gguf";
     const char *dll_dir    = (argc > 4) ? argv[4] : "I:\\llama\\llama-b9733-bin-win-vulkan-x64";
+    int tiles_mode = (argc > 5 && strcmp(argv[5], "--tiles") == 0);
+    if (tiles_mode) printf("Mode: TESS-TILE assemble (1152-slot units)\n");
     setvbuf(stdout, NULL, _IONBF, 0);
 
 #ifdef _WIN32
@@ -139,7 +169,7 @@ int main(int argc, char **argv) {
         uint32_t csz = GGUF_CELL_SIZE[gguf.dtypes[i]];
         if (csz == 0) csz = 1;
 
-        if (is_moe_expert(gguf.names[i])) {
+        if (is_moe_expert(gguf.names[i]) || tiles_mode) {
             /* count capos for this tensor */
             int capo_count = 0;
             uint32_t capo_total = 0;
@@ -162,8 +192,12 @@ int main(int argc, char **argv) {
             }
 
             uint32_t total_cells = tsz / csz;
-            if (load_from_pack_direct(&pi, gguf.names[i], capo_count,
-                                       total_cells, csz, body, off, body_sz) == 0) {
+            int ok = tiles_mode
+                ? load_from_pack_tiles(&pi, gguf.names[i], capo_count,
+                                       total_cells, csz, body, off, body_sz)
+                : load_from_pack_direct(&pi, gguf.names[i], capo_count,
+                                        total_cells, csz, body, off, body_sz);
+            if (ok == 0) {
                 from_pack++;
                 pack_bytes += tsz;
             } else {

@@ -11,6 +11,14 @@
 #include <malloc.h>
 #include <windows.h>
 
+static double now_ms(void) {
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER t;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t);
+    return (double)t.QuadPart * 1000.0 / (double)freq.QuadPart;
+}
+
 typedef struct {
     const uint8_t *base;
     size_t size;
@@ -92,22 +100,38 @@ int main(int argc, char ** argv) {
     SetDllDirectoryA(backend_path);
     ggml_backend_load_all_from_path(NULL); /* discover backends beside the executable */
     struct llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = 0;
+    mp.n_gpu_layers = argc > 5 ? atoi(argv[5]) : 35;
+    mp.no_host = true;
     struct llama_model * model = llama_model_init_from_user(meta, provide_tensor, &hook, mp);
     printf("model=%s mode=%s tensors=%lld served=%u synthetic=%u\n", model ? "ok" : "FAIL",
            hook.copy ? "copy" : "mmap", (long long) gguf_get_n_tensors(meta), hook.served, hook.synthetic);
     if (!model) return 1;
 
     struct llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 64; cp.n_batch = 64; cp.n_threads = 8;
+    cp.n_ctx = 16; cp.n_batch = 16; cp.n_threads = 8;
     struct llama_context * ctx = llama_init_from_model(model, cp);
     const struct llama_vocab * vocab = llama_model_get_vocab(model);
     int n = llama_tokenize(vocab, prompt, (int32_t) strlen(prompt), NULL, 0, true, false);
     if (n < 0) n = -n;
     llama_token * toks = malloc((size_t) n * sizeof(*toks));
     n = llama_tokenize(vocab, prompt, (int32_t) strlen(prompt), toks, n, true, false);
+    double t0 = now_ms();
     int rc = ctx && n > 0 ? llama_decode(ctx, llama_batch_get_one(toks, n)) : -1;
-    printf("first_decode_rc=%d\n", rc);
+    double t1 = now_ms();
+    int gen = argc > 4 ? atoi(argv[4]) : 16;
+    struct llama_sampler * smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+    int generated = 0;
+    for (; rc == 0 && generated < gen; generated++) {
+        llama_token tok = llama_sampler_sample(smpl, ctx, -1);
+        llama_sampler_accept(smpl, tok);
+        rc = llama_decode(ctx, llama_batch_get_one(&tok, 1));
+    }
+    double t2 = now_ms();
+    llama_sampler_free(smpl);
+    printf("first_decode_rc=%d prompt_ms=%.2f gen=%d gen_ms=%.2f tok_s=%.2f\n",
+           rc, t1 - t0, generated, t2 - t1,
+           generated ? generated * 1000.0 / (t2 - t1) : 0.0);
 
     free(toks);
     if (ctx) llama_free(ctx);

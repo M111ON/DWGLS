@@ -23,6 +23,7 @@
 #include "../core/moe_expert_addr.h"
 #include "../core/infra/dramtile_store.h"
 #include "../core/moe_expert_store.h"
+#include "../core/infra/geo_gpu_pipeline.h"
 
 #define N_EXPERTS   64
 #define TOP_K       4
@@ -388,6 +389,14 @@ int main(int argc, char **argv) {
     uint32_t from_pool = 0, from_source = 0;
     uint64_t pool_bytes = 0, source_bytes = 0;
 
+    /* jet want-stream: every pool load is a want at its geometric offset */
+    GeoPipelineCtx jet;
+    geo_pipeline_init(&jet);
+    uint32_t strat_hist[3] = {0, 0, 0};   /* C3=0, B=1, C1=2 */
+    uint64_t prev_off = 0;
+    int have_prev = 0;
+    uint32_t tick = 0;
+
     for (uint32_t i = 0; i < gguf.n_tensors; i++) {
         uint64_t off = gguf.offsets[i];
         uint32_t tsz = gguf.sizes[i];
@@ -410,6 +419,18 @@ int main(int argc, char **argv) {
                     memcpy(body + off, region.base + meta.offset, tsz);
                     from_pool++;
                     pool_bytes += tsz;
+                    /* jet want: L = quantized hop in slots from previous load */
+                    uint32_t L = 0;
+                    if (have_prev && region.slot_sz) {
+                        uint64_t hop = meta.offset > prev_off ? meta.offset - prev_off
+                                                              : prev_off - meta.offset;
+                        L = (uint32_t)(hop / region.slot_sz >> 6);
+                        if (L > 11) L = 11;
+                    }
+                    int s = geo_pipeline_want(&jet, tick++, L);
+                    if (s >= 0 && s < 3) strat_hist[s]++;
+                    prev_off = meta.offset;
+                    have_prev = 1;
                     continue;
                 }
             }
@@ -428,6 +449,12 @@ int main(int argc, char **argv) {
     printf("  body:     %zu bytes\n", body_sz);
     printf("  from pool:   %u tensors (%.1f MB)\n", from_pool, pool_bytes / 1e6);
     printf("  from source: %u tensors (%.1f MB)\n", from_source, source_bytes / 1e6);
+    /* drain: one spine round per layer, then flush leftovers */
+    geo_pipeline_tick_n(&jet, (uint32_t)n_layers * 12);
+    for (int i = 0; i < 24 && jet.wants_ready; i++) geo_pipeline_tick(&jet);
+    printf("  jet: wants=%u coalesced=%u bridges=%u (C3=%u B=%u C1=%u)\n",
+           from_pool, jet.wants_coalesced, jet.bridges,
+           strat_hist[0], strat_hist[1], strat_hist[2]);
 
     /* write graft GGUF */
     FILE *f = fopen(route_path, "wb");

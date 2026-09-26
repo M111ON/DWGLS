@@ -19,7 +19,7 @@
         "schedule": "0 * * * *"
       },
       "verify": {
-        "schedule": "0 3 * * *"
+        "schedule": "0 * * * *"
       },
       "verify-broad": {
         "schedule": "0 */6 * * *"
@@ -56,8 +56,41 @@
       "model": "9router/oc/mimo-v2.6-flash-free",
       "tasks": {
         "map-memories": {
-          "model": "9router/oc/mimo-v2.6-flash-free",
+          "model": "9router/working",
           "variant": "High"
+        },
+        "verify": {
+          "model": "9router/working"
+        },
+        "verify-broad": {
+          "model": "9router/working"
+        },
+        "curate": {
+          "model": "9router/working"
+        },
+        "compress-cues": {
+          "model": "9router/working"
+        },
+        "classify-memories": {
+          "model": "9router/working"
+        },
+        "retrospective": {
+          "model": "9router/working"
+        },
+        "maintain-docs": {
+          "model": "9router/working"
+        },
+        "evaluate-smart-notes": {
+          "model": "9router/working"
+        },
+        "review-user-memories": {
+          "model": "9router/working"
+        },
+        "promote-primers": {
+          "model": "9router/working"
+        },
+        "refresh-primers": {
+          "model": "9router/working"
         }
       }
     }
