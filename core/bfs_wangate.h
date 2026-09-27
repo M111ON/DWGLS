@@ -77,8 +77,9 @@ static inline int bwt_verify(const BreathingFS *fs, const BWTape *t, const char 
     return 0;
 }
 
-/* gated read: DROP (refuse) on any gate failure — never silent garbage. */
-static inline int bwt_read(const BreathingFS *fs, const BWTape *t, const char *name,
+/* gated read: DROP (refuse) on any gate failure — never silent garbage.
+ * Non-const: hit path touches the BFS LRU clock (read = touch). */
+static inline int bwt_read(BreathingFS *fs, const BWTape *t, const char *name,
                            int8_t *out, uint32_t out_size, uint32_t *actual) {
     int v = bwt_verify(fs, t, name);
     if (v != 0) return v - 10;   /* -11 tamper, -12 break, -13 missing */

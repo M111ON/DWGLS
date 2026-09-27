@@ -106,6 +106,16 @@ typedef struct {
     uint16_t payload_size;
 } BFSBlockMeta;
 
+/* ═══════════════ EVICTION HOOKS (card #46; v6res pattern) ═══════════════
+ * Spill whole file: return 0 ok, nonzero = veto (victim kept, caller fails
+ * loud, nothing lost). Fill by name: return 0 = restored (*out malloc'd by
+ * backend, caller frees), 1 = no data, <0 = error. Hooks are in-memory only
+ * (never persisted; parse/load resets them to NULL — caller re-attaches). */
+typedef int (*bfs_spill_fn)(const char *name, const int8_t *data,
+                            uint32_t size, void *user);
+typedef int (*bfs_fill_fn)(const char *name, int8_t **out,
+                           uint32_t *size, void *user);
+
 /* ═══════════════ FILE SYSTEM ═══════════════ */
 typedef struct {
     uint32_t magic;
@@ -133,7 +143,33 @@ typedef struct {
                                    * block id (overwritten on next retire of
                                    * the same block). tomb.magic==0 = none. */
     uint32_t tomb_count;          /* cumulative retires (audit) */
+    /* ── residency bound + LRU eviction (card #46) ── */
+    uint64_t clock;               /* LRU clock, bumped per touch */
+    uint32_t file_tick[BFS_MAX_FILES]; /* last-access tick per file slot */
+    uint32_t max_blocks;          /* residency cap in blocks; 0 = BFS_BLOCKS */
+    bfs_spill_fn spill;           /* NULL = no spill path (writes fail -2/-3/-4) */
+    bfs_fill_fn fill;             /* NULL = evicted files stay missing */
+    void *spill_user;             /* opaque backend context for both hooks */
+    /* ── layer separation (HJ doctrine §0: planet is layer 3, NOT counted
+     * in residency) ── */
+    uint8_t planets_off;          /* 0 = watch (default, v1); 1 = skip birth/
+                                   * retire/verify-collect — clean measurement
+                                   * of the residency layer alone */
+    /* ── jet freeride counters (doctrine §5: ambulance, not highway) ──
+     * Counted on the read/fault path: resident hits vs fill-faults
+     * (inbound ambulance trips) + spill-outs (outbound). Writes are not
+     * traffic — only reads and displacements count. */
+    uint64_t direct_q;            /* resident-hit reads */
+    uint64_t direct_b;            /* bytes served resident */
+    uint64_t fault_q;             /* fill-fault reads (ambulance inbound) */
+    uint64_t fault_b;             /* bytes restored via fill */
+    uint64_t spill_q;             /* spill-out displacements */
+    uint64_t spill_b;             /* bytes displaced to spill */
 } BreathingFS;
+
+/* forward decls (evict path needs delete+read; read-needs-fill needs write) */
+static inline int bfs_delete(BreathingFS *fs, const char *name);
+static inline int bfs_evict_oldest(BreathingFS *fs);
 
 /* ═══════════════ INIT ═══════════════ */
 static inline void bfs_init(BreathingFS *fs) {
@@ -147,46 +183,65 @@ static inline void bfs_init(BreathingFS *fs) {
         fs->block_owner[i] = 0xFFFFFFFF;
 }
 
-/* ═══════════════ WRITE ═══════════════ */
+/* ═══════════════ WRITE ═══════════════
+ * No spill path: full table returns -2/-3/-4 exactly as v1 (tests pin this).
+ * Spill path set: evict LRU files and retry until the write fits or no
+ * victim is spillable (veto → fail loud, nothing lost). */
 static inline int bfs_write(BreathingFS *fs, const char *name,
                              const int8_t *data, uint32_t size)
 {
     if (!fs || !name || !data || size == 0) return -1;
-    if (fs->n_files >= BFS_MAX_FILES) return -2;
     uint32_t n_blocks = (size + BFS_SLOTS_BLOCK - 1) / BFS_SLOTS_BLOCK;
-    if (n_blocks > BFS_BLOCKS - fs->n_blocks_used) return -3;
+    uint32_t cap = (fs->max_blocks && fs->max_blocks < BFS_BLOCKS)
+                 ? fs->max_blocks : BFS_BLOCKS;
+    if (n_blocks > cap) return -3;   /* single file larger than residency */
 
-    /* CONTIGUOUS-RUN ALLOC (Aug 10, 2026 — consensus v3):
-     * a file owns a contiguous span [start, start+n_blocks) of the block
-     * address space — matches bfs_read (home_block+b) and the geometry
-     * DNA "file = contiguous address span". OLD first-free-scan left
-     * holes after any deletion that silently broke reads. O(n) run scan,
-     * zero malloc. Returns -4 if no run of n free blocks exists. */
-    uint32_t blocks[BFS_BLOCKS];
-    blocks[0] = 0; /* silence maybe-uninitialized; ok_start guard ensures real value */
-    uint32_t run_start = 0, found = 0, ok_start = BFS_BLOCKS;
-    for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
-        if (fs->block_owner[i] == 0xFFFFFFFF) {
-            if (found == 0) run_start = i;
-            found++;
-            if (found >= n_blocks) { ok_start = run_start; break; }
-        } else {
-            found = 0;
+    /* evict-and-retry: each round frees >=1 file or stops, so snapshot the
+     * bound up front (n_files shrinks as victims are evicted — rereading it
+     * as the bound would exit early with a stale failure code). No spill
+     * path → first failure returns its v1 code. */
+    uint32_t ok_start = BFS_BLOCKS;
+    int v1_rc = 0;
+    uint32_t max_rounds = fs->n_files + 1;
+    for (uint32_t round = 0; round < max_rounds; round++) {
+        if (fs->n_files >= BFS_MAX_FILES) { v1_rc = -2; }
+        else if (n_blocks > cap - fs->n_blocks_used) { v1_rc = -3; }
+        else {
+            /* CONTIGUOUS-RUN ALLOC (Aug 10, 2026 — consensus v3):
+             * a file owns a contiguous span [start, start+n_blocks) of the block
+             * address space — matches bfs_read (home_block+b) and the geometry
+             * DNA "file = contiguous address span". OLD first-free-scan left
+             * holes after any deletion that silently broke reads. O(n) run scan,
+             * zero malloc. Returns -4 if no run of n free blocks exists. */
+            uint32_t run_start = 0, found = 0;
+            ok_start = BFS_BLOCKS;
+            for (uint32_t i = 0; i < BFS_BLOCKS; i++) {
+                if (fs->block_owner[i] == 0xFFFFFFFF) {
+                    if (found == 0) run_start = i;
+                    found++;
+                    if (found >= n_blocks) { ok_start = run_start; break; }
+                } else {
+                    found = 0;
+                }
+            }
+            if (ok_start != BFS_BLOCKS) { v1_rc = 0; break; }
+            v1_rc = -4;   /* fragmented: no run of n free */
         }
+        if (!fs->spill || bfs_evict_oldest(fs) != 0) return v1_rc;
+        ok_start = BFS_BLOCKS;   /* re-scan after eviction */
     }
-    if (ok_start == BFS_BLOCKS) return -4;   /* fragmented: no run of n free */
-    for (uint32_t b = 0; b < n_blocks; b++) blocks[b] = ok_start + b;
+    if (ok_start == BFS_BLOCKS) return v1_rc ? v1_rc : -4;
 
     BFSFileEntry *fe = &fs->files[fs->n_files];
     memset(fe, 0, sizeof(*fe));
     strncpy(fe->name, name, BFS_MAX_NAME - 1);
     fe->n_blocks = n_blocks;
-    fe->home_block = blocks[0];
+    fe->home_block = ok_start;
     fe->total_bytes = size;
     fe->valid = 1;
 
     for (uint32_t b = 0; b < n_blocks; b++) {
-        uint32_t bi = blocks[b];
+        uint32_t bi = ok_start + b;
         uint32_t offset = b * BFS_SLOTS_BLOCK;
         uint32_t bsz = BFS_SLOTS_BLOCK;
         if (offset + bsz > size) bsz = size - offset;
@@ -213,25 +268,27 @@ static inline int bfs_write(BreathingFS *fs, const char *name,
         }
 
         fs->block_owner[bi] = fs->n_files;
-        /* watcher birth: block id = bi (stable: no delete path, no reuse).
-         * Watches block_ENCODED (the bytes reads consume — block_data is
-         * write-staging nobody re-reads; decode never checks its checksum,
-         * so this planet is the only integrity layer). W=0 = full-field
-         * frame (v1: write-scale refinement YAGNI until a reader needs it). */
-        planet_birth(&fs->planets[bi], bi, 0u, bi,
-                     (const int8_t *)fs->block_encoded[bi],
-                     fs->block_encoded_size[bi]);
+        /* watcher birth (layer 3; skipped when planets_off — residency
+         * measurement runs without the integrity layer). Watches
+         * block_ENCODED (the bytes reads consume). W=0 = full-field frame. */
+        if (!fs->planets_off)
+            planet_birth(&fs->planets[bi], bi, 0u, bi,
+                         (const int8_t *)fs->block_encoded[bi],
+                         fs->block_encoded_size[bi]);
         seeker_advance(&fs->seeker);
     }
 
     fs->n_files++;
     fs->n_blocks_used += n_blocks;
     fs->total_bytes += size;
+    fs->file_tick[fs->n_files - 1] = (uint32_t)++fs->clock; /* write = touch */
     return 0;
 }
 
-/* ═══════════════ READ ═══════════════ */
-static inline int bfs_read(const BreathingFS *fs, const char *name,
+/* ═══════════════ READ ═══════════════
+ * Hit: LRU touch. Miss (-2) with fill hook: fault the file back in
+ * (bfs_write may itself evict) and retry once — eviction is transparent. */
+static inline int bfs_read(BreathingFS *fs, const char *name,
                             int8_t *out, uint32_t out_size, uint32_t *actual_size)
 {
     if (!fs || !name || !out) return -1;
@@ -243,7 +300,26 @@ static inline int bfs_read(const BreathingFS *fs, const char *name,
             break;
         }
     }
-    if (file_idx < 0) return -2;
+    int was_fault = 0;
+    if (file_idx < 0) {
+        if (!fs->fill) return -2;
+        int8_t *fb = NULL;
+        uint32_t fsz = 0;
+        int frc = fs->fill(name, &fb, &fsz, fs->spill_user);
+        if (frc != 0 || !fb || fsz == 0) { free(fb); return -2; }
+        int wrc = bfs_write(fs, name, fb, fsz);
+        free(fb);
+        if (wrc != 0) return -2;
+        for (uint32_t i = 0; i < fs->n_files; i++) {
+            if (fs->files[i].valid && strcmp(fs->files[i].name, name) == 0) {
+                file_idx = (int)i;
+                break;
+            }
+        }
+        if (file_idx < 0) return -2;
+        was_fault = 1;   /* ambulance inbound: this read rode the fill path */
+    }
+    fs->file_tick[file_idx] = (uint32_t)++fs->clock; /* read = touch */
 
     const BFSFileEntry *fe = &fs->files[file_idx];
     if (actual_size) *actual_size = fe->total_bytes;
@@ -270,6 +346,10 @@ static inline int bfs_read(const BreathingFS *fs, const char *name,
         if (rc != 0) return -5;
         memcpy(out + offset, dec, bsz);
     }
+    /* freeride counters (doctrine §5): success only — failures are the
+     * caller's backpressure signal, not traffic. */
+    if (was_fault) { fs->fault_q++; fs->fault_b += fe->total_bytes; }
+    else           { fs->direct_q++; fs->direct_b += fe->total_bytes; }
     return 0;
 }
 
@@ -294,7 +374,10 @@ static inline int bfs_delete(BreathingFS *fs, const char *name)
     for (uint32_t b = 0; b < fe->n_blocks; b++) {
         uint32_t bi = fe->home_block + b;
         if (bi >= BFS_BLOCKS) continue;
-        if (fs->planets[bi].magic == PLANET_MAGIC && !fs->planets[bi].retired) {
+        /* retire-then-free (layer 3; skipped when planets_off — nothing
+         * was born, so no grave to keep). */
+        if (!fs->planets_off &&
+            fs->planets[bi].magic == PLANET_MAGIC && !fs->planets[bi].retired) {
             planet_retire(&fs->planets[bi], 0u);
             fs->tombs[bi] = fs->planets[bi].tomb;
             fs->tomb_count++;
@@ -305,10 +388,12 @@ static inline int bfs_delete(BreathingFS *fs, const char *name)
     fs->n_blocks_used -= fe->n_blocks;
     fs->total_bytes -= fe->total_bytes;
     /* compact file slots (swap-with-last) so deletes really free; blocks
-     * point at file indices, so repoint the moved file's blocks. */
+     * point at file indices, so repoint the moved file's blocks. Ticks move
+     * with their file slot (LRU identity follows the entry). */
     uint32_t last = fs->n_files - 1u;
     if ((uint32_t)file_idx != last) {
         fs->files[file_idx] = fs->files[last];
+        fs->file_tick[file_idx] = fs->file_tick[last];
         BFSFileEntry *mv = &fs->files[file_idx];
         for (uint32_t b = 0; b < mv->n_blocks; b++) {
             uint32_t bi = mv->home_block + b;
@@ -316,8 +401,129 @@ static inline int bfs_delete(BreathingFS *fs, const char *name)
         }
     }
     memset(&fs->files[last], 0, sizeof(fs->files[last]));  /* valid=0 */
+    fs->file_tick[last] = 0;
     fs->n_files--;
     return 0;
+}
+
+/* ═══════════════ EVICTION + RESIDENCY (card #46) ═══════════════
+ * LRU victim = valid file with smallest tick (untouched files tick 0 evict
+ * first — oldest by construction). Spill runs BEFORE delete (retire-then-free
+ * inside bfs_delete archives planets first); spill veto → victim kept.
+ * Returns 0 ok, -1 args/empty, -2 no spill path, -3 spill vetoed. */
+static inline int bfs_evict_oldest(BreathingFS *fs)
+{
+    if (!fs) return -1;
+    if (fs->n_files == 0) return -1;
+    if (!fs->spill) return -2;
+    uint32_t victim = 0;
+    for (uint32_t i = 1; i < fs->n_files; i++)
+        if (fs->file_tick[i] < fs->file_tick[victim]) victim = i;
+    BFSFileEntry *fe = &fs->files[victim];
+    if (!fe->valid) return -1;
+    int8_t *buf = (int8_t *)malloc(fe->total_bytes);
+    if (!buf) return -1;
+    uint32_t act = 0;
+    /* direct decode (no fill recursion: victim is resident by construction) */
+    int rc = -2;
+    {
+        uint32_t save_tick = fs->file_tick[victim];
+        /* inline read without touch/fill: victim exists, decode straight */
+        V6bContainer _ev_dc;
+        uint8_t ok = 1;
+        for (uint32_t b = 0; b < fe->n_blocks; b++) {
+            uint32_t bi = fe->home_block + b;
+            if (bi >= BFS_BLOCKS) { ok = 0; break; }
+            v6b_dc_init(&_ev_dc);
+            _ev_dc.strategy = fs->block_meta[bi].strategy;
+            _ev_dc.payload_size = fs->block_encoded_size[bi];
+            memcpy(_ev_dc.payload, fs->block_encoded[bi], _ev_dc.payload_size);
+            _ev_dc.checksum = v6b_dc_crc32(_ev_dc.payload, _ev_dc.payload_size);
+            uint32_t offset = b * BFS_SLOTS_BLOCK;
+            uint32_t bsz = BFS_SLOTS_BLOCK;
+            if (offset + bsz > fe->total_bytes) bsz = fe->total_bytes - offset;
+            int8_t dec[BFS_SLOTS_BLOCK];
+            if (v6b_dc_decode(&_ev_dc, dec, BFS_SLOTS_BLOCK) != 0) { ok = 0; break; }
+            memcpy(buf + offset, dec, bsz);
+        }
+        if (ok) { rc = 0; act = fe->total_bytes; }
+        fs->file_tick[victim] = save_tick;
+    }
+    if (rc != 0 || act != fe->total_bytes) { free(buf); return -1; }
+    char vname[BFS_MAX_NAME];
+    memcpy(vname, fe->name, BFS_MAX_NAME);
+    vname[BFS_MAX_NAME - 1] = '\0';
+    if (fs->spill(vname, buf, act, fs->spill_user) != 0) { free(buf); return -3; }
+    free(buf);
+    fs->spill_q++;             /* outbound ambulance trip (displacement) */
+    fs->spill_b += act;
+    return bfs_delete(fs, vname);
+}
+
+static inline void bfs_set_spill(BreathingFS *fs, bfs_spill_fn spill,
+                                 bfs_fill_fn fill, void *user)
+{
+    if (!fs) return;
+    fs->spill = spill;
+    fs->fill = fill;
+    fs->spill_user = user;
+}
+
+/* Residency cap in blocks (0 = full 144). Shrinking below current use does
+ * NOT evict — the bound applies to future writes (fail/evict per policy). */
+static inline void bfs_set_planets(BreathingFS *fs, int on)
+{
+    if (!fs) return;
+    fs->planets_off = on ? 0 : 1;
+}
+
+/* Residency cap in blocks (0 = full 144). Shrinking below current use does
+ * NOT evict — the bound applies to future writes (fail/evict per policy). */
+static inline void bfs_set_capacity(BreathingFS *fs, uint32_t max_blocks)
+{
+    if (!fs) return;
+    fs->max_blocks = (max_blocks >= BFS_BLOCKS || max_blocks == 0)
+                   ? 0 : max_blocks;
+}
+
+static inline void bfs_residency(const BreathingFS *fs, uint32_t *blocks,
+                                 uint32_t *bytes, uint32_t *cap)
+{
+    if (!fs) return;
+    if (blocks) *blocks = fs->n_blocks_used;
+    if (bytes) *bytes = fs->total_bytes;
+    if (cap) *cap = (fs->max_blocks ? fs->max_blocks : BFS_BLOCKS);
+}
+
+/* ═══════════════ FREERIDE REPORT (doctrine §5) ═══════════════
+ * Permille of reads that rode the ambulance (fault_q*1000/total_q).
+ * >500‰ on one consumer's working set = freeriding (primary data must
+ * arrive direct). System-wide sustained >50‰ (5%) = upstream addressing
+ * is broken — fix addressing, never widen the spur. Live ratio, no latch:
+ * the caller trends it, the header only counts. */
+static inline uint32_t bfs_jet_ratio(const BreathingFS *fs)
+{
+    if (!fs) return 0;
+    uint64_t total = fs->direct_q + fs->fault_q;
+    if (total == 0) return 0;
+    return (uint32_t)((fs->fault_q * 1000u) / total);
+}
+static inline int bfs_jet_alarm(const BreathingFS *fs)
+{
+    return bfs_jet_ratio(fs) > 50;   /* sustained >5% faults = investigate */
+}
+static inline void bfs_jet_report(const BreathingFS *fs, uint64_t *direct_q,
+                                  uint64_t *direct_b, uint64_t *fault_q,
+                                  uint64_t *fault_b, uint64_t *spill_q,
+                                  uint64_t *spill_b)
+{
+    if (!fs) return;
+    if (direct_q) *direct_q = fs->direct_q;
+    if (direct_b) *direct_b = fs->direct_b;
+    if (fault_q) *fault_q = fs->fault_q;
+    if (fault_b) *fault_b = fs->fault_b;
+    if (spill_q) *spill_q = fs->spill_q;
+    if (spill_b) *spill_b = fs->spill_b;
 }
 
 static inline void bfs_move_seeker(BreathingFS *fs, double new_scale) {
@@ -380,7 +586,7 @@ static inline void bfs_delta_stats(const BreathingFS *fs) {
 }
 
 /* ═══════════════ VERIFY ═══════════════ */
-static inline int bfs_verify_file(const BreathingFS *fs, const char *name,
+static inline int bfs_verify_file(BreathingFS *fs, const char *name,
                                    const int8_t *original, uint32_t size)
 {
     if (!fs || !name || !original) return -1;

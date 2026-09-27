@@ -13,13 +13,29 @@
 #define V6B_DC_MAX_ENC  2048u
 #define V6B_DC_CRC_POLY 0xEDB88320u
 
-static inline uint32_t v6b_dc_crc32(const uint8_t *data, uint32_t len) {
-    uint32_t crc = 0xFFFFFFFF;
-    for (uint32_t i = 0; i < len; i++) {
-        crc ^= data[i];
+/* Table-driven CRC32 (polynomial 0xEDB88320) — values bit-identical to the
+ * former bit-by-bit loop, ~10x faster. The v6b checksum field is write-only
+ * metadata (stored, never compared), but encode + every read path recompute
+ * it, so per-byte cost dominates full-model streaming (card #46 real proof). */
+static uint32_t v6b_crc32_tab[256];
+static int v6b_crc32_tab_ready = 0;
+
+static inline void v6b_crc32_tab_init(void) {
+    if (v6b_crc32_tab_ready) return;
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t c = i;
         for (int j = 0; j < 8; j++)
-            crc = (crc >> 1) ^ (V6B_DC_CRC_POLY & (-(int32_t)(crc & 1)));
+            c = (c >> 1) ^ (V6B_DC_CRC_POLY & (-(int32_t)(c & 1)));
+        v6b_crc32_tab[i] = c;
     }
+    v6b_crc32_tab_ready = 1;
+}
+
+static inline uint32_t v6b_dc_crc32(const uint8_t *data, uint32_t len) {
+    v6b_crc32_tab_init();
+    uint32_t crc = 0xFFFFFFFF;
+    for (uint32_t i = 0; i < len; i++)
+        crc = v6b_crc32_tab[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
     return crc ^ 0xFFFFFFFF;
 }
 

@@ -230,7 +230,7 @@ ACTIVE := \
 GGUF :=   test_gguf_box   test_gguf_window_chain   test_gguf_real_gate   test_gguf_multi_model   test_safetensors_reader   test_ggf_walk   test_ggf_walk_mmap   test_ggf_ckpt_replay   test_ggf_fs   test_planet_real   test_hyper_jump_real   test_hyper_seeker_real   test_hyper_resolve   test_hyper_request   test_vol6_hj_real   test_anchor_tess
 
 # BFS: breathing filesystem + seek
-BFS :=   test_bfs_persist   test_bfs_stability   test_bfs_seek_anchor   test_bfs_breath   test_breathing_fs   test_geo_hyper_fs   test_geo_hyper_real   test_bfs_planet_watch   test_bfs_fold   test_bfs_delete   test_bfs_persist_planets   test_bfs_migrate   test_bfs_quadtree   test_bfs_wangate
+BFS :=   test_bfs_persist   test_bfs_stability   test_bfs_seek_anchor   test_bfs_breath   test_breathing_fs   test_geo_hyper_fs   test_geo_hyper_real   test_bfs_planet_watch   test_bfs_fold   test_bfs_delete   test_bfs_persist_planets   test_bfs_migrate   test_bfs_quadtree   test_bfs_wangate   test_bfs_evict
 
 # CAP: capacity/accounting + chain
 CAP :=   test_cap_account   test_cap_tune_real   test_cap_tune_safetensors   test_cap_tune_fs   test_cap_chain_roundtrip   test_cap_chain_big   test_cap_scheme
@@ -585,6 +585,12 @@ graft-llama:
 ZC2_DIR = I:/llama/llama.cpp/build_zc2/bin/Release
 ZC2_INC = I:/llama/llama.cpp/include
 ZC2_GGML_INC = I:/llama/llama.cpp/ggml/include
+moe-stream-proof: | $(BUILD)
+	@test -f $(ZC2_DIR)/llama.dll || { echo "  (skip: zc2 DLLs not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I . -I core -I $(ZC2_INC) -I $(ZC2_GGML_INC) -o $(BUILD)/moe_stream_proof tools/moe_stream_proof.c \
+	    $(ZC2_DIR)/llama.dll $(ZC2_DIR)/ggml.dll $(ZC2_DIR)/ggml-base.dll \
+	    $(ZC2_DIR)/ggml-cpu-x64.dll -lpsapi -lm
 hj-infer: | $(BUILD)
 	@test -f $(ZC2_DIR)/llama.dll || { echo "  (skip: zc2 DLLs not found)"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }

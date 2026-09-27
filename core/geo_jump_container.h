@@ -93,8 +93,9 @@ static inline int gjc_store(BreathingFS *fs, const char *tag,
     return 0;
 }
 
-/* open index (cross-session resume: read DNA back). 0=ok */
-static inline int gjc_open(const BreathingFS *fs, const char *tag, GJCIndex *idx) {
+/* open index (cross-session resume: read DNA back). 0=ok.
+ * Non-const: bfs_read touches the LRU clock on hit. */
+static inline int gjc_open(BreathingFS *fs, const char *tag, GJCIndex *idx) {
     if (!fs || !tag || !idx) return -1;
     char name[BFS_MAX_NAME];
     snprintf(name, sizeof(name), "%s/dna", tag);
@@ -106,8 +107,9 @@ static inline int gjc_open(const BreathingFS *fs, const char *tag, GJCIndex *idx
     return (idx->magic == GJC_MAGIC) ? 0 : -1;
 }
 
-/* load: re-walk (head,router) → re-sort → invert permutation. 0=ok */
-static inline int gjc_load(const BreathingFS *fs, const char *tag,
+/* load: re-walk (head,router) → re-sort → invert permutation. 0=ok.
+ * Non-const: bfs_read touches the LRU clock on hit. */
+static inline int gjc_load(BreathingFS *fs, const char *tag,
                            uint32_t head, const GeoJumpRouter *r,
                            int8_t *out, uint32_t n) {
     if (!fs || !tag || !r || !out || n == 0 || n > GEO_FULL) return -1;
