@@ -210,7 +210,7 @@ TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   t
 
 # GEO: geometry core + address space + hyperbolic
 # GEO_FAST: <0.5s each — run often
-GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_frustum_trit   test_frustum_slot64   test_frustum_route   test_frustum_memory_adapter   test_frustum_memory_resolve   test_gguf_frustum_direct   test_gguf_frustum_pointer   test_bfs_tensor_pipeline   test_bfs_gguf_frustum   test_voronoi_mask
+GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_mm_wang6   test_lblock6   test_frustum_trit   test_frustum_slot64   test_frustum_route   test_frustum_memory_adapter   test_frustum_memory_resolve   test_gguf_frustum_direct   test_gguf_frustum_pointer   test_bfs_tensor_pipeline   test_bfs_gguf_frustum   test_voronoi_mask
 # GEO_SLOW: >1s each — run before commit only
 GEO_SLOW :=   test_geo_bfs_hub   test_geo_fs_mdim   test_goldberg_mmap
 # GEO: full set
@@ -230,7 +230,7 @@ ACTIVE := \
 GGUF :=   test_gguf_box   test_gguf_window_chain   test_gguf_real_gate   test_gguf_multi_model   test_safetensors_reader   test_ggf_walk   test_ggf_walk_mmap   test_ggf_ckpt_replay   test_ggf_fs   test_planet_real   test_hyper_jump_real   test_hyper_seeker_real   test_hyper_resolve   test_hyper_request   test_vol6_hj_real   test_anchor_tess
 
 # BFS: breathing filesystem + seek
-BFS :=   test_bfs_persist   test_bfs_stability   test_bfs_seek_anchor   test_bfs_breath   test_breathing_fs   test_geo_hyper_fs   test_geo_hyper_real   test_bfs_planet_watch   test_bfs_fold   test_bfs_delete   test_bfs_persist_planets   test_bfs_migrate   test_bfs_quadtree   test_bfs_wangate   test_bfs_evict
+BFS :=   test_bfs_persist   test_bfs_stability   test_bfs_seek_anchor   test_bfs_breath   test_breathing_fs   test_geo_hyper_fs   test_geo_hyper_real   test_bfs_planet_watch   test_bfs_fold   test_bfs_delete   test_bfs_persist_planets   test_bfs_migrate   test_bfs_quadtree   test_bfs_wangate   test_bfs_evict   test_bfs_residency
 
 # CAP: capacity/accounting + chain
 CAP :=   test_cap_account   test_cap_tune_real   test_cap_tune_safetensors   test_cap_tune_fs   test_cap_chain_roundtrip   test_cap_chain_big   test_cap_scheme
@@ -693,6 +693,12 @@ bfs-tensor-pipeline: | $(BUILD)
 bfs-gguf-frustum: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -o $(BUILD)/bfs_gguf_frustum.exe tools/bfs_gguf_frustum.c
+
+# BFS residency RSS receipt: reserve=0 physical, commit=K pages, delete=0
+bfs-residency: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
+	    -I core -o $(BUILD)/bfs_residency_rss.exe tools/bfs_residency_rss.c
+	./$(BUILD)/bfs_residency_rss.exe 8
 
 # ── Scale-follow: sequential vs random page-touch on a .tesspack ──
 # Proves the mmap window follows the layer pointer (window memory, not full
@@ -1219,6 +1225,13 @@ probe-moe-assemble: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
 	    -I . -I core -I core/infra -o $(BUILD)/probe_moe_assemble tools/probe_moe_assemble.c -lm
 	@echo "✅ probe_moe_assemble ready → ./$(BUILD)/probe_moe_assemble <gguf> <tesspack>"
+
+# MoE router-join dry run: gate→top-K per layer from .tesspack, no inference.
+# Prints the join decision table the server needs (decode vs skip per layer).
+moe-route-dry: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/moe_route_dry tools/moe_route_dry.c -lm
+	@echo "✅ moe_route_dry ready → ./$(BUILD)/moe_route_dry <gguf> <tesspack> [topk]"
 
 field-qa: | $(BUILD)
 	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
