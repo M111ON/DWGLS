@@ -10,10 +10,11 @@
 #include "../core/gguf_box.h"
 
 int main(int argc, char **argv) {
-    if (argc < 2) { printf("usage: %s model.gguf [factor=12] [minsize=1]\n", argv[0]); return 2; }
+    if (argc < 2) { printf("usage: %s model.gguf [factor=12] [rounds=0|minsize=1]\n", argv[0]); return 2; }
     int F = argc > 2 ? atoi(argv[2]) : 12;
-    int MINSZ = argc > 3 ? atoi(argv[3]) : 1;
-    if (F < 2 || F > 32) { printf("bad factor\n"); return 2; }
+    int RND = argc > 3 ? atoi(argv[3]) : 0;
+    int MINSZ = 1;
+    if (F < 2 || F > 256) { printf("bad factor\n"); return 2; }
     GGUFBox box;
     if (gguf_box_open(&box, argv[1]) != 0) { printf("open fail\n"); return 1; }
     static int vals[20736];
@@ -33,7 +34,7 @@ int main(int argc, char **argv) {
     memcpy(cur, vals, sizeof(vals));
     int m = n;
     printf("factor=%d minsize=%d\n", F, MINSZ);
-    for (int round = 0; m / F >= MINSZ; round++) {
+    for (int round = 0; (RND > 0 ? round < RND : m / F >= MINSZ); round++) {
         int groups = m / F;
         long long ressum = 0;
         int resmax = 0;

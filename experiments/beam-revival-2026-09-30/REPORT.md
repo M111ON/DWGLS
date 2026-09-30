@@ -149,3 +149,12 @@ within-32 15.8% — the symmetry is global, positions scattered).
   consumer, field-generated structural zeros, lossy.
 - Awaiting user: the 36000→300 fold rule (which cells → which of 10×10×3) —
   needs the angular-zigzag-first derivation; and the readout decision.
+
+## 11. Fourteen readings sweep (2026-10-01 follow-up)
+
+All divisor/round rows from the user's table run on the same 20736 real values.
+Group tops agree: **81 via ÷2/÷4/÷16 → 1/1/1; 16 via ÷6/÷36 → 1/1;
+1 via ÷12/÷144 → 0/0; 256 via ÷3/÷9 → 2/3** (grand-mean rounding noise ~±1).
+Multi-thermometer consistency holds — free redundancy, as predicted.
+Bonus: localpairs grow with factor size (÷144 r2: 65%, ÷48 r2: 59%) —
+bigger groups find more negation partners.
