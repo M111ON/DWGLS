@@ -371,23 +371,39 @@ int main(int argc, char **argv) {
         s.exp_buf = (uint8_t **)calloc(g.n_tensors, sizeof(uint8_t *));
         s.exp_mask = (uint64_t *)calloc(g.n_tensors, sizeof(uint64_t));
         s.exp_E = exp_E;
-        for (uint32_t i = 0; i < s.n; i++) {
+        /* IN-PLACE replay (no duplicate): exp_buf stays NULL so provide_stream
+         * serves fired slices straight from the src mmap. Unfired slices get
+         * PAGE_NOACCESS on fully-contained pages — routing outside the mask
+         * crashes LOUD (never silent wrong tokens). Zero committed copies:
+         * resident <= stock by construction (projection can't exceed source). */
+        uint64_t kslots = 0, kbytes = 0;
+        typedef struct { void *addr; SIZE_T len; } ProtRec;
+        ProtRec *prec = (ProtRec *)calloc(8192, sizeof(ProtRec));
+        int nprec = 0, pok = 1;
+        for (uint32_t i = 0; i < s.n && pok; i++) {
             if (!s.exp_E[i]) continue;
-#ifdef _WIN32
-            /* commit-all (h7 world): unmasked reads as zeros, never crashes.
-             * Strict reserve-gate returns as a later experiment. */
-            s.exp_buf[i] = (uint8_t *)VirtualAlloc(NULL, s.sizes[i], MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-#else
-            s.exp_buf[i] = (uint8_t *)calloc(1, s.sizes[i]);
-#endif
-            if (!s.exp_buf[i]) { printf("FAIL: alloc\n"); return 1; }
+            int wtl = 0, L = exp_layer(s.names[i], &wtl);
+            if (L < 0 || L > max_layer) continue;
+            uint32_t E = s.exp_E[i];
+            uint64_t sl = s.sizes[i] / E, m = rmask[L];
+            int no_guard = getenv("MOE_NO_GUARD") != NULL;
+            for (uint32_t e = 0; e < E; e++) {
+                if (m & (1ull << e)) { kslots++; kbytes += sl; continue; }
+                if (no_guard) continue; /* bisect: in-place serve, no guard */
+                uintptr_t st = (uintptr_t)(s.src + s.offs[i] + e * sl);
+                uintptr_t en = st + (uintptr_t)sl;
+                uintptr_t ps = (st + 4095) & ~(uintptr_t)4095;
+                uintptr_t pe = en & ~(uintptr_t)4095;
+                if (pe <= ps) continue; /* slice shares pages with neighbor: can't isolate */
+                if (nprec >= 8192) { pok = 0; break; }
+                DWORD old = 0;
+                if (!VirtualProtect((void *)ps, (SIZE_T)(pe - ps), PAGE_NOACCESS, &old)) pok = 0;
+                else { prec[nprec].addr = (void *)ps; prec[nprec].len = (SIZE_T)(pe - ps); nprec++; }
+            }
         }
-        for (int L = 0; L <= max_layer; L++) {
-            uint32_t E = layer_expert_count(&s, L);
-            if (!E) continue;
-            uint64_t ign = 0;
-            layer_apply(&s, L, rmask[L], &ign);
-        }
+        if (!pok) { printf("FAIL: protect (cannot isolate unfired slices)\n"); return 1; }
+        printf("  REPLAY in-place: K=%llu slots, Kbytes=%.2f MB, guarded %d ranges, 0 duplicate bytes\n",
+            (unsigned long long)kslots, (double)kbytes / 1048576.0, nprec);
         struct llama_model_params mpR = llama_model_default_params();
         mpR.n_gpu_layers = 0;
         mpR.no_host = true;
@@ -404,7 +420,12 @@ int main(int argc, char **argv) {
             if (got[k] != exp_toks[k]) same = 0;
         printf(same ? "REPLAY PASS: seed replays deterministically, no router\n"
                     : "REPLAY DIVERGED (honest)\n");
+        printf("replay peak RSS: %.1f MB (in-place, 0 duplicate)\n", peak_rss() / 1e6);
         llama_model_free(mR);
+        { DWORD old = 0; /* restore guarded ranges before exit */
+          for (int k = 0; k < nprec; k++)
+              VirtualProtect(prec[k].addr, prec[k].len, PAGE_READONLY, &old); }
+        free(prec);
         stream_free_bufs(&s);
         free(s.exp_buf); free(s.exp_mask); free(exp_E); free(rmask);
         gguf_close(&g);
