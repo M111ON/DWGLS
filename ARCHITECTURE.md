@@ -49,7 +49,7 @@
 - Used by: seeker, gear, and magnify code paths
 
 **GeoFS multidimensional volume:**
-- Purpose: Serve one 20736-slot × 64 B volume through flat/cube/rail/time/cell views with a timeline journal.
+- Purpose: Serve one 20736-slot × 64 B volume through flat/rail/time/cell views with a timeline journal.
 - Location: `core/geofs_mdim.h`
 - Contains: slot layout, trit-fold name bonding, run-span chains, write-ahead journal, `recover`, `state_at`
 - Depends on: stdint/string/stdio/stdlib only
@@ -197,9 +197,9 @@
 - Pattern: Fixed 64 B header + 64 B formula + CRC. 1 tesseract = 8 cube × 144 = 1152 slots. 18 tes = 20736.
 
 **MDIM volume and views:**
-- Purpose: Expose one byte buffer through five coordinate transforms with full history
+- Purpose: Expose one byte buffer through four coordinate transforms with full history
 - Location: `core/geofs_mdim.h`
-- Pattern: Flat/cube/rail/time/cell views are pure arithmetic over the same bytes. Journal frames give `state_at(F)` for free.
+- Pattern: Flat/rail/time/cell views are pure arithmetic over the same bytes. Journal frames give `state_at(F)` for free.
 
 **GGUFBox:**
 - Purpose: Proxy between llama.cpp and mmap'd model bytes

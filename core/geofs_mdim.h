@@ -13,7 +13,6 @@
  *
  * ── THE FOUR VIEWS (pure arithmetic over the same bytes) ────────────────
  *   flat   : slot 0..20735
- *   cube   : (gen, face, slot)  — 3-bit/3-bit/8-bit pack (14-bit subspace)
  *   rail   : (tick, pipe)       — tick×1728 + pipe   (bijective)
  *   time   : frame              — frame×37 % 20736   (bijective, stride-37)
  *   cell   : (cell, slot)       — cell×144 + slot    (6ico: 144×144)
@@ -233,10 +232,9 @@ typedef struct {
 
 typedef enum {
     MDIM_VIEW_FLAT = 0,
-    MDIM_VIEW_CUBE = 1,
-    MDIM_VIEW_RAIL = 2,
-    MDIM_VIEW_TIME = 3,
-    MDIM_VIEW_CELL = 4
+    MDIM_VIEW_RAIL = 1,
+    MDIM_VIEW_TIME = 2,
+    MDIM_VIEW_CELL = 3
 } MdimView;
 
 /* ═══════════════ SUPER ACCESSORS ═══════════════ */
@@ -279,7 +277,6 @@ static inline uint32_t mdim_crc32(const uint8_t *p, uint32_t n) {
 static inline const char *mdim_view_name(MdimView view) {
     switch (view) {
         case MDIM_VIEW_FLAT: return "flat";
-        case MDIM_VIEW_CUBE: return "cube";
         case MDIM_VIEW_RAIL: return "rail";
         case MDIM_VIEW_TIME: return "time";
         case MDIM_VIEW_CELL: return "cell";
@@ -303,8 +300,6 @@ static inline uint32_t mdim_inv37(void) {
 static inline uint32_t mdim_view_flat(MdimView view, uint32_t a, uint32_t b, uint32_t c) {
     switch (view) {
         case MDIM_VIEW_FLAT: return a % MDIM_SLOTS;
-        case MDIM_VIEW_CUBE:
-            return ((a & 7u) | ((b & 7u) << 3) | ((c & 0xFFu) << 6)) % MDIM_SLOTS;
         case MDIM_VIEW_RAIL:
             return ((a % MDIM_TICKS) * MDIM_PIPES + (b % MDIM_PIPES)) % MDIM_SLOTS;
         case MDIM_VIEW_TIME:
@@ -322,8 +317,6 @@ static inline void mdim_view_coords(MdimView view, uint32_t flat,
     switch (view) {
         case MDIM_VIEW_FLAT:
             *a = flat; *b = 0; *c = 0; break;
-        case MDIM_VIEW_CUBE:
-            *a = flat & 7u; *b = (flat >> 3) & 7u; *c = (flat >> 6) & 0xFFu; break;
         case MDIM_VIEW_RAIL:
             *a = flat / MDIM_PIPES;          /* tick */
             *b = flat % MDIM_PIPES;          /* pipe */
@@ -336,11 +329,6 @@ static inline void mdim_view_coords(MdimView view, uint32_t flat,
             *b = flat % MDIM_CELL_SLOTS;     /* slot within cell */
             *c = 0; break;
     }
-}
-
-/* number of distinct addresses a view can express */
-static inline uint32_t mdim_view_space(MdimView view) {
-    return (view == MDIM_VIEW_CUBE) ? 16384u : MDIM_SLOTS;
 }
 
 /* ═══════════════ NAME BONDING (no hash, no LUT) ═══════════════ */

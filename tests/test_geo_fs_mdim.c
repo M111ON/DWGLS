@@ -91,8 +91,7 @@ static void test_view_roundtrips(void) {
     mdim_volume_init(&v, NULL);
 
     for (int view = 0; view <= MDIM_VIEW_CELL; view++) {
-        uint32_t space = mdim_view_space((MdimView)view);
-        for (uint32_t flat = 0; flat < space; flat++) {
+        for (uint32_t flat = 0; flat < MDIM_SLOTS; flat++) {
             uint32_t a, b, c;
             mdim_view_coords((MdimView)view, flat, &a, &b, &c);
             uint32_t back = mdim_view_flat((MdimView)view, a, b, c);
@@ -109,7 +108,6 @@ static void test_view_roundtrips(void) {
     if (mdim_view_flat(MDIM_VIEW_RAIL, 5, 100, 0) != 5 * 1728u + 100) { FAIL("rail anchor"); mdim_volume_free(&v); return; }
     if (mdim_view_flat(MDIM_VIEW_CELL, 7, 99, 0) != 7 * 144u + 99) { FAIL("cell anchor"); mdim_volume_free(&v); return; }
     if (mdim_view_flat(MDIM_VIEW_TIME, 1, 0, 0) != 37u) { FAIL("time anchor"); mdim_volume_free(&v); return; }
-    if (mdim_view_flat(MDIM_VIEW_CUBE, 2, 3, 5) != (2u | (3u << 3) | (5u << 6))) { FAIL("cube anchor"); mdim_volume_free(&v); return; }
 
     mdim_volume_free(&v);
     PASS();
