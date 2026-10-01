@@ -40,7 +40,6 @@
 /* ── Sacred constants ─────────────────────────────────── */
 #define RS_DEFAULT_CAPACITY   4096u   /* default entry count     */
 #define RS_MAX_DATA_SIZE      65536u  /* max bytes per entry     */
-#define RS_EVICT_SCAN_WINDOW  64u     /* LRU eviction scan depth */
 #define RS_BOND_KEY_RESERVED  UINT64_C(0)  /* reserved (never stored) */
 
 /* ── Entry flags ──────────────────────────────────────── */
@@ -77,7 +76,6 @@ typedef struct {
     uint32_t        evictions; /* total evictions                 */
     uint64_t        total_bytes; /* total data bytes stored       */
     uint32_t        next_timestamp; /* incrementing freeze time   */
-    uint32_t        scan_pos;  /* next eviction scan start pos    */
     uint8_t         _pad[4];
 } ResidualSpace;
 
@@ -118,7 +116,6 @@ static inline int rs_init(ResidualSpace *rs, uint32_t capacity) {
     rs->evictions      = 0;
     rs->total_bytes    = 0;
     rs->next_timestamp = 0;
-    rs->scan_pos       = 0;
     return 0;
 }
 
@@ -391,6 +388,39 @@ static inline uint32_t rs_evict_all(ResidualSpace *rs) {
     rs->count -= evicted;
     rs->evictions += evicted;
     return evicted;
+}
+
+/* ════════════════════════════════════════════════════════════
+   PIN — exempt an entry from LRU eviction
+   ════════════════════════════════════════════════════════════ */
+
+/*
+ * rs_set_pinned() — pin or unpin an entry by bond key.
+ *
+ * Pinned entries are skipped by every eviction path (rs_evict_one and the
+ * in-line LRU inside rs_freeze), so a caller that must not lose a checkpoint
+ * can hold it against table pressure.
+ *
+ * Returns 0 on success, -1 if the key is absent.
+ */
+static inline int rs_set_pinned(ResidualSpace *rs, uint64_t bond_key, int pinned) {
+    if (!rs || !rs->entries || bond_key == RS_BOND_KEY_RESERVED) return -1;
+
+    uint32_t mask  = rs->capacity - 1;
+    uint32_t slot  = _rs_hash(bond_key, mask);
+    uint32_t start = slot;
+
+    while (rs->entries[slot]) {
+        ResidualEntry *e = rs->entries[slot];
+        if ((e->flags & RS_ENTRY_VALID) && e->bond_key == bond_key) {
+            if (pinned) e->flags |=  RS_ENTRY_PINNED;
+            else        e->flags &= (uint8_t)~RS_ENTRY_PINNED;
+            return 0;
+        }
+        slot = (slot + 1) & mask;
+        if (slot == start) break;
+    }
+    return -1;
 }
 
 /* ════════════════════════════════════════════════════════════

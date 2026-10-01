@@ -159,7 +159,8 @@ static void unit_flags(void) {
     uint64_t k0 = rs_freeze(&a, &p3, d, 8, 1);
     ResidualEntry *e = find_entry(&a, k0);
     CHECK(7, "entry found for flag mutation", e != NULL);
-    if (e) e->flags |= RS_ENTRY_PINNED | RS_ENTRY_REF;   /* simulate pinned */
+    CHECK(7, "rs_set_pinned accepts a live key", rs_set_pinned(&a, k0, 1) == 0);
+    if (e) e->flags |= RS_ENTRY_REF;   /* no API exposes REF; poke it directly */
 
     uint64_t sz = rs_serialize_size(&a);
     uint8_t *buf = (uint8_t *)malloc((size_t)sz);
@@ -169,6 +170,44 @@ static void unit_flags(void) {
           (find_entry(&b, k0)->flags & (RS_ENTRY_PINNED | RS_ENTRY_REF | RS_ENTRY_HIGH_ENTROPY))
               == (RS_ENTRY_PINNED | RS_ENTRY_REF | RS_ENTRY_HIGH_ENTROPY));
     free(buf); rs_free(&a); rs_free(&b);
+}
+
+/* PIN must be behavioural, not just a bit that survives serialize: a pinned
+ * entry has to outlive LRU pressure, and unpinning must give it back. */
+static void unit_pin(void) {
+    ResidualSpace a;
+    rs_init(&a, 64);                     /* 64 = minimum real capacity */
+    uint8_t d[8];
+    fill_pattern(d, 8, 11);
+    PoglsPiece p0 = ghost_piece(0, 0, 7);
+    uint64_t keep = rs_freeze(&a, &p0, d, 8, 0);
+
+    CHECK(9, "seed entry frozen", keep != RS_BOND_KEY_RESERVED);
+    CHECK(9, "rs_set_pinned accepts a live key",  rs_set_pinned(&a, keep, 1) == 0);
+    CHECK(9, "rs_set_pinned rejects an absent key", rs_set_pinned(&a, UINT64_C(0xDEADBEEF), 1) == -1);
+
+    for (uint32_t b = 1; b < 200; b++) {
+        PoglsPiece p = ghost_piece((uint16_t)b, 0, 7);
+        rs_freeze(&a, &p, d, 8, 0);
+    }
+    CHECK(9, "LRU eviction actually ran", a.evictions > 0);
+    CHECK(9, "table stayed bounded (entries were dropped)", a.count < 200);
+
+    uint32_t out = 0;
+    const void *kept = rs_thaw(&a, keep, &out);
+    CHECK(9, "pinned entry survived LRU pressure", kept != NULL && out == 8);
+    CHECK(9, "pinned payload byte-identical",
+          kept && memcmp(kept, d, 8) == 0);
+
+    /* negative control: unpin must make it evictable again */
+    CHECK(9, "rs_set_pinned(0) clears the pin", rs_set_pinned(&a, keep, 0) == 0);
+    for (uint32_t b = 200; b < 400; b++) {
+        PoglsPiece p = ghost_piece((uint16_t)b, 0, 7);
+        rs_freeze(&a, &p, d, 8, 0);
+    }
+    CHECK(9, "unpinned entry is evictable again", rs_thaw(&a, keep, NULL) == NULL);
+
+    rs_free(&a);
 }
 
 static void unit_corrupt(void) {
@@ -398,6 +437,7 @@ int main(int argc, char **argv) {
     unit_determinism();
     unit_tombstone();
     unit_flags();
+    unit_pin();
     unit_corrupt();
     unit_disk_file();
 
