@@ -13,6 +13,7 @@ __pycache__/
 # Compiler intermediates
 *.i
 *.s
+*.gch
 
 # Tooling
 .hermes/
@@ -89,3 +90,7 @@ cookies.txt
 .agentsroom/handoff-transcript-*.txt
 .agentsroom/handoff-summary-*.md
 .agentsroom/fork-context-*.txt
+
+# Local agent/tool state — regenerable, never project content
+.inbox_index.md
+session-ses_*.md
