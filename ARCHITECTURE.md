@@ -118,6 +118,13 @@
 - Depends on: core geometry headers
 - Used by: bench tools, `--dram` decode paths, `tests/test_gpu_small_batch.c`, `tests/test_jet_select_prod.c`, `tests/test_jet_coalesce_bench.c` (selector math is re-derived independently in `tests/test_jet_phase_align.c`)
 
+**Tower ladder:**
+- Purpose: Give a 3-tower x 64-slot vertical stack a real integer address space. One 4x4 space-filling path seen through three symmetries, not three paths.
+- Location: `core/geo_tower_ladder.h`
+- Contains: `HL_HILBERT_L0/L1/L2` (L1 = rot90ccw(L0), L2 = mirx(L1)), `TL_CORNER_CELL`, `tl_active_slot`, `tl_residual_cell`, `tl_next_active`, modulo-192 `tl_shift`, MOD-37 `tl_jump`, 972-frame `TlLog` LIFO rewind
+- Depends on: stdint/stdio/string only
+- Used by: `tests/test_tower_ladder.c` (33/33), `tools/tower_ladder_real.c` (real GGUF bytes, 4 views, 6/6 models)
+
 ## Data Flow
 
 **GGUF pack pipeline:**
