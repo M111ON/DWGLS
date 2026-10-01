@@ -20,6 +20,7 @@
 #include "bfs_magnify.h"
 #include "bfs_fan24.h"
 #include "geo_planet.h"   /* per-block watcher: birth at write, verify in tick */
+#include "bfs_vmem.h"      /* reserve/commit/decommit payload region (residency layer) */
 
 #define BFS_MAGIC          0x42524548u
 #define BFS_VERSION        1u
@@ -33,6 +34,13 @@
                                               * not magic. */
 #define BFS_MAX_FILES      64u
 #define BFS_MAX_NAME       32u
+
+/* Payload region geometry (residency layer): one 4 KB page per block so a
+ * block is the commit/decommit granularity. 144 × 4096 = 589,824 B of
+ * address space, reserved once (0 physical), committed per written block. */
+#define BFS_PAYLOAD_PAGE   4096u
+#define BFS_PAYLOAD_STRIDE BFS_PAYLOAD_PAGE
+#define BFS_PAYLOAD_REGION (BFS_BLOCKS * BFS_PAYLOAD_STRIDE)
 
 /* ═══════════════ BREATHING SEEKER ═══════════════ */
 typedef struct {
@@ -128,8 +136,16 @@ typedef struct {
     uint32_t block_owner[BFS_BLOCKS];
     BFSBlockMeta block_meta[BFS_BLOCKS];
     int8_t block_data[BFS_BLOCKS][BFS_SLOTS_BLOCK];
-    uint8_t block_encoded[BFS_BLOCKS][2048];
+    /* ── payload region: RESERVED virtual address space, committed per block ──
+     * block_encoded[bi] points at page bi of _payload_mem; a block's page is
+     * committed on write and decommitted on delete/evict, so RSS tracks the
+     * resident working set instead of the full 288 KB. The indirection array
+     * keeps every fs->block_encoded[bi] call site (including tests poking the
+     * bytes) compiling and behaving the same. */
+    uint8_t *block_encoded[BFS_BLOCKS];
     uint16_t block_encoded_size[BFS_BLOCKS];
+    void    *_payload_mem;        /* reserved region base (NULL = not reserved) */
+    uint32_t payload_committed;   /* blocks whose page is currently committed   */
     uint32_t delta_log[256];
     uint32_t delta_count;
     FGXLog   fg_log;        /* fan24 gear events (8-bit, replaces delta_log future) */
@@ -171,9 +187,64 @@ typedef struct {
 static inline int bfs_delete(BreathingFS *fs, const char *name);
 static inline int bfs_evict_oldest(BreathingFS *fs);
 
+/* ═══════════════ PAYLOAD REGION (reserve / commit / decommit) ═══════════════
+ * bfs_payload_init: reserve the full 144-page address space (0 physical) and
+ * point block_encoded[bi] at page bi. Idempotent. If reservation ever fails,
+ * fall back to a single committed calloc region so writes stay correct (old
+ * full-resident behavior) — never a silent NULL deref.
+ * bfs_payload_commit: commit page bi (safe to call repeatedly).
+ * bfs_payload_release: decommit page bi — RSS drops immediately.
+ * bfs_payload_free: release the whole region (file close / fs destroy). */
+static inline int bfs_payload_init(BreathingFS *fs)
+{
+    if (!fs) return -1;
+    if (!fs->_payload_mem) {
+        void *mem = bfs_vmem_reserve(BFS_PAYLOAD_REGION);
+        if (mem) {
+            fs->_payload_mem = mem;
+            fs->payload_committed = 0;
+        } else {
+            fs->_payload_mem = calloc(1, BFS_PAYLOAD_REGION);
+            if (!fs->_payload_mem) return -1;
+            fs->payload_committed = BFS_BLOCKS;   /* whole region live */
+        }
+    }
+    for (uint32_t bi = 0; bi < BFS_BLOCKS; bi++)
+        fs->block_encoded[bi] = (uint8_t *)fs->_payload_mem + (size_t)bi * BFS_PAYLOAD_STRIDE;
+    return 0;
+}
+
+static inline int bfs_payload_commit(BreathingFS *fs, uint32_t bi)
+{
+    if (!fs || !fs->_payload_mem || bi >= BFS_BLOCKS) return -1;
+    if (fs->payload_committed == BFS_BLOCKS) return 0;   /* calloc fallback: all live */
+    if (bfs_vmem_commit(fs->_payload_mem, (size_t)bi * BFS_PAYLOAD_STRIDE,
+                        BFS_PAYLOAD_STRIDE) != 0) return -1;
+    return 0;
+}
+
+static inline void bfs_payload_release(BreathingFS *fs, uint32_t bi)
+{
+    if (!fs || !fs->_payload_mem || bi >= BFS_BLOCKS) return;
+    if (fs->payload_committed == BFS_BLOCKS) return;     /* calloc fallback: cannot free */
+    bfs_vmem_decommit(fs->_payload_mem, (size_t)bi * BFS_PAYLOAD_STRIDE,
+                      BFS_PAYLOAD_STRIDE);
+}
+
+static inline void bfs_payload_free(BreathingFS *fs)
+{
+    if (!fs || !fs->_payload_mem) return;
+    if (fs->payload_committed == BFS_BLOCKS) free(fs->_payload_mem);  /* calloc fallback */
+    else bfs_vmem_unmap(fs->_payload_mem, BFS_PAYLOAD_REGION);
+    fs->_payload_mem = NULL;
+    for (uint32_t bi = 0; bi < BFS_BLOCKS; bi++) fs->block_encoded[bi] = NULL;
+}
+
 /* ═══════════════ INIT ═══════════════ */
 static inline void bfs_init(BreathingFS *fs) {
     if (!fs) return;
+    /* Contract: call bfs_destroy() first if re-initializing a live fs. Reading
+     * magic from uninitialized stack here would be UB, so init never frees. */
     memset(fs, 0, sizeof(*fs));
     fs->magic = BFS_MAGIC;
     fs->version = BFS_VERSION;
@@ -181,6 +252,15 @@ static inline void bfs_init(BreathingFS *fs) {
     fgx_log_init(&fs->fg_log);
     for (uint32_t i = 0; i < BFS_BLOCKS; i++)
         fs->block_owner[i] = 0xFFFFFFFF;
+    bfs_payload_init(fs);
+}
+
+/* Release the residency region. Call once when done with a heap/long-lived
+ * fs (stack fs in tests may skip it — process exit reclaims). Safe twice. */
+static inline void bfs_destroy(BreathingFS *fs) {
+    if (!fs) return;
+    bfs_payload_free(fs);
+    fs->magic = 0;
 }
 
 /* ═══════════════ WRITE ═══════════════
@@ -262,6 +342,7 @@ static inline int bfs_write(BreathingFS *fs, const char *name,
         if (rc == 0) {
             bm->strategy = _bfs_dc.strategy;
             bm->payload_size = (uint16_t)_bfs_dc.payload_size;
+            bfs_payload_commit(fs, bi);   /* commit page only when written */
             memcpy(fs->block_encoded[bi], _bfs_dc.payload, _bfs_dc.payload_size);
             fs->block_encoded_size[bi] = (uint16_t)_bfs_dc.payload_size;
             fe->strategies[0]++;  /* v6b always uses strategy 0 (v6b) */
@@ -383,6 +464,8 @@ static inline int bfs_delete(BreathingFS *fs, const char *name)
             fs->tomb_count++;
         }
         fs->block_owner[bi] = 0xFFFFFFFF;
+        fs->block_encoded_size[bi] = 0;
+        bfs_payload_release(fs, bi);   /* decommit page → RSS drops now */
         memset(&fs->block_meta[bi], 0, sizeof(fs->block_meta[bi]));
     }
     fs->n_blocks_used -= fe->n_blocks;

@@ -254,7 +254,12 @@ static inline int bfs_img_parse(const uint8_t *m, size_t size, BreathingFS *fs,
     uint32_t crc_actual = v6b_dc_crc32(m, data_end);
     if (crc_actual != crc_stored) return -4;
 
+    /* Fresh reserved payload region: zero the struct, reserve, then load.
+     * bfs_img_parse is entered with caller-owned *uninitialized* storage
+     * (tests pass a stack fs), so it must not read fs before memset. The
+     * mmap re-parse path frees its region first (see bfs_mmap_sync). */
     memset(fs, 0, sizeof(*fs));
+    bfs_payload_init(fs);
     fs->magic = BFS_MAGIC;
     fs->version = BFS_VERSION;
     fs->n_files = bfs_img_u32(m, 8);
@@ -322,6 +327,7 @@ static inline int bfs_img_parse(const uint8_t *m, size_t size, BreathingFS *fs,
         if (sz > BFS_IMG_ENC_MAX) return -4;   /* corrupt offset chain */
         fs->block_encoded_size[i] = (uint16_t)sz;
         fs->block_meta[i].payload_size = (uint16_t)sz;
+        bfs_payload_commit(fs, i);   /* ensure page live before copy */
     }
 
     /* payloads: copy so plain bfs_read works (load path); mmap uses eoff */
@@ -466,6 +472,7 @@ static inline void bfs_mmap_close(BFSMmapFS *mfs)
     if (mfs->h_file) { close((int)(intptr_t)mfs->h_file); mfs->h_file = NULL; }
 #endif
     mfs->map_ptr = NULL; mfs->map_size = 0;
+    bfs_payload_free(&mfs->fs);   /* release reserved payload region */
 }
 
 /* ═══════════════ ZERO-COPY READ — decode straight from mapping ═══════════════
@@ -553,7 +560,9 @@ static inline int bfs_mmap_sync(BFSMmapFS *mfs)
     msync((void *)mfs->map_ptr, mfs->map_size, MS_SYNC);
 #endif
     mfs->crc_stored = bfs_img_u32(mfs->map_ptr, n - 4u);
-    /* refresh parse view (payload offsets may have moved) */
+    /* refresh parse view (payload offsets may have moved); free the old
+     * reserved region first so the re-parse doesn't leak it */
+    bfs_payload_free(&mfs->fs);
     return bfs_img_parse(mfs->map_ptr, mfs->map_size, &mfs->fs, mfs->enc_off);
 }
 
