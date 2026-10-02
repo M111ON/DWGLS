@@ -37,7 +37,7 @@ DWGLS-native-fs/
 **`core/`:**
 - Purpose: Hold the entire address-space implementation as self-contained headers
 - Contains: `*.h` only, `static inline` logic, no compiled library
-- Key files: `core/geo_param_grid.h`, `core/kis_codec_v6.h`, `core/geo_box_axes.h`, `core/geo_tess_container.h`, `core/clim_record.h`, `core/geofs_mdim.h`, `core/breathing_fs.h`, `core/gguf_reader.h`, `core/gguf_box.h`, `core/scale_bridge.h`, `core/zone_card_v3.h`, `core/moe_expert_addr.h`, `core/geo_net_walk.h`, `core/anchor_route.h`, `core/kv_cold_base.h`, `core/mv_node.h`, `core/mm_route.h`, `core/mm_wang.h`
+- Key files: `core/geo_param_grid.h`, `core/kis_codec_v6.h`, `core/geo_box_axes.h`, `core/geo_tess_container.h`, `core/clim_record.h`, `core/geofs_mdim.h`, `core/breathing_fs.h`, `core/gguf_reader.h`, `core/gguf_box.h`, `core/scale_bridge.h`, `core/zone_card_v3.h`, `core/moe_expert_addr.h`, `core/geo_net_walk.h`, `core/anchor_route.h`, `core/kv_cold_base.h`, `core/mv_node.h`, `core/mm_route.h`, `core/mm_wang.h`, `core/geo_hyper_wang.h`
 
 **`core/infra/`:**
 - Purpose: Hold zero-copy and sync primitives under the geometry layer
@@ -126,6 +126,7 @@ DWGLS-native-fs/
 **Core Logic:** `core/gguf_box.h`: llama.cpp graft routing
 **Tests:** `tests/test_tesspack.c`: pack roundtrip proof
 **Tests:** `tests/test_scale_bridge.c`: scale-ring alignment oracle
+**Tests:** `tests/test_hyper_wang_consumer.c`: hyper-cell to Wang consumer proof (`hyper-wang-consumer`, 12/12)
 **Tests:** `tests/test_kineticfan_field.c`: kineticfan field fit (net-walk + fan24 gear)
 **Tests:** `tests/test_jet_select_prod.c`: `jet_select` policy grid vs independent oracles and `geo_pipeline_tick` wire-in
 **Tests:** `tests/test_jet_coalesce_bench.c`: `geo_pipeline_want` coalesce ratio (sparse/dense/sustained vs bridge dispatch)

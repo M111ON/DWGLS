@@ -104,6 +104,14 @@
 - Depends on: stdint/stddef/stdio/string only
 - Used by: `tests/test_mv_node.c`, `tests/test_mm_route.c`, `tests/test_mm_wang.c`, `tests/test_clim_record.c`
 
+**Hyper/Wang coordinate adapter:**
+- Purpose: Map one hyper cell to its deterministic Wang timeline boundary without changing Wang gate or storage semantics.
+- Location: `core/geo_hyper_wang.h`
+- Contains: 144 hyper cells × 10 timeline phases = 1440 frames, reverse boundary validation, hyper resolver roundtrip
+- Depends on: `core/geo_hyper_resolve.h`, `core/geo_frame_seek.h`
+- Used by: `tests/test_hyper_wang_consumer.c` through `hyp_gate_fusion()` and `ckpt_wang`
+- Status: Coordinate integration is proven; Wang integrity/gate policy and checkpoint/Ghost storage remain separate consumers.
+
 **Gate descriptors:**
 - Purpose: Attach a 12-byte verdict card to each zone. Route load/augment/halt decisions before serving.
 - Location: `core/zone_card_v3.h`
@@ -236,12 +244,17 @@
 - Location: `core/breathing_fs.h`
 - Pattern: Scale sets window (K/scale, floored at 1e-6). Window larger than space means hyperbolic mode.
 
+**Lo Shu tensor invariant:**
+- Purpose: Provide a deliberately local 3×3 tensor-layer invariant where its fragile line-sum conditions are required.
+- Location: `core/geo_fractal_addr.h`
+- Pattern: Lo Shu is not a universal address or synchronization primitive; do not apply its phase behavior to unrelated geometry consumers.
+
 ## Entry Points
 
 **Make targets:**
 - Location: `Makefile`
 - Triggers: Developer or CI shell invocation
-- Responsibilities: Compile and run tiered test groups (`test-smoke`, `test-kis`, `test-tess`, `test-geo`, `test-gguf`, `test-bfs`, `test-cap`, `test-ghost`, `test-kv`, `test-6ico`, `test-fibo`, `test-walk`, `GEO_FAST` including `test_kineticfan_field`, `test_clim_record`, `test_mv_node`, `test_mm_route`, `test_mm_wang`), build serve/pack/bench binaries (`dual-lazy-serve`, `tess-bake`, `tess-gguf-pack`, `tesspack-assemble`, `tess-window-bench`, `moe-bake`, `moe-route`, `graft-*`, `anchor-route`, `kv-delta-proof`, `kv-cold-base`, `kv-cold-delta`, `kv-cold-reanchor`, `kv-cold-prefix`, `kv-cold-chat`)
+- Responsibilities: Compile and run tiered test groups (`test-smoke`, `test-kis`, `test-tess`, `test-geo`, `test-gguf`, `test-bfs`, `test-cap`, `test-ghost`, `test-kv`, `test-6ico`, `test-fibo`, `test-walk`, `GEO_FAST` including `test_kineticfan_field`, `test_clim_record`, `test_mv_node`, `test_mm_route`, `test_mm_wang`), integration probes such as `hyper-wang-consumer`, and serve/pack/bench binaries (`dual-lazy-serve`, `tess-bake`, `tess-gguf-pack`, `tesspack-assemble`, `tess-window-bench`, `moe-bake`, `moe-route`, `graft-*`, `anchor-route`, `kv-delta-proof`, `kv-cold-base`, `kv-cold-delta`, `kv-cold-reanchor`, `kv-cold-prefix`, `kv-cold-chat`)
 
 **Pack and serve CLIs:**
 - Location: `tools/tess_bake.c`, `tools/tess_load.c`, `tools/tess_assemble.c`, `tools/tess_gguf_pack.c`, `tools/tesspack_assemble.c`, `tools/tesspack_server.c`, `tools/gguf_lazy_serve.c`, `tools/dual_lazy_serve.c`, `tools/field_qa.c`, `tools/geo_field_query.c`, `tools/tess_window_bench.c`, `tools/gguf_tnames.c`, `tools/bake_q4.c`

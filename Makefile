@@ -643,6 +643,11 @@ triangle-field-equivalence: | $(BUILD)
 	$(CC) $(CFLAGS) -o $(BUILD)/test_triangle_field_equivalence tests/test_triangle_field_equivalence.c
 	./$(BUILD)/test_triangle_field_equivalence
 
+# Consumer experiment: feed hyper address cells through the existing Wang/GNN gate.
+hyper-wang-consumer: | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/test_hyper_wang_consumer tests/test_hyper_wang_consumer.c -lm
+	./$(BUILD)/test_hyper_wang_consumer
+
 # Exhaustive cube-corner / two-tetra incidence proof for the overlay hypothesis.
 cube-two-tetra-incidence: | $(BUILD)
 	$(CC) $(CFLAGS) -o $(BUILD)/test_cube_two_tetra_incidence tests/test_cube_two_tetra_incidence.c
