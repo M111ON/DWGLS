@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DWGLS Semantic Hyper Address</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Sans+Thai:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root { --paper:#f5f5f5; --paper2:#ececec; --ink:#2d3142; --muted:#4f5d75; --soft:#7a8399; --rule:rgba(45,49,66,.14); --accent:#eb6c36; --tint:rgba(235,108,54,.08); --link:#2e5aa8; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:40px 5vw 56px; background:var(--paper); color:var(--ink); font-family:Geist,'Noto Sans Thai',sans-serif; }
+    header { max-width:1180px; margin:auto; }
+    .eyebrow { color:var(--muted); font:600 11px 'Geist Mono',monospace; letter-spacing:.16em; text-transform:uppercase; }
+    h1 { margin:8px 0 4px; font:400 42px 'Instrument Serif','Noto Sans Thai',serif; }
+    .subtitle { margin:0 0 32px; color:var(--muted); font-size:15px; }
+    section { max-width:1180px; margin:28px auto 0; padding-top:24px; border-top:1px solid var(--rule); }
+    h2 { margin:0 0 4px; font-size:18px; font-weight:600; }
+    .note { margin:0 0 14px; color:var(--muted); font-size:13px; }
+    svg { display:block; width:100%; height:auto; overflow:visible; }
+    .legend { display:flex; gap:24px; flex-wrap:wrap; margin-top:10px; padding-top:10px; border-top:1px solid var(--rule); color:var(--muted); font:11px 'Geist Mono',monospace; }
+    .key { display:inline-flex; align-items:center; gap:7px; }
+    .dot { width:9px; height:9px; border-radius:50%; display:inline-block; border:1px solid var(--muted); }
+    .proven { background:#fff; } .focal { background:var(--tint); border-color:var(--accent); } .future { background:transparent; border-style:dashed; }
+    .footer { max-width:1180px; margin:32px auto 0; padding-top:12px; border-top:1px solid var(--rule); color:var(--soft); font:11px 'Geist Mono',monospace; }
+    .box { fill:#fff; stroke:var(--ink); stroke-width:1.2; }
+    .store { fill:rgba(45,49,66,.05); stroke:var(--muted); }
+    .focus { fill:var(--tint); stroke:var(--accent); stroke-width:1.5; }
+    .futurebox { fill:transparent; stroke:var(--accent); stroke-width:1.2; stroke-dasharray:6 5; }
+    .zone { fill:rgba(45,49,66,.025); stroke:var(--rule); stroke-width:1; }
+    .label { fill:var(--ink); font:600 14px Geist,'Noto Sans Thai',sans-serif; text-anchor:middle; }
+    .sub { fill:var(--muted); font:11px 'Geist Mono',monospace; text-anchor:middle; }
+    .tiny { fill:var(--soft); font:10px 'Geist Mono',monospace; }
+    .zone-label { fill:var(--muted); font:600 10px 'Geist Mono',monospace; letter-spacing:.12em; }
+    .arrow { fill:none; stroke:var(--muted); stroke-width:1.4; marker-end:url(#arrow); }
+    .accent-arrow { fill:none; stroke:var(--accent); stroke-width:1.6; marker-end:url(#arrowAccent); }
+    .dashed { fill:none; stroke:var(--soft); stroke-width:1.2; stroke-dasharray:5 4; marker-end:url(#arrow); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">DWGLS / ALIGNMENT MAP / 2026-10-02</div>
+    <h1>Semantic Hyper Address</h1>
+    <p class="subtitle">ภาพรวมที่เราตรงกัน: semantic ใช้เลือกทาง, geometry ใช้ resolve address, storage ถือ bytes, Wang ใช้ gate ความถูกต้อง</p>
+  </header>
+
+  <section>
+    <h2>01 · System boundary</h2>
+    <p class="note">สิ่งที่พิสูจน์แล้วอยู่ด้านซ้ายและกลาง; สิ่งที่ต้องสร้างเพื่อเชื่อมระบบอยู่ด้านขวา</p>
+    <svg viewBox="0 0 1160 300" role="img" aria-labelledby="sys-title sys-desc">
+      <title id="sys-title">DWGLS semantic hyper address system boundary</title>
+      <desc id="sys-desc">Semantic candidate selection feeds anchor routing, geometric address resolution, and separate storage with Wang integrity gating. Identity and world protocol remain future work.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4f5d75"/></marker>
+        <marker id="arrowAccent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#eb6c36"/></marker>
+      </defs>
+      <rect class="zone" x="16" y="32" width="530" height="208" rx="8"/><text class="zone-label" x="32" y="52">PROVEN PRIMITIVES</text>
+      <rect class="zone" x="574" y="32" width="570" height="208" rx="8"/><text class="zone-label" x="590" y="52">NEW INTEGRATION CONTRACT</text>
+      <path class="arrow" d="M144 136 H188"/><path class="arrow" d="M320 136 H364"/><path class="arrow" d="M496 136 H630"/>
+      <path class="accent-arrow" d="M762 136 H806"/><path class="arrow" d="M938 136 H982"/>
+      <rect class="box" x="32" y="104" width="112" height="64" rx="6"/><text class="label" x="88" y="132">Vector</text><text class="sub" x="88" y="150">candidate</text>
+      <rect class="box" x="208" y="104" width="112" height="64" rx="6"/><text class="label" x="264" y="132">Anchor</text><text class="sub" x="264" y="150">anchor_route</text>
+      <rect class="box" x="364" y="104" width="132" height="64" rx="6"/><text class="label" x="430" y="132">Geo / HyperJump</text><text class="sub" x="430" y="150">coordinate rule</text>
+      <rect class="focus" x="630" y="104" width="132" height="64" rx="6"/><text class="label" x="696" y="132">RouteTag</text><text class="sub" x="696" y="150">new adapter</text>
+      <rect class="box" x="806" y="104" width="132" height="64" rx="6"/><text class="label" x="872" y="132">Local address</text><text class="sub" x="872" y="150">identity → slot</text>
+      <rect class="store" x="982" y="104" width="132" height="64" rx="6"/><text class="label" x="1048" y="132">Payload store</text><text class="sub" x="1048" y="150">bytes separate</text>
+      <path class="dashed" d="M872 168 V208 H696 V168"/><text class="tiny" x="704" y="224">Wang / checksum gate</text>
+      <text class="tiny" x="32" y="276">RULE: routing never owns payload bytes</text><text class="tiny" x="760" y="276">HYPOTHESIS: this path reduces real work</text>
+    </svg>
+    <div class="legend"><span class="key"><i class="dot proven"></i>existing / proven primitive</span><span class="key"><i class="dot focal"></i>integration point to build</span><span class="key"><i class="dot future"></i>hypothesis or future contract</span></div>
+  </section>
+
+  <section>
+    <h2>02 · Query to payload</h2>
+    <p class="note">เส้นทางนี้คือสิ่งที่ P0 ต้องทำให้รันได้จริง และ P1 ต้องพิสูจน์ว่าคุ้มกว่า brute force</p>
+    <svg viewBox="0 0 1160 260" role="img" aria-labelledby="flow-title flow-desc">
+      <title id="flow-title">Query to payload route</title>
+      <desc id="flow-desc">A query is narrowed by semantic candidates, assigned to an anchor and route tag, resolved through a geometric jump, checked by Wang, and read from separate storage.</desc>
+      <defs>
+        <marker id="arrow2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4f5d75"/></marker>
+        <marker id="arrowAccent2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#eb6c36"/></marker>
+      </defs>
+      <path class="arrow" marker-end="url(#arrow2)" d="M116 120 H156"/><path class="arrow" marker-end="url(#arrow2)" d="M286 120 H326"/><path class="accent-arrow" marker-end="url(#arrowAccent2)" d="M456 120 H496"/><path class="arrow" marker-end="url(#arrow2)" d="M626 120 H666"/><path class="arrow" marker-end="url(#arrow2)" d="M796 120 H836"/><path class="arrow" marker-end="url(#arrow2)" d="M966 120 H1006"/>
+      <rect class="box" x="24" y="88" width="92" height="64" rx="6"/><text class="label" x="70" y="116">Query</text><text class="sub" x="70" y="134">input</text>
+      <rect class="box" x="156" y="88" width="130" height="64" rx="6"/><text class="label" x="221" y="116">Candidate</text><text class="sub" x="221" y="134">vector top-k</text>
+      <rect class="box" x="326" y="88" width="130" height="64" rx="6"/><text class="label" x="391" y="116">Anchor</text><text class="sub" x="391" y="134">assign / rank</text>
+      <rect class="focus" x="496" y="88" width="130" height="64" rx="6"/><text class="label" x="561" y="116">RouteTag</text><text class="sub" x="561" y="134">scope / subtag</text>
+      <rect class="box" x="666" y="88" width="130" height="64" rx="6"/><text class="label" x="731" y="116">HyperJump</text><text class="sub" x="731" y="134">global → local</text>
+      <rect class="box" x="836" y="88" width="130" height="64" rx="6"/><text class="label" x="901" y="116">Wang gate</text><text class="sub" x="901" y="134">route / integrity</text>
+      <rect class="store" x="1006" y="88" width="130" height="64" rx="6"/><text class="label" x="1071" y="116">Payload</text><text class="sub" x="1071" y="134">read bytes</text>
+      <path class="dashed" d="M1071 152 V204 H221 V152" marker-end="url(#arrow2)"/><text class="tiny" x="540" y="220" text-anchor="middle">feedback / adaptation is later, not part of P0 correctness</text>
+    </svg>
+  </section>
+
+  <section>
+    <h2>03 · Identity is not address</h2>
+    <p class="note">ตัวตนคงเดิมได้ แต่ address เป็นฟังก์ชันของ world/seed; payload ไม่ควรถูกย้ายเพราะ route เปลี่ยน</p>
+    <svg viewBox="0 0 1160 300" role="img" aria-labelledby="world-title world-desc">
+      <title id="world-title">Identity across worlds</title>
+      <desc id="world-desc">One identity is resolved to different addresses in different worlds while the payload reference and identity contract stay separate from route metadata.</desc>
+      <defs><marker id="arrow3" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4f5d75"/></marker></defs>
+      <rect class="focus" x="40" y="100" width="180" height="72" rx="6"/><text class="label" x="130" y="130">Identity</text><text class="sub" x="130" y="150">CAT_INSTANCE_17</text>
+      <path class="arrow" marker-end="url(#arrow3)" d="M220 136 H300"/>
+      <rect class="box" x="300" y="52" width="220" height="64" rx="6"/><text class="label" x="410" y="80">World 20736</text><text class="sub" x="410" y="100">seed A · address F123</text>
+      <rect class="box" x="300" y="164" width="220" height="64" rx="6"/><text class="label" x="410" y="192">World 20737</text><text class="sub" x="410" y="212">seed B · address C636</text>
+      <path class="arrow" marker-end="url(#arrow3)" d="M220 132 H260 V84 H300"/><path class="arrow" marker-end="url(#arrow3)" d="M220 140 H260 V196 H300"/>
+      <path class="arrow" marker-end="url(#arrow3)" d="M520 84 H608"/><path class="arrow" marker-end="url(#arrow3)" d="M520 196 H608"/>
+      <rect class="store" x="608" y="100" width="190" height="72" rx="6"/><text class="label" x="703" y="130">Route metadata</text><text class="sub" x="703" y="150">world + seed + version</text>
+      <path class="arrow" marker-end="url(#arrow3)" d="M798 136 H886"/>
+      <rect class="store" x="886" y="100" width="230" height="72" rx="6"/><text class="label" x="1001" y="130">Payload reference</text><text class="sub" x="1001" y="150">bytes remain separate</text>
+      <text class="tiny" x="40" y="268">REQUIRED TESTS: same identity / different world · same fingerprint / different instance · collision · reverse resolve</text>
+    </svg>
+  </section>
+
+  <section>
+    <h2>04 · Work sequence and decision gates</h2>
+    <p class="note">ลำดับนี้ป้องกันการสร้าง geometry ขนาดใหญ่ก่อนพิสูจน์ว่าช่วยงานจริง</p>
+    <svg viewBox="0 0 1160 360" role="img" aria-labelledby="plan-title plan-desc">
+      <title id="plan-title">Semantic hyper address work sequence</title>
+      <desc id="plan-desc">Six ordered work packages begin with a small vertical slice and benchmark gate, then define identity, persistence, adaptation, and only finally scale geometry.</desc>
+      <defs><marker id="arrow4" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#4f5d75"/></marker></defs>
+      <path class="arrow" marker-end="url(#arrow4)" d="M184 112 H220"/><path class="arrow" marker-end="url(#arrow4)" d="M364 112 H400"/><path class="arrow" marker-end="url(#arrow4)" d="M544 112 H580"/><path class="arrow" marker-end="url(#arrow4)" d="M724 112 H760"/><path class="arrow" marker-end="url(#arrow4)" d="M904 112 H940"/>
+      <rect class="focus" x="40" y="76" width="144" height="72" rx="6"/><text class="label" x="112" y="104">P0</text><text class="sub" x="112" y="124">vertical slice</text>
+      <rect class="focus" x="220" y="76" width="144" height="72" rx="6"/><text class="label" x="292" y="104">P1</text><text class="sub" x="292" y="124">value benchmark</text>
+      <rect class="box" x="400" y="76" width="144" height="72" rx="6"/><text class="label" x="472" y="104">P2</text><text class="sub" x="472" y="124">identity contract</text>
+      <rect class="box" x="580" y="76" width="144" height="72" rx="6"/><text class="label" x="652" y="104">P3</text><text class="sub" x="652" y="124">partial rebuild</text>
+      <rect class="futurebox" x="760" y="76" width="144" height="72" rx="6"/><text class="label" x="832" y="104">P4</text><text class="sub" x="832" y="124">adaptation</text>
+      <rect class="futurebox" x="940" y="76" width="144" height="72" rx="6"/><text class="label" x="1012" y="104">P5</text><text class="sub" x="1012" y="124">scale geometry</text>
+      <path class="dashed" marker-end="url(#arrow4)" d="M292 148 V230 H1012 V148"/><text class="tiny" x="652" y="250" text-anchor="middle">P1 is the investment gate: no measured value, no P2–P5 expansion</text>
+      <rect class="zone" x="40" y="278" width="504" height="48" rx="6"/><text class="zone-label" x="56" y="298">PROVEN / REQUIRED FIRST</text><text class="tiny" x="56" y="316">routing correctness + measurable work reduction</text>
+      <rect class="futurebox" x="580" y="278" width="504" height="48" rx="6"/><text class="zone-label" x="596" y="298">CONDITIONAL FUTURE</text><text class="tiny" x="596" y="316">learning and 144⁶ scale only after the gate</text>
+    </svg>
+  </section>
+
+  <div class="footer">Decision rule: geometry is computed, routing and storage stay separate, and every acceleration claim needs a real workload receipt.</div>
+</body>
+</html>

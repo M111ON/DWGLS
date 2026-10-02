@@ -619,6 +619,35 @@ anchor-route: | $(BUILD)
 	    -I . -I core -o $(BUILD)/anchor_route_cli tools/anchor_route_cli.c -lm
 	./$(BUILD)/anchor_route_cli 1000
 
+# P0/P1 semantic Hyper Address vertical slice and brute-force comparison.
+semantic-route-bench: | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/semantic_route_bench tools/semantic_route_bench.c $(LDFLAGS)
+	./$(BUILD)/semantic_route_bench
+
+# Geometry probe for the equal-triangle / inward-semicircle construction.
+equal-triangle-semicircle: | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/test_equal_triangle_semicircle tests/test_equal_triangle_semicircle.c -lm
+	./$(BUILD)/test_equal_triangle_semicircle
+
+# Use the construction as a computed ternary route, not as storage.
+equal-triangle-route: | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/test_equal_triangle_route tests/test_equal_triangle_route.c
+	./$(BUILD)/test_equal_triangle_route
+
+# Compose the ternary triangle route with the experimental Wang 12x6 model.
+triangle-wang-snap: | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/test_triangle_wang_snap tests/test_triangle_wang_snap.c
+	./$(BUILD)/test_triangle_wang_snap
+
+triangle-field-equivalence: | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/test_triangle_field_equivalence tests/test_triangle_field_equivalence.c
+	./$(BUILD)/test_triangle_field_equivalence
+
+# Exhaustive cube-corner / two-tetra incidence proof for the overlay hypothesis.
+cube-two-tetra-incidence: | $(BUILD)
+	$(CC) $(CFLAGS) -o $(BUILD)/test_cube_two_tetra_incidence tests/test_cube_two_tetra_incidence.c
+	./$(BUILD)/test_cube_two_tetra_incidence
+
 # KV logical-delta: base dump + token-id chain restores byte-identical state
 # (serializer re-packs globally so byte-prefix is dead; decode determinism
 # makes token-id deltas exact). Proves RESULT == FULL + wrong-base diverges.
@@ -1387,4 +1416,3 @@ bench-tesspack: tests/bench_tesspack.c core/geo_tess_container.h | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format -Wno-unused-function -I core -o $(BUILD)/bench_tesspack tests/bench_tesspack.c -lm
 	@echo "✅ bench-tesspack ready"
 	cmd //c "$(BUILD)\bench_tesspack.exe F:\model\qwen3-4b-moe-q4_k_m.gguf F:\model\qwen3moe.tesspack 3"
-
