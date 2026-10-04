@@ -94,3 +94,6 @@ cookies.txt
 # Local agent/tool state — regenerable, never project content
 .inbox_index.md
 session-ses_*.md
+
+# Bench run logs — regenerable by tools/ann_pipe_bench (never source of truth)
+/runs/

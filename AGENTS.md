@@ -26,3 +26,8 @@
 ## Shared core (so every app agrees)
 - MAP not COMPRESS — coordinate = address. 20736 = one cell. ★ 6ico/144 protagonist.
 - Working dirs: `I:\DWGLS-native-fs`, `I:\model`, `F:\model`, `I:\llama`. English/Thai only.
+
+## User Requested answered Pattern
+- User specialize on pattern matching and comparing structure, alway explain the result in 2 version contains:
+ - technical universal terms
+ - casual less technical summarizes

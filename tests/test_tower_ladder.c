@@ -243,24 +243,24 @@ int main(void) {
               "bit 6 is set in 192 and clear in 0xBF — that is the whole defect");
     }
 
-    /* 13. tl_jump (MOD-37) is a bijection on 192: gcd(37,192)=1 */
+    /* 13. tl_step (MOD-37) is a bijection on 192: gcd(37,192)=1 */
     {
         unsigned char seen[TL_TOTAL];
         memset(seen, 0, sizeof seen);
-        for (uint32_t p = 0; p < TL_TOTAL; p++) seen[tl_jump(p)]++;
+        for (uint32_t p = 0; p < TL_TOTAL; p++) seen[tl_step(p)]++;
         int ok = 1;
         for (uint32_t i = 0; i < TL_TOTAL; i++) if (seen[i] != 1) ok = 0;
-        check(ok, "tl_jump = MOD-37 stride is a bijection on 192 slots");
+        check(ok, "tl_step = MOD-37 stride is a bijection on 192 slots");
     }
 
-    /* 13b. TRAP: a bijection is not a traversal. tl_jump(0) = 0, so iterating
+    /* 13b. TRAP: a bijection is not a traversal. tl_step(0) = 0, so iterating
      *     the jump never leaves slot 0. A stride view must be indexed by i. */
     {
-        check(tl_jump(0u) == 0u, "tl_jump(0) == 0 — 0 is a fixed point, iteration stalls");
+        check(tl_step(0u) == 0u, "tl_step(0) == 0 — 0 is a fixed point, iteration stalls");
         unsigned char seen[TL_TOTAL]; memset(seen, 0, sizeof seen);
         uint32_t p = 0u, steps = 0u;
-        while (p != 0u && steps < TL_TOTAL) { p = tl_jump(p); steps++; }
-        check(p == 0u && steps == 0u, "iterating tl_jump from 0 reaches nothing else");
+        while (p != 0u && steps < TL_TOTAL) { p = tl_step(p); steps++; }
+        check(p == 0u && steps == 0u, "iterating tl_step from 0 reaches nothing else");
 
         /* the usable form: indexed by i, gcd(37,192)=1 so it is a permutation */
         memset(seen, 0, sizeof seen);

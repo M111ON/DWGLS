@@ -210,7 +210,14 @@ TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   t
 
 # GEO: geometry core + address space + hyperbolic
 # GEO_FAST: <0.5s each — run often
-GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_mm_wang6   test_lblock6   test_frustum_trit   test_frustum_slot64   test_frustum_route   test_frustum_memory_adapter   test_frustum_memory_resolve   test_gguf_frustum_direct   test_gguf_frustum_pointer   test_bfs_tensor_pipeline   test_bfs_gguf_frustum   test_voronoi_mask   test_tower_ladder   test_chain_compile   test_ghost_haunt
+GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_mm_wang6   test_lblock6   test_frustum_trit   test_frustum_slot64   test_frustum_route   test_frustum_memory_adapter   test_frustum_memory_resolve   test_gguf_frustum_direct   test_gguf_frustum_pointer   test_bfs_tensor_pipeline   test_bfs_gguf_frustum   test_voronoi_mask   test_tower_ladder   test_chain_compile   test_ghost_haunt   test_id_route_log \
+	test_id_feedback \
+	test_id_contract \
+	test_p5_value_gate \
+	test_light_index \
+	test_wang_gate \
+	test_frustum_descent \
+	test_kv_fault
 # GEO_SLOW: >1s each — run before commit only
 GEO_SLOW :=   test_geo_bfs_hub   test_geo_fs_mdim   test_goldberg_mmap
 # GEO: full set
@@ -609,6 +616,14 @@ hj-infer: | $(BUILD)
 	    $(ZC2_DIR)/llama.dll $(ZC2_DIR)/ggml.dll $(ZC2_DIR)/ggml-base.dll \
 	    $(ZC2_DIR)/ggml-cpu-x64.dll -lm
 	PATH="$(ZC2_DIR):$$PATH" ./$(BUILD)/hj_infer_proof $(LLAMA_GGUF) $(ZC2_DIR)
+
+p5-value-gate: | $(BUILD)
+	$(CC) -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -I. -Icore \
+	    -o $(BUILD)/p5_value_gate tools/p5_value_gate.c -lpsapi -lm
+
+ann-pipe-bench: | $(BUILD)
+	$(CC) -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -I. -Icore \
+	    -o $(BUILD)/ann_pipe_bench tools/ann_pipe_bench.c -lpsapi -lm
 
 # Anchor-bucket router C port: project → route → exact-rank on SIFT1M.
 # Artifacts from python proof: build/sift1m_c/ (export via build/export_hier_c.py)

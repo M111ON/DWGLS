@@ -3,97 +3,20 @@
   "sidekick": {
     "model": "9router/working",
     "fallback_models": [
-      "9router/oc/mimo-v2.6-flash-free"
+      "9router/working"
     ]
   },
   "memory": {
-    "injection_budget_tokens": 9500,
+    "injection_budget_tokens": 12500,
     "git_commit_indexing": {
       "enabled": true,
       "max_commits": 5000
     }
   },
-  "dreamer": {
-    "tasks": {
-      "map-memories": {
-        "schedule": "0 * * * *"
-      },
-      "verify": {
-        "schedule": "0 * * * *"
-      },
-      "verify-broad": {
-        "schedule": "0 */6 * * *"
-      },
-      "curate": {
-        "schedule": "0 3 * * *"
-      },
-      "compress-cues": {
-        "schedule": "0 4 * * *"
-      },
-      "classify-memories": {
-        "schedule": "0 * * * *  "
-      },
-      "retrospective": {
-        "schedule": "0 5 * * *"
-      },
-      "maintain-docs": {
-        "schedule": "0 3 * * *"
-      },
-      "evaluate-smart-notes": {
-        "schedule": "0 3 * * *"
-      },
-      "review-user-memories": {
-        "schedule": "0 3 * * *"
-      },
-      "promote-primers": {
-        "schedule": "0 3 * * *"
-      },
-      "refresh-primers": {
-        "schedule": "0 3 * * *"
-      }
-    },
-    "opencode": {
-      "model": "9router/oc/mimo-v2.6-flash-free",
-      "tasks": {
-        "map-memories": {
-          "model": "9router/working",
-          "variant": "High"
-        },
-        "verify": {
-          "model": "9router/working"
-        },
-        "verify-broad": {
-          "model": "9router/working"
-        },
-        "curate": {
-          "model": "9router/working"
-        },
-        "compress-cues": {
-          "model": "9router/working"
-        },
-        "classify-memories": {
-          "model": "9router/working"
-        },
-        "retrospective": {
-          "model": "9router/working"
-        },
-        "maintain-docs": {
-          "model": "9router/working"
-        },
-        "evaluate-smart-notes": {
-          "model": "9router/working"
-        },
-        "review-user-memories": {
-          "model": "9router/working"
-        },
-        "promote-primers": {
-          "model": "9router/working"
-        },
-        "refresh-primers": {
-          "model": "9router/working"
-        }
-      }
-    }
+  "embedding": {
+    "provider": "local",
+    "model": "Xenova/multilingual-e5-small",
+    "local_dtype": "int8"
   },
   "execute_threshold_percentage": 58,
   "prompt_surface": {
@@ -101,6 +24,20 @@
   },
   "caveman_text_compression": {
     "enabled": true,
-    "min_chars": 1500
-  }
+    "min_chars": 500
+  },
+  "dreamer": {
+    "tasks": {
+      "map-memories": {
+        "schedule": "0 2 * * *"
+      },
+      "verify": {
+        "schedule": "0 3 * * *"
+      },
+      "maintain-docs": {
+        "schedule": "0 3 * * *"
+      }
+    }
+  },
+  "history_budget_percentage": 0.25
 }

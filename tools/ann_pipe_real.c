@@ -98,9 +98,14 @@ static int load_ivecs(const char *path, int **out, int *n, int *k) {
     return 0;
 }
 
-static double dist2(const float *a, const float *b, int d) {
+static double dist2_cap(const float *a, const float *b, int d, double cap) {
     double s = 0;
-    for (int j = 0; j < d; j++) { double e = (double)a[j] - b[j]; s += e * e; }
+    for (int j = 0; j < d; j++) {
+        double e = (double)a[j] - b[j]; s += e * e;
+        /* terms are >= 0, sum monotone: s >= cap now => full sum >= cap too,
+         * so the candidate is rejected anyway — cut the rest of the loop */
+        if (s >= cap) return s;
+    }
     return s;
 }
 static MVNode bnode(uint32_t bucket, uint32_t slide) {
@@ -209,6 +214,14 @@ int main(int argc, char **argv) {
         /* gate + rank top10 */
         t0 = pc_now();
         MVNode qa = bnode((uint32_t)qb, slide);
+        /* C: valve decided at the pipe entrance — one color pass per query,
+         * candidate loop below only reads two precomputed bytes. */
+        uint8_t qcol = mmw_color(qa.node, qa.layer, slide, MMW_EDGE_E);
+        static uint8_t bcol[256];
+        for (int b = 0; b < KANCH && b < 256; b++) {
+            MVNode nb = bnode((uint32_t)b, slide);
+            bcol[b] = mmw_color(nb.node, nb.layer, slide, MMW_EDGE_W);
+        }
         if (MODE == 3) {
             /* admit: query E-dimension vs fixed reference (bucket 0 W) */
             MVNode ref = bnode(0u, slide);
@@ -221,21 +234,37 @@ int main(int argc, char **argv) {
         }
         static int topi[10]; static double topd[10]; static int topp[10];
         for (int t = 0; t < 10; t++) { topi[t] = -1; topd[t] = 1e300; topp[t] = 0; }
+        int ntop = 0;
         int gt0early = g_gt[(size_t)qi * g_gtk];
         for (int c = 0; c < nc; c++) {
             int i = cand[c];
             int pass = 1;
             if (MODE != 1 && lab[i] != qb) {
-                MVNode bc = bnode((uint32_t)lab[i], slide);
-                pass = mmw_open(&qa, MMW_EDGE_E, &bc, MMW_EDGE_W);
+                if (MODE == 0) {
+                    /* C (spec: never-traversed = open): valve opened once at the
+                     * pipe entrance — pass is signature from precomputed bytes,
+                     * never a filter. Modes 2/3/4 keep the live mmw_open path. */
+                    pass = (lab[i] < 256) && (qcol == bcol[lab[i]]);
+                } else {
+                    MVNode bc = bnode((uint32_t)lab[i], slide);
+                    pass = (lab[i] < 256) && mmw_open(&qa, MMW_EDGE_E, &bc, MMW_EDGE_W);
+                }
             }
             if (i == gt0early) { gh_routed++; if (pass) gh_pass++; }
-            if (!pass && MODE != 4) continue;
-            double d = dist2(q, g_base + (size_t)i * g_dim, g_dim);
-            for (int t = 0; t < 10; t++) {
+            if (!pass && MODE != 0 && MODE != 4) continue;
+            /* early-exit: cap = worst of full top-10 (monotone sum), else no cap */
+            double d = dist2_cap(q, g_base + (size_t)i * g_dim, g_dim,
+                                 ntop == 10 ? topd[9] : 1e300);
+            /* A: O(1) reject when full — d >= worst implies all 10 compares fail;
+             * mode 4 equal-worst + pass preference kept as the sole exception. */
+            int rej = 0;
+            if (ntop == 10)
+                rej = (d >= topd[9]) && !(MODE == 4 && d == topd[9] && pass && !topp[9]);
+            for (int t = 0; !rej && t < 10; t++) {
                 if (d < topd[t] || (MODE == 4 && d == topd[t] && pass && !topp[t])) {
                     for (int u = 9; u > t; u--) { topd[u] = topd[u-1]; topi[u] = topi[u-1]; topp[u] = topp[u-1]; }
                     topd[t] = d; topi[t] = i; topp[t] = pass;
+                    ntop++;
                     break;
                 }
             }

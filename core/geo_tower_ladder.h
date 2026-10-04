@@ -155,8 +155,10 @@ static inline uint32_t tl_shift(uint32_t p, int32_t delta) {
     return (uint32_t)(((int32_t)tl_slot(p) + delta) % (int32_t)TL_TOTAL
                       + (int32_t)TL_TOTAL) % (int32_t)TL_TOTAL;
 }
-/* MOD-37 stride: gcd(37,192)=1 so this is a bijection on 192 slots. */
-static inline uint32_t tl_jump(uint32_t p) {
+/* MOD-37 stride: gcd(37,192)=1 so this is a bijection on 192 slots.
+ * Named TL-step (not jump): ladder-local stride, distinct from GJ-place
+ * (GeoJumpRouter placement) and HJ-orbit (bounded tower walk). */
+static inline uint32_t tl_step(uint32_t p) {
     return (tl_slot(p) * 37u) % TL_TOTAL;
 }
 /* next active slot of the same tower, else the first active slot of the next.
