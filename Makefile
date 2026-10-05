@@ -1327,6 +1327,16 @@ geo-field-query: | $(BUILD)
 	    -I . -I core -I core/infra -o $(BUILD)/geo_field_query tools/geo_field_query.c -lm
 	@echo "✅ geo_field_query ready → ./$(BUILD)/geo_field_query"
 
+verify-field: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/verify_field tools/verify_field.c -lm
+	@echo "✅ verify_field ready → ./$(BUILD)/verify_field <field.bin> <source.gguf> [filter]"
+
+field-address: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/field_address tools/field_address.c -lm
+	@echo "✅ field_address ready → ./$(BUILD)/field_address <field.bin> [name-filter]"
+
 maze-walk: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
 	    -I . -I core -I core/infra -o $(BUILD)/maze_walk_cli tools/maze_walk_cli.c -lm
