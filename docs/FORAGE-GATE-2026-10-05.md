@@ -174,9 +174,18 @@ access pattern. The Colab port supplies the runnable quiet box; a real receipt
 still requires a pack. Item 7.1 therefore advances to: port proven, timing
 receipt still open pending a pack-sized probe.
 
-Artifacts (untracked): `tools/probe_forage_quiet.py`,
-`tools/colab_shim/{termios.py,tty.py,_env_probe.py,_gpu_probe.py,_probe2.py,gpu_report.json}`.
-Sessions `forge-probe` and `forage-t4` stopped; server clean.
+Artifacts (committed `4ce349f`): `tools/probe_forage_quiet.py`,
+`tools/colab_shim/{termios.py,tty.py,_env_probe.py,_gpu_probe.py,_probe2.py,_probe_pack.py}`.
+Session `forge-probe` / `forage-t4` stopped; server clean. The two raw reports
+live at `tools/colab_shim/{gpu_report.json,pack_report.json}` (gitignored by
+`*.json`, values transcribed below so the receipt survives without them).
+
+T4 hardware receipt (`gpu_report.json`): Tesla T4, driver 580.82.07, 15360 MiB,
+torch 2.11.0+cu130, CUDA true, `gpu_cap (7,5)` = sm_75 Turing, cpu_count 2.
+Pack-sized probe receipt (`pack_report.json`): N=200000, cell 64, slots 20736,
+bytes 1327104, flat_cold 34.214 / hj3_cold 58.356 / stride37_cold 33.809 ms,
+flat_warm 27.477 / hj3_warm 55.583 / stride37_warm 31.283 ms, ratios
+hj3/flat 1.706 cold / 2.023 warm, stride37/flat 0.988 cold / 1.139 warm.
 
 ### 8b. Pack-sized probe — #7161 partially reproduced (2026-10-05, session `forage-t4b`)
 
