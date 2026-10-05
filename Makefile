@@ -360,9 +360,23 @@ test-groups: | $(BUILD)
 # ── Build targets ─────────────────────────────────────
 BUILD := build
 
-.PHONY: all test clean list tier1 tier2 help test-smoke test-kis test-tess test-geo test-geo-fast test-geo-slow test-gguf test-bfs test-cap test-ghost test-kv test-6ico test-fibo test-walk test-groups
+.PHONY: all test clean list tier1 tier2 help test-smoke test-kis test-tess test-geo test-geo-fast test-geo-slow test-gguf test-bfs test-cap test-ghost test-kv test-6ico test-fibo test-walk test-groups contract contract-strict contract-test
 
 all: test
+
+# ── CONTRACT FENCE ─────────────────────────────────────
+# Headers declare constraints in prose ("No malloc", "No float").
+# Nothing checked them. This does. Violations warn by default;
+# --strict makes them a hard failure for CI / pre-commit.
+contract:
+	@python3.11 tools/contract_fence.py --dir core
+
+contract-strict:
+	@python3.11 tools/contract_fence.py --dir core --strict
+
+contract-test:
+	@echo "══ CONTRACT FENCE self-test ══"
+	@python3.11 tools/test_contract_fence.py
 
 # ── Single test ───────────────────────────────────────
 test-%: tests/%.c | $(BUILD)
@@ -565,6 +579,11 @@ help:
 	@echo "  make test-kis      — KIS subsystem only"
 	@echo "  make test-tess     — tessellation pipeline"
 	@echo "  make test-groups GROUPS="kis tess" — multi-group"
+	@echo ""
+	@echo "Contract fence:"
+	@echo "  make contract        — headers vs their own declared constraints"
+	@echo "  make contract-strict — same, exits 1 on violation (CI/pre-commit)"
+	@echo "  make contract-test   — self-test of the fence itself"
 	@echo ""
 	@echo "Workflow: smoke→edit→group→full"
 	@echo "make clean          — remove build/"
