@@ -204,10 +204,27 @@ int main(int argc, char **argv) {
         int qb = anch_assign(q, C, KANCH, g_dim);
         int got = anch_route(q, C, KANCH, g_dim, TOPB, buckets);
         static int cand[MAXN]; int nc = 0;
+        static int segstart[65];
         for (int t = 0; t < got; t++) {
             int b = buckets[t];
+            segstart[t] = nc;
             for (int u = inv_start[b]; u < inv_start[b + 1] && nc < MAXN; u++)
                 cand[nc++] = inv_perm[u];
+        }
+        segstart[got] = nc;
+        if (MODE == 5) {
+            /* forage visit order (locked rule): bucket-route order across
+             * houses, id ascending within a bucket. Top-10 set is unchanged
+             * by visit order (insertion is order-independent, cap is
+             * recall-neutral); only early-exit rate moves. */
+            for (int t = 0; t < got; t++) {
+                int lo = segstart[t], hi = segstart[t + 1];
+                for (int i = lo + 1; i < hi; i++) {
+                    int k = cand[i], j = i - 1;
+                    while (j >= lo && cand[j] > k) { cand[j + 1] = cand[j]; j--; }
+                    cand[j + 1] = k;
+                }
+            }
         }
         t_rank += (double)(pc_now() - t0);
 
@@ -240,7 +257,7 @@ int main(int argc, char **argv) {
             int i = cand[c];
             int pass = 1;
             if (MODE != 1 && lab[i] != qb) {
-                if (MODE == 0) {
+                if (MODE == 0 || MODE == 5) {
                     /* C (spec: never-traversed = open): valve opened once at the
                      * pipe entrance — pass is signature from precomputed bytes,
                      * never a filter. Modes 2/3/4 keep the live mmw_open path. */
@@ -251,7 +268,7 @@ int main(int argc, char **argv) {
                 }
             }
             if (i == gt0early) { gh_routed++; if (pass) gh_pass++; }
-            if (!pass && MODE != 0 && MODE != 4) continue;
+            if (!pass && MODE != 0 && MODE != 4 && MODE != 5) continue;
             /* early-exit: cap = worst of full top-10 (monotone sum), else no cap */
             double d = dist2_cap(q, g_base + (size_t)i * g_dim, g_dim,
                                  ntop == 10 ? topd[9] : 1e300);

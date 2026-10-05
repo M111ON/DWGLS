@@ -217,7 +217,8 @@ GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   te
 	test_light_index \
 	test_wang_gate \
 	test_frustum_descent \
-	test_kv_fault
+	test_kv_fault \
+	test_addr_orbit
 # GEO_SLOW: >1s each — run before commit only
 GEO_SLOW :=   test_geo_bfs_hub   test_geo_fs_mdim   test_goldberg_mmap
 # GEO: full set
