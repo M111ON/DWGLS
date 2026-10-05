@@ -281,3 +281,66 @@ warm-cache regression.** The gate is correct as written (cold PASS / warm FAIL).
 Item 7.1 closed: port proven (§8), warm regression reproduced both in-memory
 (§8b) and on the real pack (§8d), cold-faster confirmed on the real pack.
 
+### 9. Item 7.2 closed — per-bucket cap curve (2026-10-05)
+
+§2 named the open lever: *"the remaining speed lever is per-bucket cap (subway
+stops), which trades recall — measure that curve next."* Measured here on the
+real SIFT1M artifacts, in-process, mirroring `bench_serve_overlap.c` candidate
+order exactly (route top-16 → SINGLE posting A1 → exact L2 top-10).
+
+New probe: `experiments/ann-climate-2026-09-24/sift/probe_perbucket_cap.c`.
+Difference from `bench_serve_overlap.c`: the cap applies **per bucket** (each of
+the 16 routed buckets may score up to C members, walk order), and every query is
+classified by its **max bucket nent** so the curve splits small vs large.
+
+Bucket-size distribution (from `build/sift1m_c/off.bin`, 2560 used buckets):
+
+```
+sum 1,000,000 entries  mean 390.6
+min 112  p10 251  median 366  p90 554  max 1822
+nent >128: 2547 (99.5%)   >512: 377 (14.7%)   >1024: 13
+```
+
+Cap sweep (n=1000 queries, recall@10):
+
+```
+cap    rec_all  rec_small  rec_large  scored
+0      0.6501   0.6099     0.6677     5244    (baseline ✓ = bench_serve_overlap SINGLE)
+64     0.1658   0.1954     0.1529     1023
+128    0.2879   0.3378     0.2661     2045
+256    0.5022   0.5717     0.4718     3902
+366    0.5883   0.6089     0.5793     4694    (median nent)
+512    0.6236   0.6099     0.6296     5020    (shipped LZ_SEARCH_BUDGET)
+768    0.6410   0.6099     0.6546     5167
+1024   0.6474   0.6099     0.6638     5211
+2048   0.6501   0.6099     0.6677     5244    (= baseline, no bucket exceeds 1822)
+```
+
+Four reads, straight:
+
+1. **`rec_small` saturates (0.6099) at cap=512** — for buckets ≤ 512 the shipped
+   cap already cuts nothing. The median bucket (366) is under the default.
+2. **`rec_large` keeps climbing past cap=2048** (0.6296 → 0.6677) — big buckets
+   are the ones the fixed 512 actually truncates.
+3. **696/1000 queries (69.6%) touch a bucket > 512** — the 14.7% of *buckets*
+   that are large are hit by 1.4× their share of *queries*. This is why a fixed
+   512 craters recall (see §10 campaign: 0.65 → 0.26).
+4. **cap = median (366) is NOT the answer** — it gives 0.5883, −0.036 versus 512.
+
+**Answer to the `max(512, nent)` fix:** correct, and the curve now proves it.
+Cap ≥ nent means "cut nothing", so `budget = max(512, nent)` reaches
+rec_all = 0.6501 = baseline. Cost of the fix: scored 5020 → 5244 = **+4.5% work
+buys back 4.1% recall** — cheap.
+
+**Already shipped.** The fix is present at `tools/gguf_lazy_serve.c:315-318`
+(`else if (nent > budget) budget = nent;`), landed in commit `28c8fcf` — the
+same commit as the campaign's §10 champion. The campaign note *"one-line fix
+pending, not applied"* (docs/ANN-CLIMATE-CAMPAIGN-2026-09-24.md:249) is stale:
+doc written mid-bench, fix followed immediately. Item 7.2 closed: curve measured,
+fix verified by code, stale doc corrected (note added at campaign §10).
+
+Artifacts: `experiments/ann-climate-2026-09-24/sift/probe_perbucket_cap.c`
+(+ `build/probe_perbucket_cap.exe`). Baseline repro in the same run:
+`bench_serve_overlap.exe` → SINGLE none 0.6501 / OVERLAP none 0.7537, budget=512
+SINGLE 0.2634 (trunc 999/1000) — matches campaign §10 to the digit.
+

@@ -249,6 +249,15 @@ cutoff at 512 truncates 999/1000, recall → 0.26 (−0.49); safe at serve scale
 (nent ~ hundreds, budget rarely binds) but default should become `max(512,nent)`
 — one-line fix pending, not applied. Board card #27.
 
+**CORRECTION 2026-10-05** (per-bucket cap curve, docs/FORAGE-GATE-2026-10-05.md §9):
+the fix IS applied — `tools/gguf_lazy_serve.c:315-318` (`else if (nent > budget)
+budget = nent;`), landed in commit `28c8fcf`, the same commit as this section's
+champion. The "pending" note above was written mid-bench; the fix followed
+immediately. Curve measured on real SIFT1M: cap 512 saturates recall for buckets
+≤ 512 (median nent 366) but keeps truncating large buckets (377/2560 > 512, max
+1822); 696/1000 queries touch a large bucket. `max(512,nent)` reaches baseline
+rec 0.6501 at +4.5% scored. Median (cap 366) would be wrong (−0.036).
+
 ---
 
 ## 11. Session-memory wiring (2026-09-25)
