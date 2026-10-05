@@ -1327,6 +1327,11 @@ geo-field-query: | $(BUILD)
 	    -I . -I core -I core/infra -o $(BUILD)/geo_field_query tools/geo_field_query.c -lm
 	@echo "✅ geo_field_query ready → ./$(BUILD)/geo_field_query"
 
+frustum-real: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/frustum_real tools/frustum_real.c -lm
+	@echo "✅ frustum_real ready → ./$(BUILD)/frustum_real <field.bin> <source.gguf> [max_tensors]"
+
 verify-field: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
 	    -I . -I core -I core/infra -o $(BUILD)/verify_field tools/verify_field.c -lm
