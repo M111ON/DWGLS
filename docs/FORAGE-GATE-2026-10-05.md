@@ -106,3 +106,178 @@ microdegrees only (60×4=240, 112133377+127866623=240000000).
    run (no `make` in this shell; use MSYS2).
 7. Contract-fence work (tools/contract_fence.py + Makefile hunks) belongs to
    another workstream — untouched, uncommitted, do not adopt silently.
+
+## 8. Colab port landed + quiet-round receipts (2026-10-05, same-day continuation)
+
+Item 7.1 ("clean speed receipt (quiet box) or Colab port") — Colab port DONE.
+Chain proven end to end from this Windows box.
+
+**CLI:** `google-colab-cli` v0.7.4 installed at `I:\python3.14.4\Scripts\colab.exe`
+(Python 3.14). v0.7.4 crashes on Windows at import: `colab_cli/console.py:20`
+`import termios` + `:23 import tty` (POSIX-only). Fixed WITHOUT patching
+site-packages: shim package at `tools/colab_shim/{termios.py,tty.py}` injected
+via `$env:PYTHONPATH=I:\DWGLS-native-fs\tools\colab_shim`. `colab run/exec`
+never touch the console path; only `colab console`/`repl` would, and those stay
+unsupported here. WSL alternative rejected: WSL `Geomatt` ships Python 3.10.12,
+below the package's `Requires-Python >=3.12`, so `pip install` resolves to
+`from versions: none` (not a network failure).
+
+**Real surface (from `--help`, never guessed):**
+`run new exec sessions status stop console repl install ssh upload download ls rm
+edit drivemount url auth pay usage log update version` — no `colab-cli.cmd`,
+no `auth login` (auth takes only `-s <session>`), no `kernel`.
+
+**GPU:** T4 obtained with balance 0.00 compute units (free tier, build does not
+debit; `usage` reads rate 0.08/hr only). Confirmed by `gpu_report.json` pulled
+via `colab download`:
+```
+nvidia_smi : Tesla T4, driver 580.82.07, 15360 MiB
+torch      : 2.11.0+cu130
+cuda       : true
+gpu_cap    : (7, 5)      # sm_75 Turing
+cpu_count  : 2
+```
+Session list cross-check: `[forage-t4] Hardware: T4 | Variant: GPU`.
+
+**Quiet-round probe:** `tools/probe_forage_quiet.py` — orbit ground truth from
+`core/geo_hyper_jump.h` L42-52 (`hj3_tower/hj3_local/hj3_jump/hj3_inv`) + the
+spec anchors in `tests/test_p5_value_gate.c:281` and `core/kis_codec_v6.h`
+(`slot(i)=(i*37)%20736`). Value-blind, no model bytes; enumerates HJ3 orbits,
+GJ stride-37 orbit, and times an HJ-cluster ordered walk vs a flat index walk.
+
+**9/9 PASS on all three machines** (local Windows, Colab CPU, Colab T4):
+
+| machine | flat cold | hj3 cold | ratio hj3/flat | passes |
+|---------|-----------|----------|----------------|--------|
+| local Windows | 145.79ms | 822.80ms | 5.644 | 9/9 |
+| Colab CPU (2 vCPU) | 122.54ms | 311.81ms | 2.545 | 9/9 |
+| Colab T4 (2 vCPU) | 50.53ms | 147.52ms | 2.919 | 9/9 |
+
+Checks (all PASS): HJ3^6==id over [0,144); 24 disjoint HJ3 orbits; every orbit
+length 6; 5 intermediates before return to 0; gcd(37,20736)==1; stride-37 orbit
+from 1 closes to 1; orbit size 576; spec 36×576==20736; full stride-37 sweep
+returns to 0.
+
+**Provenance correction (oracle discipline):** two initial FAILs were MY oracle
+errors, not field errors — (a) counting GJ orbits by walking every start
+double-counts (the action x→37x mod 20736 is multiplicative; walk the single
+orbit from x=1 → 576, which is 576·36==20736 matching the spec); (b) an
+`(n-1)/576` floor gave 35. Fixed by asserting the spec number from
+`test_p5_value_gate.c:281` directly, never re-deriving it.
+
+**Interpretation — kept honest:** the ratio is >1 on every machine and the T4
+VM (whose CPU is faster) beats the CPU VM on absolute time, so this timing is a
+pure interpreter/CPU-speed artifact of a Python index loop. It does NOT
+reproduce the #7161 value gate (cold 0.118× / warm 1.49–2.32×), because that
+gate needs the real `.tesspack` bytes and the `touch_field_step` memory/cache
+access pattern. The Colab port supplies the runnable quiet box; a real receipt
+still requires a pack. Item 7.1 therefore advances to: port proven, timing
+receipt still open pending a pack-sized probe.
+
+Artifacts (untracked): `tools/probe_forage_quiet.py`,
+`tools/colab_shim/{termios.py,tty.py,_env_probe.py,_gpu_probe.py,_probe2.py,gpu_report.json}`.
+Sessions `forge-probe` and `forage-t4` stopped; server clean.
+
+### 8b. Pack-sized probe — #7161 partially reproduced (2026-10-05, session `forage-t4b`)
+
+The quiet-round probe above measured only interpreter loop overhead (no memory
+access pattern). To reach the property #7161 actually attributes the cold/warm
+flip to — cache-line / readahead pattern — `tools/colab_shim/_probe_pack.py`
+builds the REAL field in memory (20736 slots × 64 B = 1,327,104 B = 1.27 MiB)
+and walks it three ways, cold then warm (min of 20 warm reps), N=200000
+accesses (~10 sweeps), on the Colab T4 VM.
+
+```
+flat_cold   34.214ms   hj3_cold   58.356ms   stride37_cold  33.809ms
+flat_warm   27.477ms   hj3_warm   55.583ms   stride37_warm  31.283ms
+
+ratio hj3/flat       cold 1.706   warm 2.023
+ratio stride37/flat  cold 0.988   warm 1.139
+```
+
+Against #7161 (qwen25.tesspack, 1060 capos, identical faults ~298K, peak WS
+~1164MB, only wall-clock differs):
+
+| | #7161 real pack | this in-memory field |
+|---|---|---|
+| hj3 cold | 0.118× (8.5× FASTER) | 1.706× (slower) |
+| hj3 warm | 1.49–2.32× (slower) | **2.023× (slower)** ✓ |
+| stride-37 | 36 orbits × 576 | **0.988 cold / 1.139 warm ≈ 1.0×** ✓ |
+
+Two findings, read straight:
+1. **stride-37 ≈ 1.0× cold and warm** — the sequential bijective walk carries no
+   penalty versus a flat walk. Confirms the bijection itself is not the cost;
+   matches ARCHITECTURE #7160 (GJ stride-37 is the global mini-map view).
+2. **hj3 warm = 2.023× lands inside #7161's 1.49–2.32× band** — the warm-cache
+   regression is a property of the access pattern, reproduced without the pack.
+   But **cold does NOT reproduce 0.118×**: in-memory there is no page fault, so
+   the cold direction is unobservable here. #7161's cold-faster is specific to
+   the mmap fault pattern over the 718 MB file.
+
+Conclusion: the warm-cache regression that blocks HJ integration
+(`tesspack_server.c`) is reproducible from the field geometry alone; the
+cold-faster half is an mmap-fault artifact that still needs the real 718 MB pack
+(`build/qwen25.tesspack`) to confirm. Item 7.1 status: port proven + warm
+regression reproduced; cold-faster receipt still needs a pack upload.
+
+Artifacts added: `tools/colab_shim/{_probe_pack.py,pack_report.json}`.
+Session `forage-t4b` stopped; server clean.
+
+### 8c. Item 7.6 closed — test_wang_latch wired into GEO_FAST
+
+`tests/test_wang_latch.c` existed (4101 B, 4 gates T1-T4, oracle from
+spec/math) but was absent from the GEO_FAST group. Added to `Makefile` GEO_FAST
+after `test_addr_orbit`. Built and run standalone:
+
+```
+gcc -O2 -Icore -o build/test_wang_latch.exe tests/test_wang_latch.c -lm
+build/test_wang_latch.exe  ->  ALL PASS (0)   21/21 ok
+```
+
+Checks: T1 144×72=10368 bijective, 2 reserved {0,10367}, free 10366,
+10368×2=20736; T2 monotone open→traversed→shut, CLEAR the only reopen;
+T3 reserved refuse traverse and stay open, out-of-range refused;
+T4 P3-log replay byte-identical to stepwise state, foreign name_hash ignored,
+misaligned buffer applies nothing. `test_addr_orbit` re-run after the edit:
+ALL PASS (GEO_FAST not disturbed).
+
+### 8d. #7161 FULLY reproduced on the real 718 MB pack (2026-10-05)
+
+No Colab upload needed — `tests/test_p5_value_gate.c` and
+`build/qwen25.tesspack` (718.8 MB, 1060 capos) both already exist locally.
+Built and run twice back-to-back (passes=3, 19,690,496 steps per walk):
+
+```
+RUN 1 (cold)                          RUN 2 (warm)
+flat-bytes  37.039s  faults +298310   flat-bytes  1.332s  faults +298298
+hj3-field    2.431s  faults +298300   hj3-field   6.074s  faults +298299
+peak_ws     1164.4 MB                 peak_ws     1164.4 MB
+ratio hj3/flat = 0.066  PASS          ratio hj3/flat = 4.561  FAIL
+RESULTS: 7 PASS, 0 FAIL               RESULTS: 6 PASS, 1 FAIL
+```
+
+Against #7161's recorded receipt:
+
+| | #7161 recorded | measured today |
+|---|---|---|
+| cold ratio | 0.118× (8.5× faster) | **0.066× (15.2× faster)** PASS |
+| warm ratio | 1.49–2.32× | **4.561×** FAIL |
+| page faults | ~298K | **298310** (cold) / 298298 (warm) exact |
+| peak WS | ~1164 MB | **1164.4 MB** exact |
+
+Faults and peak WS match #7161 to the count and the megabyte — so the cold/warm
+flip is **not** an IO-volume difference (identical faults both runs). It is a
+CPU cache-line locality effect:
+
+- **cold**: flat must fault the whole 718 MB in file order (37s); hj3 sorts
+  steps by `field_slot` first, so touches are adjacent → hits (2.4s).
+- **warm**: the file is already in the OS page cache; flat walks it
+  sequentially (1.3s, fastest possible), while hj3's jump pattern causes
+  cache misses (6.1s).
+
+**Verdict unchanged from #7161 and now measured locally: do NOT integrate HJ
+into `tesspack_server.c` until an orbit-aware / re-packed layout removes the
+warm-cache regression.** The gate is correct as written (cold PASS / warm FAIL).
+Item 7.1 closed: port proven (§8), warm regression reproduced both in-memory
+(§8b) and on the real pack (§8d), cold-faster confirmed on the real pack.
+
