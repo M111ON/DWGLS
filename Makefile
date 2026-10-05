@@ -1342,6 +1342,11 @@ field-address: | $(BUILD)
 	    -I . -I core -I core/infra -o $(BUILD)/field_address tools/field_address.c -lm
 	@echo "✅ field_address ready → ./$(BUILD)/field_address <field.bin> [name-filter]"
 
+forage-real: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/forage_real tools/forage_real.c -lm
+	@echo "✅ forage_real ready → ./$(BUILD)/forage_real <hier_dir> <sift_dir> [nq] [topb] [topk]"
+
 maze-walk: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
 	    -I . -I core -I core/infra -o $(BUILD)/maze_walk_cli tools/maze_walk_cli.c -lm
