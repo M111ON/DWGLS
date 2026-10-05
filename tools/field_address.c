@@ -98,39 +98,23 @@ int main(int argc, char **argv) {
            field_path, (unsigned long long)ver, N, (unsigned long long)body_off,
            (fpos_kv && fpos_kv->arr_count >= N) ? "present" : "absent");
 
-    /* Rebuild the same inference order the bake used, so fpos[] indexes align. */
-    uint32_t *order = (uint32_t *)calloc(N, sizeof(uint32_t));
-    for (uint32_t i = 0; i < N; i++) order[i] = i;
-    for (uint32_t i = 0; i < N; i++) {
-        for (uint32_t j = i + 1; j < N; j++) {
-            const char *na = fld.entries[order[i]].name, *nb = fld.entries[order[j]].name;
-            unsigned ba = 0, bb = 0; int ca, cb;
-            ca = strncmp(na, "token_embd", 10) == 0 ? 0 : (strncmp(na, "blk.", 4) == 0 ? 1 : (strncmp(na, "output_norm", 11) == 0 ? 2 : 3));
-            cb = strncmp(nb, "token_embd", 10) == 0 ? 0 : (strncmp(nb, "blk.", 4) == 0 ? 1 : (strncmp(nb, "output_norm", 11) == 0 ? 2 : 3));
-            if (ca == 1) ba = (unsigned)atoi(na + 4);
-            if (cb == 1) bb = (unsigned)atoi(nb + 4);
-            int less = (ca < cb) || (ca == cb && (ba < bb || (ba == bb && order[i] < order[j])));
-            if (!less) { uint32_t t = order[i]; order[i] = order[j]; order[j] = t; }
-        }
-    }
-
-    /* fpos[] is indexed in chain order; chain r -> tensor order[r] */
+    /* fpos[] is indexed by FILE tensor index directly — proven by
+     * verify_field.c (291/291) and frustum_real.c (384/384). A chain-order
+     * sort was WRONG: it printed addresses for the wrong tensor. */
     int shown = 0;
-    for (uint32_t r = 0; r < N; r++) {
-        uint32_t ti = order[r];
-        const char *name = fld.entries[ti].name;
+    for (uint32_t t = 0; t < N; t++) {
+        const char *name = fld.entries[t].name;
         if (filter[0] && !strstr(name, filter)) continue;
-        uint64_t fpos = fpos_kv ? arr_u64(fld.reader.base, fpos_kv, r) : 0;
+        uint64_t fpos = fpos_kv ? arr_u64(fld.reader.base, fpos_kv, t) : 0;
         uint64_t addr = body_off + fpos;
-        uint64_t sz = fld.entries[ti].size;
-        printf("  chain[%3u]  %-44s %10I64u B   addr=%-12I64u body+%-12I64u  region=%-10I64u\n",
-               r, name, (unsigned long long)sz, (unsigned long long)addr,
+        uint64_t sz = fld.entries[t].size;
+        printf("  tensor[%3u]  %-44s %10I64u B   addr=%-12I64u body+%-12I64u  region=%-10I64u\n",
+               t, name, (unsigned long long)sz, (unsigned long long)addr,
                (unsigned long long)fpos, (unsigned long long)align32(sz));
         shown++;
     }
-    printf("\nfield_address: %d tensor(s) shown of %u; address = body_off + fpos[chain]\n", shown, N);
+    printf("\nfield_address: %d tensor(s) shown of %u; address = body_off + fpos[file_idx]\n", shown, N);
     printf("  addresses are STORED in the field (kis.layout.fpos); no source GGUF needed\n");
     gguf_box_close(&fld);
-    free(order);
     return 0;
 }
