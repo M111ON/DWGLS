@@ -93,11 +93,46 @@ $ build/verify_field.exe build/fieldB.bin I:/model/Qwen3-0.6B-Q8_0.gguf
 |---|---|---|
 | **1** | **verify address กับ GGUF จริง (field self-describing ถูกจริง)** | ✅ **เสร็จ 601/601 PASS** |
 | 1b | rescope probe เป็น frustum composite 6 direction | ✅ เสร็จ (24/24, 21/21) — synthetic |
-| **2** | **fog/pattern/frustum บน tensor จริง** | ❌ ยังไม่ทำ (synthetic 100%) |
+| **2** | **fog/pattern/frustum บน tensor จริง** | ✅ **เสร็จ 6/6 ทั้ง 2 โมเดล (864 face bytes, 0 differ)** |
 | **3** | **SIFT forage loop บน 1M vectors จริง** | ❌ ยังไม่ทำ (`F.bin/off.bin/mem.bin` หาย ต้อง generate จาก `.npy`) |
 
 ## 8. เครื่องมือที่เพิ่ม
 
 - `tools/field_address.c` — ดู address จาก field ลำพัง (ไม่มี source)
 - `tools/verify_field.c` — พิสูจน์ address ↔ source bytes
-- Make targets: `make field-address`, `make verify-field`
+- `tools/frustum_real.c` — fog/pattern walk บน tensor จริง
+- Make targets: `make field-address`, `make verify-field`, `make frustum-real`
+
+## 9. ข้อ 2 — fog/pattern บน tensor จริง (2026-10-05)
+
+`tools/frustum_real.c` รันโมเดล fog/built บน field ที่ bake จริง แทนค่าคำนวณมือ:
+
+- **anchor** = tensor จริงที่ address จริง (จาก `fpos[]`)
+- **6 faces** = 6 ตำแหน่งใน tensor (deterministic, ดูแต่ position ไม่ดูค่า)
+- **fog** = เดิน face ไหน = ปิด face นั้น (ทิ้งร่องรอย)
+- **pattern** = 6-bit mask, **tombstone** = entry+exit
+
+```
+fieldA.bin (Qwen2.5-0.5B-Q8_0, 64 anchors)  6/6 PASS  384 face bytes, 0 differ
+fieldB.bin (Qwen3-0.6B-Q8_0, 80 anchors)    6/6 PASS  480 face bytes, 0 differ
+```
+
+| ข้อ | พิสูจน์ | ผล |
+|---|---|---|
+| R1 | 6 faces เป็นตำแหน่งต่างกัน | PASS (real sizes) |
+| **R2** | **bytes ที่ face == GGUF ต้นทาง ตำแหน่งเดียวกัน** | **864 compared, 0 differ** |
+| R3 | 2 walker คนละเส้นทาง → fog ต่างกัน | ffn `0x39` vs attn `0x3f` |
+| R4 | เดินซ้ำไม่เปิดอะไรใหม่ | 3 new → 0 new |
+| R5 | tombstone entry+exit ระบุทางผ่าน | `0x24` (เข้า 2 ออก 5) |
+| R0 | forward ไม่เคยถูกบล็อก | mask `0x3f` |
+
+**⇒ ∴ R2 คือข้อสำคัญ: walk อ่าน bytes จริงจากโมเดล ไม่ใช่สำเนา**
+
+**⇒ ∴ ของจริงที่เจอบน data: `output.weight` กับ `token_embd.weight` มี bytes *เหมือนกันเป๊ะ* (tied weights) ⇒ แต่เป็น *anchor คนละตัว* ที่ fog แยกกันได้** — ตรงกับ doctrine ที่ว่า pattern มาจาก *ร่องรอยของ walker* ไม่ใช่จากค่า
+
+## 10. บั๊กที่ 3 — `field_address` print address ผิด (แก้แล้ว `70ec861`)
+
+`fpos[]` ถูก index ด้วย **file tensor index ตรง ๆ** ไม่ใช่ chain order ⇒ การ sort ตาม chain ทำให้ print address ของ tensor ผิด (token_embd โชว์ `390786048` แทนที่จะเป็น `body+0 = 31680`)
+
+`verify_field.c` (291/291) กับ `frustum_real.c` (384/384) ใช้ file-index ตรงมาตลอด ⇒ ∴ **field ถูกมาตลอด บั๊กอยู่ที่ `field_address` เอง**
+
