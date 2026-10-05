@@ -13,6 +13,8 @@ int main(int argc, char **argv) {
     if (argc < 2) { printf("usage: %s model.gguf [factor=12] [rounds=0|minsize=1]\n", argv[0]); return 2; }
     int F = argc > 2 ? atoi(argv[2]) : 12;
     int RND = argc > 3 ? atoi(argv[3]) : 0;
+    long long SKIP = argc > 4 ? atoll(argv[4]) : 0;
+    int NEG = argc > 5 ? atoi(argv[5]) : 0; /* NEG=1: r = mean - v (swap sides) */
     int MINSZ = 1;
     if (F < 2 || F > 256) { printf("bad factor\n"); return 2; }
     GGUFBox box;
@@ -25,8 +27,10 @@ int main(int argc, char **argv) {
         unsigned long long nb = e->n_elems / 32;
         for (unsigned long long b = 0; b < nb && n < 20736; b++) {
             const uint8_t *blk = (const uint8_t *)e->data + b * 34;
-            for (int k = 0; k < 32 && n < 20736; k++, n++)
-                vals[n] = (int8_t)blk[k];
+            for (int k = 0; k < 32 && n < 20736; k++) {
+                if (SKIP > 0) { SKIP--; continue; }
+                vals[n++] = (int8_t)blk[k];
+            }
         }
     }
     printf("n=%d\n", n);
@@ -53,7 +57,7 @@ int main(int argc, char **argv) {
             int mean = (int)((s + (s >= 0 ? F/2 : -F/2)) / F);
             nxt[g] = mean;
             for (int k = 0; k < F; k++) {
-                int r = cur[g * F + k] - mean;
+                int r = NEG ? mean - cur[g * F + k] : cur[g * F + k] - mean;
                 int a = r < 0 ? -r : r;
                 ressum += a;
                 if (a > resmax) resmax = a;
