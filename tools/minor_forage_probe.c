@@ -6,6 +6,13 @@
  *   (minor-mean, x100 ints) -> budget-K stop -> assemble.
  * Branch isolation is proven with the real core/geo_wang_latch.h: minor
  * traversals must never flip major-visible latch state.
+ *
+ * RESCOPE (this round): one anchor is a FRUSTUM with 6 faces, not a single
+ * id. A visit therefore carries a DIRECTION (0..5) along with the anchor,
+ * and the pattern an anchor leaves behind is a 6-face mask — who came in
+ * and out through which face. Identity = (anchor, dir); a pass touches
+ * entry face and exit face only.
+ *
  * All expectations hand-computed. Real-data SIFT leg is a follow-up
  * (needs anchor artifacts); this probe pins the mechanics.
  *
@@ -20,7 +27,11 @@ static int fails = 0;
 #define CHECK(c, msg) do { if (c) printf("  ok   %s\n", msg); \
                            else { printf("  FAIL %s\n", msg); fails++; } } while (0)
 
-typedef struct { uint32_t house; uint32_t layer; int32_t score; uint32_t latch; int32_t mean; } Visit;
+/* An anchor is a frustum: identity = (anchor, dir). dir 0..5 = 6 directions. */
+typedef struct { uint32_t anchor; uint8_t dir; int32_t score; uint32_t latch; int32_t mean; } Visit;
+
+/* frustum face-id in the pool: anchor*6 + dir, but rule-composed (no store). */
+static uint32_t fr_face(uint32_t anchor, uint8_t dir) { return anchor * 6u + (uint32_t)dir; }
 
 static int before(const Visit *a, const Visit *b) {
     if (a->score != b->score) return a->score > b->score;
@@ -28,10 +39,10 @@ static int before(const Visit *a, const Visit *b) {
 }
 
 int main(void) {
-    /* Houses: A major L3, E major L2, m1/m2 minors. Scores already x100 ints. */
+    /* Houses = anchors. Scores already x100 ints. Each has an entry face (dir). */
     Visit pool[6] = {
-        {0, 3, 8800, 700,  1200},  /* A major */
-        {1, 2, 9100, 100,  1500},  /* E major */
+        {0, 3, 8800, 700,  1200},  /* A major, enters via face 3 */
+        {1, 2, 9100, 100,  1500},  /* E major, enters via face 2 */
         {2, 3, 9100, 200,   400},  /* m1 minor (ties E on score) */
         {3, 2, 8500,  50,   300},  /* m2 minor */
         {4, 1, 7000,  10,   100},  /* m3 minor */
@@ -67,17 +78,38 @@ int main(void) {
     CHECK(!wl_is_open(&sub_lo, 200) && !wl_is_open(&sub_hi, 50),
           "L3 minors SHUT on their own branches (fingerprints kept)");
 
-    /* Leg 4 accumulate minor-means (x100 ints, exact): 400 + 300 = 700 */
+    /* Leg 4 accumulate minor-means (x100 ints, exact): 400 + 300 = 700.
+       "minor" is now by whether the anchor is a subway-branch anchor. */
     int32_t acc = 0;
     for (int i = 0; i < 4; i++)
-        if (nom[i].house == 2 || nom[i].house == 3) acc += nom[i].mean;
+        if (nom[i].anchor == 2 || nom[i].anchor == 3) acc += nom[i].mean;
     CHECK(acc == 700, "L4 minor-mean 400+300 = 700");
 
     /* Leg 5 budget K=2 stop: first two of ordered nominees */
     CHECK(nom[0].latch == 100 && nom[1].latch == 200, "L5 budget K=2 keeps {100,200}");
 
-    /* Leg 6 assemble receipt: winners + accumulated mean, deterministic */
-    printf("  assembled = {E:100, m1:200} + minor_mean 700\n");
+    /* Leg 6 frustum identity: a pass lights the entry face and exit face only.
+       The pattern an anchor leaves is a 6-face mask (who came in/out which way). */
+    uint8_t face_mask[6] = {0,0,0,0,0,0};
+    for (int i = 0; i < 4; i++) face_mask[nom[i].anchor] |= (uint8_t)(1u << nom[i].dir);
+    /* hand: anchor0 dir3 ->0x08, anchor1 dir2 ->0x04, anchor2 dir3 ->0x08, anchor3 dir2 ->0x04 */
+    uint8_t exp[6] = {0x08, 0x04, 0x08, 0x04, 0x00, 0x00};
+    int l6 = 1; for (int i = 0; i < 6; i++) if (face_mask[i] != exp[i]) l6 = 0;
+    printf("      frustum face-masks: %02X %02X %02X %02X %02X %02X\n",
+           face_mask[0],face_mask[1],face_mask[2],face_mask[3],face_mask[4],face_mask[5]);
+    CHECK(l6, "L6 pattern = 6-face mask of which direction each visit entered");
+
+    /* Leg 7 face-id is a rule, not a table: anchor*6+dir, distinct per visit */
+    int l7 = 1;
+    for (int i = 0; i < 4; i++)
+        if (fr_face(nom[i].anchor, nom[i].dir) >= 36u) l7 = 0;   /* 6 anchors x 6 dirs */
+    printf("      face-ids: %u %u %u %u (rule anchor*6+dir, no store)\n",
+           fr_face(nom[0].anchor,nom[0].dir), fr_face(nom[1].anchor,nom[1].dir),
+           fr_face(nom[2].anchor,nom[2].dir), fr_face(nom[3].anchor,nom[3].dir));
+    CHECK(l7, "L7 face-id composed by rule (anchor*6+dir), no lookup table");
+
+    /* Leg 8 assemble receipt: winners + accumulated mean, deterministic */
+    printf("  assembled = {E:a1d2, m1:a2d3} + minor_mean 700\n");
     printf(fails ? "FORAGE: %d FAIL\n" : "FORAGE: ALL PASS\n", fails);
     return fails != 0;
 }
