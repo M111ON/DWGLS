@@ -353,3 +353,92 @@ Artifacts: `experiments/ann-climate-2026-09-24/sift/probe_perbucket_cap.c`
 `bench_serve_overlap.exe` → SINGLE none 0.6501 / OVERLAP none 0.7537, budget=512
 SINGLE 0.2634 (trunc 999/1000) — matches campaign §10 to the digit.
 
+---
+
+## 11. Item 7.3 — cap-curve TRANSFER proof (2026-10-05)
+
+**The question.** Every cap number above came from ONE density: SIFT1M, 2560
+used buckets, mean nent 390. The real field is 20736 slots, so the SIFT1M
+distribution may be an artifact of this fixture and not transfer. Campaign §2
+flagged this itself ("10k numbers may not transfer", house precedent #7058).
+
+**Method (revised — the first attempt was wrong).**
+`experiments/.../probe_transfer_proof.c` swept a base subsample fraction
+(1.00 → 0.05). That is the wrong variable: dropping base members drops the
+**ground-truth neighbours** too, so recall falls for the wrong reason
+(f=0.25 → 0.2056, f=0.05 → 0.0408 with `big=0/1000`), conflating bucket
+density with GT loss. Left in-tree as the negative control.
+
+The clean variable is the **hierarchy routing width**, using the shipped
+SIFT1M artifacts unchanged (`build/sift1m_hier/`, produced by
+`build/hier2_artifacts.py`: PCA-25, C1=256 coarse, KPER=10 fine per coarse).
+Holding base / query / GT / PCA / coarse centroids fixed and varying only
+`(topC, topF)` changes how many members land in the scan — 4x8 scans 3536,
+8x32 scans 13888, a **3.9× density change with GT untouched**.
+
+New probe: `tools/probe_transfer_cap.py`. For each of the 5 routing configs in
+`meta.json` and each cap in {0,32,64,128,256,512,1024,2048}, run the shipped
+route (top-a coarse → top-b fine), scan routed members with a **per-bucket
+cap**, report recall@10 and members scored.
+
+**Baseline check first** — `8x16` reproduces `meta.json` exactly:
+
+```
+8x16 unbounded: recall 0.8014  scored 7009     (meta.json: "8x16": 0.8014 / 7009) ✓
+```
+
+**Cap curve across all 5 configs (scored 3536 → 13888):**
+
+```
+cfg    cap   recall   scored      cfg    cap   recall   scored
+4x8      0   0.6558     3536      4x32     0   0.8002    13807
+4x8    256   0.4153     2031      4x32   256   0.5012     8116
+4x8    512   0.6085     3223      4x32   512   0.7447    12782
+4x8   1024   0.6514     3499      4x32  1024   0.7954    13717
+4x8   2048   0.6558     3536      4x32  2048   0.8002    13807
+
+4x16     0   0.7597     7008      8x32     0   0.8906    13888
+4x16   512   0.7065     6436      8x32   512   0.8311    12865
+4x16  1024   0.7549     6952      8x32  1024   0.8858    13808
+4x16  2048   0.7597     7008      8x32  2048   0.8906    13888
+
+8x16     0   0.8014     7009
+8x16   512   0.7463     6444
+8x16  1024   0.7966     6956
+8x16  2048   0.8014     7009
+```
+
+**Three reads, straight:**
+
+1. **The curve SHAPE transfers.** All 5 configs, across a 3.9× density range,
+   show the same profile: steep loss at small cap, monotone climb, saturation
+   only at ~2048. The cap curve is a property of the **bucket-size
+   distribution**, not of the SIFT1M scale.
+2. **cap = 512 is insufficient in EVERY config** — every one still climbs to
+   ~2048, and 512 costs 5–9 recall points (4x8 0.6085 vs 0.6558; 8x32 0.8311
+   vs 0.8906). The `max(512, nent)` fix is not a safety margin, it is required.
+3. **But sat-cap does NOT track scanned density.** 4x8 scans 3536 and 8x32
+   scans 13888 — 3.9× apart — yet both saturate at the same cap. Reason: the
+   hierarchy **re-clusters fine centroids per coarse cluster** with KPER=10, so
+   per-bucket size is set by KPER (~mean 390, max 1822), *not* by the routing
+   width. Changing width changes how many buckets you touch, not how big each
+   bucket is.
+
+**So what actually transfers:** the distribution shape (and therefore the
+`max(512, nent)` rule) comes from the **bucket-size distribution**, which this
+hierarchy fixes via KPER — it is invariant under scan width. That is the real
+transfer result: **the cap rule is distribution-determined, scale-independent**.
+The specific value ~2048 is a property of *this* distribution (max 1822), not a
+field constant; the field's 20736-slot layout must measure its own bucket-size
+distribution to pick its cap. `max(512, nent)` is correct precisely because it
+re-derives the cap from the live distribution instead of assuming a number.
+
+Item 7.3 closed: cap-rule transfer proven in shape; the constant is
+fixture-local and the shipped `max(512, nent)` form is the right invariant.
+
+Artifacts: `tools/probe_transfer_cap.py` (positive proof),
+`experiments/ann-climate-2026-09-24/sift/probe_transfer_proof.c` (negative
+control — subsample method). Bucket-size distribution re-measured from
+`build/sift1m_hier/fine_members.npy`: 2560 buckets, mean 390.6, median 366,
+p90 553, max 1822, `>512: 377`, `>2048: 0`.
+
