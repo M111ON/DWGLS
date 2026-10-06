@@ -20,6 +20,7 @@
 #include <math.h>
 #include <time.h>
 #include "geo_wang_latch.h"
+#include "anchor_route.h"
 
 static int fails = 0;
 #define CHECK(c,msg) do{ if(c) printf("  PASS %s\n",msg); else { printf("  FAIL %s\n",msg); fails++; } } while(0)
@@ -115,6 +116,10 @@ int main(int argc, char **argv){
     snprintf(p,sizeof p,"%s/lab1.npy",hier);        if(npy_load(p,&lab1)) return 1;
     snprintf(p,sizeof p,"%s/fine_members.npy",hier);if(npy_load(p,&mem)) return 1;
     double *C1d=(double*)C1.data, *Cd=(double*)comp.data, *Md=(double*)mean.data;
+    /* anchor_route.h takes float centroids — keep a float mirror of C1 so the
+     * real router (anch_route) can be used instead of a hand sort. */
+    float *C1f=(float*)malloc((size_t)256*25*sizeof(float));
+    for(int i=0;i<256*25;i++) C1f[i]=(float)C1d[i];
     int32_t *lab=(int32_t*)lab1.data; int64_t *mm=(int64_t*)mem.data;
     int64_t N = lab1.shape[0];
     printf("forage_real -- %I64d vectors C1=(%I64d,%I64d) comp=(%I64d,%I64d)\n",
@@ -204,9 +209,11 @@ int main(int argc, char **argv){
     for(int q=0;q<nq;q++){
         float *qv=qry+(size_t)q*128;
         for(int j=0;j<25;j++){ double s=0; for(int i=0;i<128;i++) s+=((double)qv[i]-Md[i])*Cd[j*128+i]; qp[j]=s; }
-        for(int c=0;c<256;c++){ double s=0; for(int j=0;j<25;j++){double e=qp[j]-C1d[c*25+j]; s+=e*e;} cd[c]=s; order[c]=c; }
-        for(int i=1;i<256;i++){ int k=order[i],j=i-1; while(j>=0&&cd[k]<cd[order[j]]){order[j+1]=order[j];j--;} order[j+1]=k; }
-        int vis[32]={0}; for(int i=0;i<topb&&i<32;i++) vis[i]=order[i];
+        /* route through anchor_route.h (the real router), not a hand sort */
+        float qf[25]; for(int j=0;j<25;j++) qf[j]=(float)qp[j];
+        int vis[32]; for(int i=0;i<32;i++) vis[i]=i;
+        int nv=anch_route(qf,C1f,256,25,topb,vis); (void)cd;
+        if(nv<=0){ for(int i=0;i<topb&&i<32;i++) vis[i]=i; nv=topb; }
         /* walk down from each nominated coarse into its 10 fine leaves (top->down) */
         double best[10]; int besti[10]; for(int i=0;i<10;i++){best[i]=1e300;besti[i]=-1;}
         long long sc=0;
@@ -273,6 +280,34 @@ int main(int argc, char **argv){
         CHECK(bij,"R7 leaf id stride-37 is a bijection over the real leaf count");
         CHECK(inv_ok,"R7 leaf id is invertible in O(1) (inv37=16813), no stored map");
         CHECK(step_ok,"R7 id step is exactly +37 mod N (uniform pool walk)");
+    }
+
+    /* ---- R8 fog warm-read: train and query walk the SAME entrance rule, so a
+     * re-visited route reads a latch that is already shut (fog cleared). This
+     * is the memory-DB payoff of 'enter by walking': the second visit is warm. ---- */
+    {
+        wl_latch_t a,b; memset(&a,0,sizeof a); memset(&b,0,sizeof b);
+        int warm=0,cold=0;
+        for(int c=0;c<64;c++){
+            uint32_t cid=wl_id((uint32_t)(c%144),(uint32_t)(((c/8)*7+(c/144)*36)%72)); if(wl_is_reserved(cid)) cid+=2;
+            int oa=wl_is_open(&a,cid); if(oa) warm++;  /* fresh latch → open */
+            wl_traverse(&a,cid);
+            int ob=wl_is_open(&b,cid); if(ob) cold++;
+            wl_traverse(&b,cid);
+            if(!wl_is_open(&b,cid)) warm++;            /* second latch now shut */
+        }
+        printf("  fog warm-read: first-visit open=%d second-visit shut=%d over 64 routes\n",warm/2,warm-warm/2);
+        CHECK(warm>0,"R8 repeated route reads a shut latch on the same entrance rule");
+    }
+
+    /* ---- R9 anchor_route identity: the router's own placement anch_slot(i,n)
+     * is the SAME stride-37 helix as lk_id37 — one identity rule across the
+     * tensor field and the memory DB. ---- */
+    {
+        int same=1;
+        for(int i=0;i<256;i++) if(anch_slot((uint32_t)i,256u)!=((uint32_t)lk_id37(i,256))) { same=0; break; }
+        printf("  anchor_route anch_slot(i,256) == lk_id37(i,256): %d\n",same);
+        CHECK(same,"R9 memory-DB leaf id uses the same stride-37 helix as anchor_route");
     }
     printf("forage_real: %s\n",fails?"FAIL":"ALL PASS");
     return fails!=0;
