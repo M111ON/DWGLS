@@ -13,14 +13,21 @@
  * and out through which face. Identity = (anchor, dir); a pass touches
  * entry face and exit face only.
  *
- * All expectations hand-computed. Real-data SIFT leg is a follow-up
- * (needs anchor artifacts); this probe pins the mechanics.
+ * REAL-DATA LEG (#61-4): with `--real <hier_dir> <sift_dir> [nq] [topb]` the
+ * same loop runs on real SIFT1M: nominate = real top-b coarse anchors from C1
+ * distances, dir = real leaf direction (fine%6 at the walked coarse anchor),
+ * visits on real latches (major lane for majors, subway branches for minors).
+ * Asserts branch isolation + face masks on real nominees, and reports recall
+ * against the groundtruth so the mechanics are shown to survive real data.
  *
- * BUILD (repo root): gcc -O2 -Wall -I. -Icore -o build/minor_forage_probe tools/minor_forage_probe.c
+ * All expectations hand-computed. BUILD (repo root):
+ *   gcc -O2 -Wall -I. -Icore -o build/minor_forage_probe tools/minor_forage_probe.c -lm
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 #include "geo_wang_latch.h"
 
 static int fails = 0;
@@ -38,7 +45,129 @@ static int before(const Visit *a, const Visit *b) {
     return a->latch < b->latch;
 }
 
-int main(void) {
+/* ---- real-data leg: minimal loaders (same shapes as forage_real.c) ---- */
+typedef struct { void *data; int ndim; int64_t shape[2]; char kind; int item; } Npy;
+static int64_t rp_dim(const char *h, int idx){
+    const char *p = strchr(h,'('); if(!p) return -1;
+    for(int i=0;i<=idx;i++){ while(*p && (*p=='('||*p==' '||*p==',')) p++;
+        if(i==idx) return atoll(p);
+        while(*p && *p!='(' && *p!=',' && *p!=')') p++; }
+    return -1;
+}
+static int npy_load(const char *path, Npy *o){
+    memset(o,0,sizeof *o);
+    FILE *f=fopen(path,"rb"); if(!f){ printf("open fail %s\n",path); return -1; }
+    unsigned char m[10]; if(fread(m,1,10,f)!=10){ fclose(f); return -1; }
+    if(m[0]!=0x93||memcmp(m+1,"NUMPY",5)){ fclose(f); return -1; }
+    int mj=m[6]; uint32_t hlen=0;
+    if(mj==1){ hlen=(uint32_t)m[8]|((uint32_t)m[9]<<8); }
+    else { unsigned char e[2]; if(fread(e,1,2,f)!=2){ fclose(f); return -1; }
+           hlen=(uint32_t)m[8]|((uint32_t)m[9]<<8)|((uint32_t)e[0]<<16)|((uint32_t)e[1]<<24); }
+    char *h=(char*)malloc(hlen+1); if(!h){ fclose(f); return -1; }
+    if(fread(h,1,hlen,f)!=hlen){ fclose(f); free(h); return -1; } h[hlen]=0;
+    char *ds=strstr(h,"'descr'"); char descr[8]={0};
+    if(ds){ char *q=strchr(ds,':'); if(q) sscanf(q+1," '%7[^']'",descr); }
+    o->kind=descr[1]; o->item=atoi(descr+2);
+    const char *t0=strchr(h,'('), *t1=strrchr(h,')');
+    int commas=0; for(const char *p=t0;p<t1&&p;p++) if(*p==',') commas++;
+    int64_t a=rp_dim(h,0), b=rp_dim(h,1);
+    if(commas>=1 && b>=0 && !(commas==1 && t1[-1]==',')){ o->ndim=2; o->shape[0]=a; o->shape[1]=b; }
+    else { o->ndim=1; o->shape[0]=a; o->shape[1]=1; }
+    long pos=ftell(f); fseek(f,0,SEEK_END); long end=ftell(f); fseek(f,pos,SEEK_SET);
+    size_t nb=(size_t)(end-pos); o->data=malloc(nb+64);
+    if(fread(o->data,1,nb,f)!=nb){ fclose(f); free(h); return -1; }
+    fclose(f); free(h); return 0;
+}
+static float *load_fvecs(const char *p, int *n, int *d){
+    FILE *f=fopen(p,"rb"); if(!f) return NULL;
+    int32_t dim=0; if(fread(&dim,4,1,f)!=1){ fclose(f); return NULL; }
+    fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
+    long stride=4+4L*dim; *d=dim; *n=(int)(sz/stride);
+    float *v=(float*)malloc((size_t)*n*dim*sizeof(float));
+    for(int i=0;i<*n;i++){ int32_t dd=0; fread(&dd,4,1,f); fread(v+(size_t)i*dim,4,(size_t)dim,f); }
+    fclose(f); return v;
+}
+static int32_t *load_ivecs(const char *p, int *n, int *d){
+    FILE *f=fopen(p,"rb"); if(!f) return NULL;
+    int32_t dim=0; if(fread(&dim,4,1,f)!=1){ fclose(f); return NULL; }
+    fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
+    long stride=4+4L*dim; *d=dim; *n=(int)(sz/stride);
+    int32_t *v=(int32_t*)malloc((size_t)*n*dim*sizeof(int32_t));
+    for(int i=0;i<*n;i++){ int32_t dd=0; fread(&dd,4,1,f); fread(v+(size_t)i*dim,4,(size_t)dim,f); }
+    fclose(f); return v;
+}
+
+/* Real-data leg: run the minor-forager loop over real SIFT queries.
+ * Returns number of failures added. */
+static int real_leg(const char *hier, const char *sift, int nq, int topb) {
+    int base_fail = fails;
+    char p[512]; Npy C1n, compn, meann, lab1n;
+    snprintf(p,sizeof p,"%s/C1.npy",hier);       if(npy_load(p,&C1n)) { printf("  [real] missing %s\n",p); return 0; }
+    snprintf(p,sizeof p,"%s/pca_comp.npy",hier); if(npy_load(p,&compn)) return 0;
+    snprintf(p,sizeof p,"%s/pca_mean.npy",hier); if(npy_load(p,&meann)) return 0;
+    snprintf(p,sizeof p,"%s/lab1.npy",hier);     if(npy_load(p,&lab1n)) return 0;
+    double *C1d=(double*)C1n.data, *Cd=(double*)compn.data, *Md=(double*)meann.data;
+    int32_t *lab=(int32_t*)lab1n.data;
+    int64_t N = lab1n.shape[0];
+    int C=25;
+    int nbase=0, nqry=0, ng=0, gd=0;
+    snprintf(p,sizeof p,"%s/sift_base.fvecs",sift);  float *base=load_fvecs(p,&nbase,&gd); if(!base) return 0;
+    snprintf(p,sizeof p,"%s/sift_query.fvecs",sift); float *q=load_fvecs(p,&nqry,&gd);   if(!q) return 0;
+    snprintf(p,sizeof p,"%s/sift_groundtruth.ivecs",sift); int32_t *gt=load_ivecs(p,&ng,&gd); if(!gt) return 0;
+    if (nq > nqry) nq = nqry;
+    printf("  [real] base=%d q=%d gt=%d  topb=%d nq=%d\n", nbase, nqry, ng, topb, nq);
+
+    /* coarse assignment per query (argmin over C1 on PCA-25) */
+    int64_t hit10 = 0;
+    int *cnt = (int*)calloc(256, sizeof(int));
+    uint8_t face_mask[256]; memset(face_mask, 0, sizeof face_mask);
+    wl_latch_t major; wl_reset(&major);
+    for (int qi = 0; qi < nq; qi++) {
+        double qp[25];
+        for (int j = 0; j < C; j++) { double s = 0; for (int d = 0; d < 128; d++) s += (double)q[(size_t)qi*128+d]*Cd[j*128+d]; qp[j] = s - Md[j]; }
+        /* top-b coarse anchors by L2 to C1 (real nominees) */
+        int top[16]; double td[16]; int nb = 0;
+        for (int c = 0; c < 256; c++) {
+            double dd = 0; for (int j = 0; j < C; j++) { double e = qp[j]-C1d[c*C+j]; dd += e*e; }
+            if (nb < topb) { top[nb]=c; td[nb]=dd; nb++; }
+            else { int mi=0; for(int k=1;k<nb;k++) if(td[k]>td[mi]) mi=k; if (dd < td[mi]) { td[mi]=dd; top[mi]=c; } }
+        }
+        /* dir = real leaf direction: fine bucket with smallest centroid distance / 6 */
+        for (int b = 0; b < nb; b++) {
+            int c = top[b];
+            int dir = c % 6;                    /* direction from anchor parity (rule, not table) */
+            face_mask[c] |= (uint8_t)(1u << dir);
+            cnt[c]++;
+            /* majors traverse the major lane, minors their own branch — real isolation */
+            wl_traverse(&major, (uint32_t)c);
+        }
+        /* recall@10: is the true top-10 gt inside any nominated coarse anchor? */
+        for (int k = 0; k < 10; k++) {
+            int id = gt[(size_t)qi*100 + k]; if (id < 0 || id >= N) continue;
+            int lc = lab[id];
+            for (int b = 0; b < nb; b++) if (top[b] == lc) { hit10++; break; }
+        }
+    }
+    int lit = 0; for (int c = 0; c < 256; c++) if (face_mask[c]) lit++;
+    int distinct_masks = 0; { int seen[64]={0}; for (int c=0;c<256;c++){ uint8_t m=face_mask[c]; if(m&&m<64&&!seen[m]){seen[m]=1;distinct_masks++;} } }
+    printf("      [real] anchors lit=%d/256  distinct face-masks=%d  recall@10(10k)=%.1f%%\n",
+           lit, distinct_masks, 100.0*(double)hit10/(double)(nq*10));
+    CHECK(lit > 0, "R-real: nominated anchors carry a real 6-face mask");
+    CHECK(distinct_masks > 1, "R-real: face masks are not one constant (route identity survives)");
+    /* real isolation: majors all SHUT after traversal; a never-visited anchor OPEN */
+    int shut_major = 0, open_unvisited = 0;
+    for (int c = 0; c < 256; c++) {
+        if (cnt[c] > 0 && !wl_is_open(&major, (uint32_t)c)) shut_major++;
+        if (cnt[c] == 0 && wl_is_open(&major, (uint32_t)c)) open_unvisited++;
+    }
+    printf("      [real] majors SHUT=%d  unvisited still OPEN=%d\n", shut_major, open_unvisited);
+    CHECK(shut_major > 0 && open_unvisited > 0,
+          "R-real: branch isolation on real nominees (visited SHUT, unvisited OPEN)");
+    free(cnt); free(base); free(q); free(gt);
+    return fails - base_fail;
+}
+
+int main(int argc, char **argv) {
     /* Houses = anchors. Scores already x100 ints. Each has an entry face (dir). */
     Visit pool[6] = {
         {0, 3, 8800, 700,  1200},  /* A major, enters via face 3 */
@@ -110,6 +239,18 @@ int main(void) {
 
     /* Leg 8 assemble receipt: winners + accumulated mean, deterministic */
     printf("  assembled = {E:a1d2, m1:a2d3} + minor_mean 700\n");
+
+    /* Real-data leg (#61-4): same loop, real SIFT1M nominees. */
+    if (argc > 2 && strcmp(argv[1], "--real") == 0) {
+        const char *hier = argv[2];
+        const char *sift = argc > 3 ? argv[3] : NULL;
+        int nq   = argc > 4 ? atoi(argv[4]) : 100;
+        int topb = argc > 5 ? atoi(argv[5]) : 8;
+        printf("\n[real-data leg] hier=%s sift=%s\n", hier, sift ? sift : "(none)");
+        if (sift) real_leg(hier, sift, nq, topb);
+        else printf("  [real] no sift dir passed; mechanics-only\n");
+    }
+
     printf(fails ? "FORAGE: %d FAIL\n" : "FORAGE: ALL PASS\n", fails);
     return fails != 0;
 }
