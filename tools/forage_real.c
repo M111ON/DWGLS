@@ -154,7 +154,7 @@ int main(int argc, char **argv){
      * The route walked is what shuts the latch (footprint), never a pre-placed
      * lab1/fine_members index. fine_cent.bin = (256,10,25) f64 from the npz. --- */
     clock_t t_train0=clock();
-    wl_latch_t fog; wl_reset(&fog);
+    wl_latch_t fog; uint8_t fpat[256]; memset(fpat,0,sizeof fpat); wl_reset(&fog);
     double *fc=NULL;
     { snprintf(p,sizeof p,"%s/fine_cent.bin",hier);
       FILE *ff=fopen(p,"rb");
@@ -250,10 +250,19 @@ int main(int argc, char **argv){
                     }
                 }
             }
-            /* footprint along the walked route: coarse + nearest fine latch */
-            int bk0=fk[0];
-            uint32_t cid=wl_id((uint32_t)(c%144),(uint32_t)((bk0*7+(c/144)*36)%72)); if(wl_is_reserved(cid)) cid+=2;
-            wl_traverse(&fog,cid);
+            /* footprint along the walked route — FRUSTUM COMPOSITE: the anchor
+             * is the coarse node, and the 6 fine directions it descended through
+             * each clear their own face (not one slot). Which faces are shut IS
+             * the tombstone of who passed: pattern = entry/exit mask. */
+            uint8_t pat=0;
+            for(int fi=0; fi<topk && fi<10; fi++){
+                int fine=fk[fi]; if(fine<0) continue;
+                uint8_t d=(uint8_t)(fine%6);           /* fine index -> a face dir */
+                uint32_t cid=wl_id((uint32_t)(c%144),(uint32_t)((d*12+(c/144)*36)%72));
+                if(wl_is_reserved(cid)) cid+=2;
+                wl_traverse(&fog,cid); pat|=(uint8_t)(1u<<d);
+            }
+            if(pat) fpat[c]|=pat;                      /* anchor pattern = lit faces */
         }
         scans+=sc;
         int g0=gt[(size_t)q*100+0];
@@ -308,6 +317,16 @@ int main(int argc, char **argv){
         for(int i=0;i<256;i++) if(anch_slot((uint32_t)i,256u)!=((uint32_t)lk_id37(i,256))) { same=0; break; }
         printf("  anchor_route anch_slot(i,256) == lk_id37(i,256): %d\n",same);
         CHECK(same,"R9 memory-DB leaf id uses the same stride-37 helix as anchor_route");
+    }
+    /* ---- R10 frustum composite: each coarse anchor's pattern is a 6-bit face
+     * mask built from the fine directions it descended through — the tombstone
+     * of who passed, not a single slot. Measure coverage + separability. ---- */
+    {
+        int lit=0,distinct=0; char seen[256]; memset(seen,0,sizeof seen);
+        for(int c=0;c<256;c++){ if(fpat[c]) lit++; if(!seen[fpat[c]]){ seen[fpat[c]]=1; distinct++; } }
+        printf("  frustum anchors: lit=%d/256 distinct_patterns=%d\n",lit,distinct);
+        CHECK(lit>0,"R10 coarse anchors carry a 6-bit face pattern (frustum composite)");
+        CHECK(distinct>1,"R10 different walk routes leave different face masks");
     }
     printf("forage_real: %s\n",fails?"FAIL":"ALL PASS");
     return fails!=0;
