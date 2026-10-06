@@ -21,9 +21,31 @@
 #include <time.h>
 #include "geo_wang_latch.h"
 #include "anchor_route.h"
+#include "frustum_route.h"   /* real chained frustum descent (not fine%6) */
 
 static int fails = 0;
 #define CHECK(c,msg) do{ if(c) printf("  PASS %s\n",msg); else { printf("  FAIL %s\n",msg); fails++; } } while(0)
+
+/* ---- real frustum descent (spec #7166, image 2a) ----------------------------
+ * The coarse anchor is the entrance. Descend L3->L0 reading SUCCESSIVE digits
+ * of the same field slot: level L takes digit (pos/(144<<L))%6. The ordered
+ * digits ARE the tombstone of who passed (composite pattern), and since the
+ * slot never moves the whole walk stays inside ONE capo. Returns the 4-level
+ * descent; out_faces gets the face taken at each level (3..0). */
+static uint8_t ff_descend(uint32_t pos0, uint8_t view, FrustumRouteEvent ev[4], uint8_t out_faces[4]) {
+    FrRouteCache cache; fr_cache_init(&cache);
+    uint32_t pos = pos0 % 20736u;
+    for (int d = 3; d >= 0; d--) {
+        FrustumSeeker s;
+        s.position = pos;
+        s.view_id = view;
+        s.voronoi_mask = 0xFFFFFFu;          /* full mask: geometry only */
+        s.frustum_depth = (uint8_t)(d + 1);  /* depth d+1 -> level d */
+        if (!fr_route_produce(&s, &cache, &ev[3 - d])) return 0;
+        out_faces[3 - d] = ev[3 - d].branch_path;   /* face taken at this level */
+    }
+    return 1;
+}
 
 /* ---- minimal .npy loader (C-order, little-endian, ndim 1/2) ---- */
 typedef struct { void *data; int ndim; int64_t shape[2]; char kind; int item; } Npy;
@@ -250,17 +272,37 @@ int main(int argc, char **argv){
                     }
                 }
             }
-            /* footprint along the walked route — FRUSTUM COMPOSITE: the anchor
-             * is the coarse node, and the 6 fine directions it descended through
-             * each clear their own face (not one slot). Which faces are shut IS
-             * the tombstone of who passed: pattern = entry/exit mask. */
+            /* footprint along the walked route — FRUSTUM COMPOSITE (image 2a):
+             * descend the REAL 4-level frustum from the coarse anchor (entrance),
+             * exit->enter by branch_path. Each level clears the face it took; the
+             * ordered descent path IS the tombstone of who passed (entry/exit
+             * mask), not a hash of the leaf index. */
             uint8_t pat=0;
-            for(int fi=0; fi<topk && fi<10; fi++){
-                int fine=fk[fi]; if(fine<0) continue;
-                uint8_t d=(uint8_t)(fine%6);           /* fine index -> a face dir */
-                uint32_t cid=wl_id((uint32_t)(c%144),(uint32_t)((d*12+(c/144)*36)%72));
-                if(wl_is_reserved(cid)) cid+=2;
-                wl_traverse(&fog,cid); pat|=(uint8_t)(1u<<d);
+            {
+                FrustumRouteEvent dev[4]; uint8_t faces[4];
+                if(ff_descend((uint32_t)c, (uint8_t)(c%8u), dev, faces)){
+                    /* walk the 4-level descent on the latch: one cell per level,
+                     * keyed by (level, face) so different paths leave different
+                     * lit cells — the pattern is the ordered path itself. */
+                    for(int lv=0; lv<4; lv++){
+                        uint8_t d=faces[lv];
+                        uint32_t cid=wl_id((uint32_t)((c%144)+lv*3),
+                                           (uint32_t)(((d*12+lv)+(c/144)*36)%72));
+                        if(wl_is_reserved(cid)) cid+=2;
+                        wl_traverse(&fog,cid);
+                        pat|=(uint8_t)(1u<<d);         /* face lit at this level */
+                    }
+                    /* also clear the fine-direction faces the query actually
+                     * descended through (the branch taken out of the coarse) */
+                    for(int fi=0; fi<topk && fi<10; fi++){
+                        int fine=fk[fi]; if(fine<0) continue;
+                        uint8_t d=(uint8_t)(faces[0]);
+                        uint32_t cid=wl_id((uint32_t)((c%144)^(fine&3)),
+                                           (uint32_t)(((d*12+(c/144)*36+fine)%72)));
+                        if(wl_is_reserved(cid)) cid+=2;
+                        wl_traverse(&fog,cid); pat|=(uint8_t)(1u<<d);
+                    }
+                }
             }
             if(pat) fpat[c]|=pat;                      /* anchor pattern = lit faces */
         }

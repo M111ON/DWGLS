@@ -1049,7 +1049,7 @@ lazy-serve: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I $(LLAMA_INC) -o $(BUILD)/gguf_lazy_serve tools/gguf_lazy_serve.c \
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
-	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lpsapi -lm
+	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lpsapi -lws2_32 -lm
 	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_lazy_serve $(LLAMA_GGUF) "The capital of France is" 40
 
 # Minimal control for user-owned mmap buffers; no field/tesspack path involved.

@@ -205,6 +205,50 @@ static void lz_json_escape(char *dst, size_t cap, const char *src) {
 #include "../core/gguf_box.h"
 #include "../core/win_cache.h"
 #include "../core/anchor_route.h"
+#include "../core/geo_wang_latch.h"
+
+/* ── fog latch over the anchor-bucket space (owner HANDOFF 2026-10-05, card #61) ──
+ * The ROUTE WALKED is what shuts the latch — never a pre-placed assignment.
+ * Buckets are the major cells; each anchor bucket collapses to a wang-latch id
+ * cell = bucket % 144 (WL_COUNT = 144*72). The latch is process-lifetime and
+ * monotone within an epoch: never traversed = OPEN, traversed = SHUT; only
+ * wl_clear (an explicit epoch reset) reopens. Same entrance rule on train and
+ * query means a revisited route reads a latch that is already shut — no stored
+ * branch list, no per-item posting.
+ * Reload from the P3 route log on boot (computation-over-storage). */
+static wl_latch_t g_fog;
+static int g_fog_ready = 0;
+/* fog receipt: how many of the free branches are SHUT (traversed) vs OPEN. */
+typedef struct { int open; int shut; int lit; } LZFog;
+static void lz_fog_init(void) {
+    wl_reset(&g_fog);
+    /* derive from the P3 log if a path is configured (env LZ_ROUTE_LOG). */
+    const char *lp = getenv("LZ_ROUTE_LOG");
+    if (lp && lp[0]) {
+        FILE *f = fopen(lp, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long n = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            /* log file = 2-byte magic + 1 version byte + 32-B records. */
+            if (n > 3) {
+                uint8_t *buf = (uint8_t *)malloc((size_t)n);
+                if (buf && fread(buf, 1, (size_t)n, f) == (size_t)n)
+                    wl_replay(&g_fog, buf + 3, (size_t)n - 3);
+                free(buf);
+            }
+            fclose(f);
+        }
+    }
+    g_fog_ready = 1;
+}
+/* bucket id -> latch cell. Buckets live in the anchor K-space; collapse each to
+ * a cell in [0,144) so the 144x72 branch space stays the one latch family. */
+static inline uint32_t lz_fog_id(int bucket) {
+    int c = bucket % 144;
+    if (c < 0) c += 144;
+    return wl_id((uint32_t)c, 0u);   /* choice 0 = the bucket's entrance branch */
+}
 
 /* ── anchor-bucket routing over kv_index.jsonl ──
  * Anchors RANK (semantic routing via centroids); geo_jump PLACES (node-sorted
@@ -286,7 +330,8 @@ static int lz_mem_search(const float *qv, int qd,
                          int top_np[], double top_sc[],
                          char route_mode[16], int route_bk[8], int *route_nb_out,
                          int *block_reads_out, int *items_scored_out, int *nent_out,
-                         int *budget_out, int *truncated_out, double *us_per_item_out) {
+                         int *budget_out, int *truncated_out, double *us_per_item_out,
+                         LZFog *fog_out) {
     if (top_sc) for (int ti = 0; ti < 8; ti++) top_sc[ti] = -2;
     if (top_sid) for (int ti = 0; ti < 8; ti++) top_sid[ti][0] = '\0';
     if (top_file) for (int ti = 0; ti < 8; ti++) top_file[ti][0] = '\0';
@@ -337,6 +382,12 @@ static int lz_mem_search(const float *qv, int qd,
             rnb = anch_route(qv, C, K, qd, topb, rb);
             routed = 1;
             snprintf(rm, sizeof(rm), "%s", "anchor");
+            /* the route WALKED shuts the latch: each followed bucket is
+             * traversed (OPEN -> SHUT, monotone). This IS the assignment —
+             * the footprint lights itself, nothing pre-placed. */
+            if (!g_fog_ready) lz_fog_init();
+            for (int rbi = 0; rbi < rnb; rbi++)
+                wl_traverse(&g_fog, lz_fog_id(rb[rbi]));
         }
         LARGE_INTEGER qf, qt0, qt1;
         QueryPerformanceFrequency(&qf);
@@ -397,6 +448,17 @@ static int lz_mem_search(const float *qv, int qd,
     if (budget_out) *budget_out = budget;
     if (truncated_out) *truncated_out = truncated;
     if (us_per_item_out) *us_per_item_out = us_per_item;
+    if (fog_out) {
+        if (!g_fog_ready) lz_fog_init();
+        int sh = 0;
+        for (unsigned wi = 0; wi < WL_WORDS; wi++) {
+            uint64_t w = g_fog.w[wi];
+            while (w) { sh += (int)(w & 1ull); w >>= 1; }
+        }
+        fog_out->open = (int)WL_FREE - sh;
+        fog_out->shut = sh;
+        fog_out->lit = rnb;
+    }
     int nh = 0;
     if (top_sc) for (int ti = 0; ti < topk && top_sc[ti] > -2; ti++) nh++;
     return nh;
@@ -437,7 +499,7 @@ static int lz_mem_prompt(const char *prompt, const char *sid, char *out, size_t 
     int top_np[8]; double top_sc[8];
     int nh = lz_mem_search(qv, qd, sid, 3,
                            top_sid, top_file, top_np, top_sc,
-                           NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+                           NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
     if (nh <= 0) return 0;
     char blk[2048];
     lz_mem_ctx_format(sid, top_file, top_np, nh, blk, sizeof(blk));
@@ -1242,7 +1304,12 @@ int main(int argc, char **argv) {
     llama_log_set(NULL, NULL);
     const char *backend_path = argc > 4 ? argv[4] : "I:/llama/llama-b10830-win-vulkan-x64";
     ggml_backend_load_all_from_path(backend_path);
-    ggml_backend_load_all();
+    /* L2 fix (#58): the cwd/PATH scan below re-loads build/ggml-vulkan.dll and
+     * its Vulkan_Host buft cannot wrap external field pointers, so the model
+     * loader rejects the callback tensors ("did not provide a host buffer for
+     * Vulkan_Host"). When a backend dir is given explicitly, trust it alone.
+     * DWGLS_SCAN_PATH=1 restores the old implicit scan. */
+    if (getenv("DWGLS_SCAN_PATH")) ggml_backend_load_all();
 
     GGUFBox box;
     if (gguf_box_open(&box, gguf) != 0) { printf("(cannot open %s)\n", gguf); return 1; }
@@ -1754,11 +1821,12 @@ int main(int argc, char **argv) {
                                         int route_bk[8], route_nb = 0, block_reads = 0;
                                         int items_scored = 0, nent = 0, budget = 0, truncated = 0;
                                         double us_per_item = 0;
+                                        LZFog fog = { (int)WL_FREE, 0, 0 };
                                         lz_mem_search(qv, qd, sid_filter, stopk,
                                             top_sid, top_file, top_np, top_sc,
                                             route_mode, route_bk, &route_nb,
                                             &block_reads, &items_scored, &nent,
-                                            &budget, &truncated, &us_per_item);
+                                            &budget, &truncated, &us_per_item, &fog);
                                         srlen = snprintf(sresp, sizeof(sresp), "{\"status\":\"ok\",\"hits\":[");
                                         for (int ti = 0; ti < stopk && top_sc[ti] > -2; ti++) {
                                             srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
@@ -1782,8 +1850,13 @@ int main(int argc, char **argv) {
                                             srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
                                                 "%s%d", rb ? "," : "", route_bk[rb]);
                                         srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
-                                            "],\"block_reads\":%d,\"items_scored\":%d,\"items_total\":%d,\"us_per_item\":%.2f,\"budget\":%d,\"truncated\":%d}}",
+                                            "],\"block_reads\":%d,\"items_scored\":%d,\"items_total\":%d,\"us_per_item\":%.2f,\"budget\":%d,\"truncated\":%d,",
                                             block_reads, items_scored, nent, us_per_item, budget, truncated);
+                                        /* fog: the route walked shut these branches (OPEN->SHUT,
+                                         * monotone). lit = buckets followed this query. */
+                                        srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
+                                            "\"fog\":{\"lit\":%d,\"open\":%d,\"shut\":%d,\"free\":%u}}",
+                                            fog.lit, fog.open, fog.shut, (unsigned)WL_FREE);
                                     } else {
                                         srlen = snprintf(sresp, sizeof(sresp), "{\"error\":\"embed unavailable\"}");
                                     }

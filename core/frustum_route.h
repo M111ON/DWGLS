@@ -173,15 +173,25 @@ static inline int fr_route_produce(const FrustumSeeker *seeker,
     /* Build route event from geometry */
     FrustumRouteEvent evt = {0};
 
-    /* Decompose position to frustum coordinates */
+    /* Decompose position to frustum coordinates.
+     * The face at each level is taken from the DIGIT of the position at that
+     * level's span, so distinct slots give distinct descent paths (composite
+     * injectivity, image 2a). Level spans are 144<<level, so level L reads
+     * digit = (position / (144<<L)) % 6 — the ordered sequence of these digits
+     * over L3..L0 IS the tombstone pattern of who passed. Falls back to the
+     * trit face only for the apex coset bits (kept for node_id). */
     TritAddr trit;
     trit_decompose((uint8_t)(seeker->position % TRIT_MOD), &trit);
     trit.slope = trit_slope(0x9E3779B97F4A7C15ull, seeker->position);
 
-    evt.level = (seeker->frustum_depth > 0 && seeker->frustum_depth <= FR_MAX_DEPTH)
-                    ? (seeker->frustum_depth - 1)
-                    : trit.level;
-    evt.branch_path = trit.face;          /* 0..5 */
+    uint8_t lvl = (seeker->frustum_depth > 0 && seeker->frustum_depth <= FR_MAX_DEPTH)
+                      ? (uint8_t)(seeker->frustum_depth - 1)
+                      : trit.level;
+    evt.level = lvl;
+    /* face = the position's digit at this level's span (span = 144<<lvl).
+     * position is always < 20736 = 144<<4, so the digit is well-defined. */
+    uint32_t span = 144u << lvl;
+    evt.branch_path = (uint8_t)((seeker->position / span) % FACE_COUNT);
     evt.view = seeker->view_id;
     evt.node_id = (uint8_t)(trit.coset * FACE_COUNT + trit.face);  /* 0..53 */
     evt.capo_key = (uint16_t)((seeker->position / FR_AXIS_STRIDE) & FR_CAPO_KEY_MASK);

@@ -46,21 +46,25 @@ static uint32_t next_u32(void) {
     return rng;
 }
 
-/* One full descent from a seed position/view. Fills ev[4] (levels 3..0). */
+/* One full descent from a seed position/view. Fills ev[4] (levels 3..0).
+ * Composite (image 2a): the descent reads SUCCESSIVE digits of the same
+ * field slot — level L takes digit (pos/(144<<L))%6. The ordered digits ARE
+ * the tombstone path, and since pos never moves the whole walk stays inside
+ * ONE capo (the seed's own capo). The seeker position is the fixed entrance;
+ * "exit->enter" is the level index advancing into the next digit, not a
+ * change of slot. */
 static int descend(uint32_t pos0, uint8_t view,
                    FrustumRouteEvent ev[4]) {
     FrRouteCache cache;
     fr_cache_init(&cache);
-    uint32_t pos = pos0;
+    uint32_t pos = pos0 % 20736u;
     for (int d = 3; d >= 0; d--) {
         FrustumSeeker s;
-        s.position = pos % 20736u;
+        s.position = pos;                        /* fixed slot, read digit d */
         s.view_id = view;
         s.voronoi_mask = 0xFFFFFFu;             /* full mask: geometry only */
         s.frustum_depth = (uint8_t)(d + 1);     /* depth d+1 -> level d */
         if (!fr_route_produce(&s, &cache, &ev[3 - d])) return 0;
-        /* exit -> enter: advance by the branch taken (<=5 slots) */
-        pos = (pos + ev[3 - d].branch_path) % 20736u;
     }
     return 1;
 }
@@ -145,6 +149,40 @@ int main(void) {
         if (ref.capo_key != first[i][3].capo_key) ad_ok = 0;
     }
     check_ok(ad_ok, "D6 finest event resolves (generation 0, span kept, capo kept)");
+
+    /* D7: composite pattern — the ordered descent path (L3..L0 face sequence)
+     * is the tombstone of who passed. Different seeds must leave different
+     * paths (distinct), and the same seed must replay the identical path. */
+    {
+        uint32_t pats[NCHAIN]; int distinct = 0, replay = 1;
+        for (uint32_t i = 0; i < NCHAIN; i++) {
+            uint32_t p = 0;
+            for (int l = 0; l < 4; l++)
+                p = (p << 3) | (first[i][l].branch_path & 0x7u);  /* 4 faces -> 12 bits */
+            pats[i] = p;
+        }
+        for (uint32_t i = 0; i < NCHAIN; i++) {
+            int dup = 0;
+            for (uint32_t j = 0; j < i; j++) if (pats[j] == pats[i]) dup = 1;
+            if (!dup) distinct++;
+        }
+        printf("    composite patterns: distinct=%d/%d\n", distinct, NCHAIN);
+        check_ok(distinct == NCHAIN, "D7 distinct seeds -> distinct ordered descent paths");
+
+        /* replay: re-descend one seed 3x, path must be identical each time */
+        for (uint32_t i = 0; i < NCHAIN && replay; i++) {
+            uint32_t pat = pats[i];
+            for (int rep = 0; rep < 3; rep++) {
+                FrustumRouteEvent ev[4];
+                uint8_t view = (uint8_t)(entries[i].hj_cluster % 8u);
+                if (!descend(entries[i].field_slot, view, ev)) { replay = 0; break; }
+                uint32_t q = 0;
+                for (int l = 0; l < 4; l++) q = (q << 3) | (ev[l].branch_path & 0x7u);
+                if (q != pat) { replay = 0; break; }
+            }
+        }
+        check_ok(replay, "D7 same seed replays identical descent path (timeline)");
+    }
 
     printf("=== RESULTS: %d PASS, %d FAIL ===\n", g_pass, g_fail);
     printf("Receipt: descent{chains=%d levels=4 capo_stable=%d}\n", NCHAIN, capo_ok);
