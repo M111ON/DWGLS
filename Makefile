@@ -1046,11 +1046,17 @@ graft-page: | $(BUILD)
 lazy-serve: | $(BUILD)
 	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: llama DLLs not found — needs $(LLAMA_DLL))"; exit 0; }
 	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	@mkdir -p $(BUILD)/backend_cpu
+	@cp $(LLAMA_DLL)/ggml-base.dll $(LLAMA_DLL)/ggml-cpu-x64.dll $(BUILD)/backend_cpu/ 2>/dev/null || true
+	@cp $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(BUILD)/backend_cpu/ 2>/dev/null || true
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \
 	    -I core -I $(LLAMA_INC) -o $(BUILD)/gguf_lazy_serve tools/gguf_lazy_serve.c \
 	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll \
 	    $(LLAMA_DLL)/ggml-cpu-x64.dll -lzstd -lpsapi -lws2_32 -lm
-	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_lazy_serve $(LLAMA_GGUF) "The capital of France is" 40
+	# CPU-only backend dir: the implicit cwd/PATH scan reloads build/ggml-vulkan.dll
+	# whose Vulkan_Host buft cannot wrap external field pointers (self-test L2/L4 FAIL).
+	# Pass build/backend_cpu explicitly so the backend set is deterministic.
+	PATH="$(LLAMA_DLL):$$PATH" ./$(BUILD)/gguf_lazy_serve $(LLAMA_GGUF) "The capital of France is" 40 $(BUILD)/backend_cpu
 
 # Minimal control for user-owned mmap buffers; no field/tesspack path involved.
 plain-user-mmap: | $(BUILD)
