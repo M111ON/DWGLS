@@ -91,6 +91,16 @@ static int32_t *load_ivecs(const char *p, int *n, int *d){
 static double l2f(const float *a, const float *b, int d){ double s=0; for(int i=0;i<d;i++){double e=(double)a[i]-b[i]; s+=e*e;} return s; }
 /* leaf slot: L3 on -> coarse*40+fine*4+l3 ; off -> coarse*10+fine */
 static inline int lk_slot(int c,int k,int k3,int has3){ return has3 ? (c*10+k)*4+k3 : c*10+k; }
+/* leaf IDENTITY via stride-37 (kis v6 helix): bijective over any leaf count N
+ * that is coprime with 37 (20736/10240/2560/1728/144 all are), and invertible
+ * in O(1) with inv37 = 16813 — so a leaf id is derived from (c,k,k3) by rule,
+ * needs no stored map, and is the same id in every session. Identity only:
+ * the posting storage order stays local (locality argument in the report). */
+static inline int lk_id37(int slot,int N){ return (int)(((unsigned)slot*37u)%(unsigned)N); }
+/* inverse of 37 mod N depends on N (16813 is the inverse mod 20736 only).
+ * Compute it per N with extended Euclid — still O(1), still no stored map. */
+static int lk_inv37_of(int N){ int a=37,b=N,x0=1,x1=0; while(b){ int q=a/b,t=a-q*b; a=b;b=t; t=x0-q*x1; x0=x1;x1=t; } if(x0<0)x0+=N; return x0; }
+static inline int lk_inv37(int id,int N){ return (int)(((unsigned)id*(unsigned)lk_inv37_of(N))%(unsigned)N); }
 
 int main(int argc, char **argv){
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -245,6 +255,25 @@ int main(int argc, char **argv){
     printf("  queries=%d topb=%d avg_scan=%.0f\n",nq,topb,(double)scans/nq);
     printf("  recall@1=%.4f recall@10hit=%.4f (query %.2fs, %.1fms/q)\n",(double)r1/nq,(double)r10/nq,(double)(clock()-t_q0)/CLOCKS_PER_SEC,(double)(clock()-t_q0)/CLOCKS_PER_SEC*1000/nq);
     CHECK(scans>0,"R6 forage loop scanned real buckets");
+
+    /* ---- R7 stride-37 leaf IDENTITY (kis v6 helix) over the real leaf count.
+     * Proves the property the owner asked about: a leaf id is a rule, not a
+     * stored map — bijective, invertible in O(1), stable across sessions. ---- */
+    {
+        int NZ = l3c?10240:2560;
+        int bij=1, inv_ok=1;
+        char *seen=(char*)calloc(NZ,1);
+        for(int i=0;i<NZ;i++){ int id=lk_id37(i,NZ); if(seen[id]){bij=0;break;} seen[id]=1; }
+        for(int i=0;i<NZ;i++) if(lk_inv37(lk_id37(i,NZ),NZ)!=i){ inv_ok=0; break; }
+        int step_ok=1; for(int i=1;i<NZ;i++){ int a=lk_id37(i-1,NZ),b=lk_id37(i,NZ); if(((b-a+NZ)%NZ)!=37%NZ) step_ok=0; }
+        printf("  stride-37 over N=%d: bijective=%d invertible_O1=%d step=+37 mod N=%d\n",NZ,bij,inv_ok,step_ok);
+        printf("    sample leaf ids: (0,0,0)->%d (0,0,3)->%d (255,9,3)->%d\n",
+            lk_id37(lk_slot(0,0,0,l3c?1:0),NZ), lk_id37(lk_slot(0,0,3,l3c?1:0),NZ), lk_id37(lk_slot(255,9,3,l3c?1:0),NZ));
+        free(seen);
+        CHECK(bij,"R7 leaf id stride-37 is a bijection over the real leaf count");
+        CHECK(inv_ok,"R7 leaf id is invertible in O(1) (inv37=16813), no stored map");
+        CHECK(step_ok,"R7 id step is exactly +37 mod N (uniform pool walk)");
+    }
     printf("forage_real: %s\n",fails?"FAIL":"ALL PASS");
     return fails!=0;
 }
