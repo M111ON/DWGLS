@@ -1356,17 +1356,21 @@ int main(int argc, char **argv) {
 
     /* ── build SMALL INDEX header: KV sans tokenizer + kis.* keys + tinfo ── */
     size_t kv_len = src_kv_end - 24;
-    size_t kis_slots = 13;                       /* layout.body_off + 3×4 */
+    size_t kis_slots = 15;                       /* body_off + 3×4 + format.version + fpos */
     size_t kis_bytes = 0;
     for (int k = 0; k < (int)kis_slots; k++) {
-        const char *key = (k == 0) ? "kis.layout.body_off" : kis_key((k - 1) / 4, (const char *[]){"addr","len","count","arrtype"}[(k - 1) % 4]);
-        kis_bytes += 8 + strlen(key) + 4 + 8;
+        const char *key = (k == 0) ? "kis.layout.body_off"
+                        : (k == 14) ? "kis.format.version"
+                        : (k == 13) ? "kis.layout.fpos"
+                        : kis_key((k - 1) / 4, (const char *[]){"addr","len","count","arrtype"}[(k - 1) % 4]);
+        size_t vlen = (k == 13) ? (4 + 8 + N * 8) : 8;   /* fpos: ARRAY hdr + N slots */
+        kis_bytes += 8 + strlen(key) + 4 + vlen;
     }
     size_t idx_cap = 24 + kv_len + kis_bytes + tinfo_len + 64;
     uint8_t *idx = (uint8_t *)calloc(1, idx_cap);
     size_t pos = 0;
     uint32_t magic = GGUF_MAGIC, version = 3;
-    uint64_t nt = N, nkv_small = (n_src_kv - 3) + 13;   /* drop 3 tokenizer keys, add 13 kis.* keys */
+    uint64_t nt = N, nkv_small = (n_src_kv - 3) + 15;    /* drop 3 tokenizer keys, add 15 kis.* keys */
     memcpy(idx + pos, &magic, 4); pos += 4;
     memcpy(idx + pos, &version, 4); pos += 4;
     memcpy(idx + pos, &nt, 8); pos += 8;
@@ -1377,10 +1381,24 @@ int main(int argc, char **argv) {
         memcpy(idx + pos, src_base + src_kvs[i].start, len);
         pos += len;
     }
-    uint64_t *kis_val[13];
+    uint64_t *kis_val[15];
     for (int k = 0; k < (int)kis_slots; k++) {
-        const char *key = (k == 0) ? "kis.layout.body_off" : kis_key((k - 1) / 4, (const char *[]){"addr","len","count","arrtype"}[(k - 1) % 4]);
+        const char *key = (k == 0) ? "kis.layout.body_off"
+                        : (k == 14) ? "kis.format.version"
+                        : (k == 13) ? "kis.layout.fpos"
+                        : kis_key((k - 1) / 4, (const char *[]){"addr","len","count","arrtype"}[(k - 1) % 4]);
         uint64_t klen = strlen(key), vzero = 0; uint32_t vt = 10;  /* UINT64 */
+        if (k == 13) {                       /* fpos: ARRAY(UINT64) of N slots */
+            uint32_t vtype = 9, at = 10; uint64_t cnt = N;
+            memcpy(idx + pos, &klen, 8); pos += 8;
+            memcpy(idx + pos, key, klen); pos += klen;
+            memcpy(idx + pos, &vtype, 4); pos += 4;
+            memcpy(idx + pos, &at, 4); pos += 4;
+            memcpy(idx + pos, &cnt, 8); pos += 8;
+            kis_val[k] = (uint64_t *)(idx + pos);
+            memset(idx + pos, 0, N * 8); pos += N * 8;
+            continue;
+        }
         memcpy(idx + pos, &klen, 8); pos += 8;
         memcpy(idx + pos, key, klen); pos += klen;
         memcpy(idx + pos, &vt, 4); pos += 4;
@@ -1400,6 +1418,11 @@ int main(int argc, char **argv) {
     uint64_t cursor = body_off + body_sz;
     for (int t = 0; t < 3; t++) { payload_off[t] = cursor; cursor += align32(tok_elem_len[t]); }
     *kis_val[0] = body_off;
+    /* v2 layout: fpos[fi] = body position of tensor fi (file-index order), and
+     * kis.format.version = 2 so verify_field/field_address can resolve addresses
+     * with no source GGUF. chain_off[r] is ordered by rank r; order[r] gives fi. */
+    for (uint32_t r = 0; r < N; r++) kis_val[13][order[r]] = chain_off[r];
+    *kis_val[14] = 2;
     for (int t = 0; t < 3; t++) {
         *kis_val[1 + t * 4 + 0] = payload_off[t];
         *kis_val[1 + t * 4 + 1] = tok_elem_len[t];
@@ -1469,7 +1492,7 @@ int main(int argc, char **argv) {
             printf("  durable header KV: %u keys — tokenizer %s, kis.* %d\n",
                    nfk, tok_found ? "FOUND (bad!)" : "none ✅", kis_found);
             CHECK("H1: durable header ไม่มี tokenizer.ggml.* keys + มี kis.* pointer keys",
-                  tok_found == 0 && kis_found == 13);
+                  tok_found == 0 && kis_found == 15);
             /* verify payload windows against source elements */
             int ok_payload = 1;
             for (int t = 0; t < 3; t++) {
