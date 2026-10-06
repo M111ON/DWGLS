@@ -137,8 +137,43 @@ evaluations). This is the price of walking rather than placing — the earlier
 | fog/pattern on real tensors | **proven** (6/6 ×2 models, 864 bytes) |
 | forage loop on 1M real vectors | **proven** (recall/scan vs GT) |
 | field v0 (`field.bin`) addressing | **impossible** — no `fpos[]`, re-bake needed |
-| fog/pattern bound to a real `anchor_route` | **not done** — still a standalone walk |
-| 3 layer shapes (frustum composite vs flat) | the *mechanism* walks correctly; the L3 split is a mini-kmeans, not yet a frustum composite |
+| fog/pattern bound to a real `anchor_route` | **done** — forage routes through `anch_route()`; `anch_slot == lk_id37` (R9) |
+| 3 layer shapes (frustum composite vs flat) | **done** — coarse anchor carries a 6-bit face mask from the fine directions walked (R10) |
+
+## Follow-up (2026-10-05, same day) — routing + stride-37 in the memory DB
+
+After the three items closed, two more things were bound and measured.
+
+**Route through the real router.** `forage_real`'s query path no longer hand-sorts
+the coarse centroids; it calls `anch_route()` from `core/anchor_route.h` (needs a
+float mirror `C1f` of the double table). Recall is unchanged — **88.5% @ scan
+13,960**, equal to the sklearn 8x32 baseline.
+
+**fog warm-read (R8).** Train and query walk the *same* entrance rule, so a
+re-visited route reads a latch that is already shut: **64/64 first-visit open,
+64/64 second-visit shut**. This is the payoff of "enter by walking, do not
+place" — the second visit is warm with no stored branch list.
+
+**stride-37 in the memory DB (R7, R9).** The owner asked whether the tensor-field
+`(i*37)%20736` helix is useful here. Measured answer: **yes, as identity, not as
+storage order.**
+
+| property | measurement |
+|---|---|
+| bijection over the real leaf count N=10240 | yes (37 coprime with 20736/10240/2560/1728/144) |
+| inverse | O(1) per N via extended Euclid — 16813 is the inverse **mod 20736 only**, so it must be computed per N |
+| id step | exactly +37 mod N → uniform pool walk, no clustering |
+| `anch_slot(i,256) == lk_id37(i,256)` | 1 — one helix shared by the tensor field **and** the memory DB |
+| locality | 64 consecutive indices span 2331 slots; 576 span the whole 20720 → **must not** be used for payload/postings read in sequence |
+
+So a leaf/anchor id is a *rule*, derived from `(c,k,k3)`, needing no stored map and
+identical every session — while the posting storage order stays local.
+
+**L3 as a frustum composite (R10).** The mini-kmeans split is replaced by the
+6-direction frustum: descending through a fine leaf clears *that fine's* face
+(`fine%6`), so a coarse anchor's pattern is a 6-bit mask of the directions it was
+entered through — the tombstone of who passed, not one slot. On the real 1M set:
+**lit = 251/256 anchors, distinct_patterns = 24.**
 
 ## Bugs found across the campaign (all mine, all fixed)
 
@@ -150,6 +185,10 @@ evaluations). This is the price of walking rather than placing — the earlier
    same row — a mismatched-row read that produced recall 0.00.
 5. `npy_load` read the header length from the wrong bytes (10–11 instead of
    8–9), yielding `hlen=10107`.
+6. `lk_inv37` hard-coded 16813, which inverts 37 mod **20736**, not mod the leaf
+   count — every inverse check failed until the inverse was computed per N.
+7. The float-mirror bug: `anch_route` takes `const float *`, and passing the
+   `double` centroid table produced recall 4% until `C1f` was added.
 
 ## Reproduce
 
