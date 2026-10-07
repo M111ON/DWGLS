@@ -57,6 +57,7 @@ TIER1 := \
   test_geo_fs_generalize \
   test_monitor \
   test_phi_microscope \
+  test_lazy_serve_search \
   test_safetensors_reader \
   test_tess_index_frame \
   test_tess_scale_log \
