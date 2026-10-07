@@ -278,7 +278,7 @@ static inline uint32_t lz_fog_id(int bucket) {
 #define LZ_SEARCH_BUDGET_DEF 512
 #define LZ_ANCH_PATH "build/kv_anchors.bin"
 #define LZ_ORDER_PATH "build/kv_index.order"
-typedef struct { char sid[64]; char file[256]; int npast; int dim; int anchor; int anchor2; float *vec; } LZEntry;
+typedef struct { char sid[64]; char file[256]; int npast; int dim; int anchor; int anchor2; float *vec; double norm; } LZEntry;
 
 static const char *lz_json_val(const char *line, const char *key) {
     /* key lookup tolerant to `"k":v` vs `"k": v` spacing (json.dumps writes the latter) */
@@ -320,6 +320,11 @@ static int lz_entry_parse(const char *line, LZEntry *e) {
         e->vec[e->dim++] = (float)atof(pp);
         while (*pp && *pp != ',' && *pp != ']') pp++;
     }
+    /* norm is a property of the stored vector, not of the query: compute it
+     * once at load instead of once per request per candidate. */
+    double n2 = 0;
+    for (int wi = 0; wi < e->dim; wi++) n2 += (double)e->vec[wi] * e->vec[wi];
+    e->norm = sqrt(n2);
     return 0;
 }
 static int lz_index_load(LZEntry **out, int *n_out) {
@@ -378,6 +383,48 @@ static int lz_index_cached(LZEntry **out, int *n_out) {
     *out = NULL; *n_out = 0;
     return 0;
 }
+/* ── anchors + order cache ──
+ * Same reason as the index cache: lz_mem_search malloc'd 2.1 MB for the
+ * centroid matrix and 11.5 KB for the order perm on EVERY request, then read
+ * both files. Both are small and change only on regrow/reindex, so hold one
+ * copy and reload when either file's mtime/size moves. */
+static float *g_anch_cache = NULL;   /* ANCHR_MAXK * ANCHR_MAXD floats */
+static int g_anch_k = 0, g_anch_dim = 0, g_anch_ntr = 0;
+static uint32_t *g_ord_cache = NULL;
+static int g_ord_n = 0;
+static long g_anch_key[4] = {0, 0, 0, 0};  /* anchors mtime,size ; order mtime,size */
+static void lz_route_cache_invalidate(void) {
+    free(g_anch_cache); g_anch_cache = NULL;
+    free(g_ord_cache);  g_ord_cache = NULL;
+    g_anch_k = g_anch_dim = g_anch_ntr = 0; g_ord_n = 0;
+    for (int i = 0; i < 4; i++) g_anch_key[i] = 0;
+}
+/* returns 1 when both anchors and order are loaded for `nent` entries. */
+static int lz_route_cached(int nent) {
+    struct stat sa, so;
+    if (stat(LZ_ANCH_PATH, &sa) != 0 || stat(LZ_ORDER_PATH, &so) != 0) return 0;
+    long key[4] = { (long)sa.st_mtime, (long)sa.st_size,
+                    (long)so.st_mtime, (long)so.st_size };
+    int fresh = g_anch_cache && g_ord_cache && g_ord_n == nent;
+    for (int i = 0; i < 4 && fresh; i++) if (g_anch_key[i] != key[i]) fresh = 0;
+    if (fresh) return 1;
+    lz_route_cache_invalidate();
+    float *C = (float *)malloc((size_t)ANCHR_MAXK * ANCHR_MAXD * sizeof(float));
+    uint32_t *ord = (uint32_t *)malloc((nent ? (size_t)nent : 1) * sizeof(uint32_t));
+    if (!C || !ord) { free(C); free(ord); return 0; }
+    int adim = 0, antr = 0;
+    int K = anch_load(LZ_ANCH_PATH, C, ANCHR_MAXK, ANCHR_MAXD, &adim, &antr);
+    if (K <= 0 || antr != nent) { free(C); free(ord); return 0; }
+    FILE *of = fopen(LZ_ORDER_PATH, "rb");
+    if (!of) { free(C); free(ord); return 0; }
+    size_t nr = fread(ord, sizeof(uint32_t), (size_t)nent, of);
+    fclose(of);
+    if (nr != (size_t)nent) { free(C); free(ord); return 0; }
+    g_anch_cache = C; g_anch_k = K; g_anch_dim = adim; g_anch_ntr = antr;
+    g_ord_cache = ord; g_ord_n = nent;
+    for (int i = 0; i < 4; i++) g_anch_key[i] = key[i];
+    return 1;
+}
 /* ── lz-mem-search shared core ──
  * Sid-scoped memory selection over build/kv_index.jsonl, shared by the
  * /v1/state/search handler and the generate path (LZ_MEMORY_CTX=1) — no HTTP
@@ -423,41 +470,34 @@ static int lz_mem_search(const float *qv, int qd,
        * cover the index (explicit env still wins). */
       else if (nent > budget) budget = nent; }
     double us_per_item = 0;
-    if (ents && qn > 0) {
-        /* anchor order: node-sorted .order perm if present */
-        uint32_t *ord = (uint32_t *)malloc((nent ? (size_t)nent : 1) * sizeof(uint32_t));
-        for (int i = 0; i < nent; i++) ord[i] = (uint32_t)i;
-        float *C = (float *)malloc((size_t)ANCHR_MAXK * ANCHR_MAXD * sizeof(float));
-        int adim = 0, antr = 0;
-        int K = C ? anch_load(LZ_ANCH_PATH, C, ANCHR_MAXK, ANCHR_MAXD, &adim, &antr) : -1;
-        int routed = 0;
-        if (K > 0 && adim == qd && antr == nent) {
-            FILE *of = fopen(LZ_ORDER_PATH, "rb");
-            if (of) {
-                size_t nr = fread(ord, sizeof(uint32_t), (size_t)nent, of);
-                fclose(of);
-                if (nr != (size_t)nent)
-                    for (int i = 0; i < nent; i++) ord[i] = (uint32_t)i;
+        if (ents && qn > 0) {
+            const uint32_t *ord = NULL;          /* route cache: borrowed, not freed */
+            uint32_t *ord_own = NULL;            /* fallback: identity perm, we free it */
+            const float *C = NULL;
+            int routed = 0, K = 0;
+            if (lz_route_cached(nent) && g_anch_dim == qd) {
+                C = g_anch_cache; ord = g_ord_cache; K = g_anch_k;
+                int topb = topk < K ? topk : K;
+                rnb = anch_route(qv, C, K, qd, topb, rb);
+                routed = 1;
+                snprintf(rm, sizeof(rm), "%s", "anchor");
+                /* the route WALKED shuts the latch: each followed bucket is
+                 * traversed (OPEN -> SHUT, monotone). This IS the assignment —
+                 * the footprint lights itself, nothing pre-placed. */
+                if (!g_fog_ready) lz_fog_init();
+                for (int rbi = 0; rbi < rnb; rbi++)
+                    wl_traverse(&g_fog, lz_fog_id(rb[rbi]));
+            } else {
+                ord_own = (uint32_t *)malloc((nent ? (size_t)nent : 1) * sizeof(uint32_t));
+                if (ord_own) { for (int i = 0; i < nent; i++) ord_own[i] = (uint32_t)i; ord = ord_own; }
             }
-            int topb = topk < K ? topk : K;
-            rnb = anch_route(qv, C, K, qd, topb, rb);
-            routed = 1;
-            snprintf(rm, sizeof(rm), "%s", "anchor");
-            /* the route WALKED shuts the latch: each followed bucket is
-             * traversed (OPEN -> SHUT, monotone). This IS the assignment —
-             * the footprint lights itself, nothing pre-placed. */
-            if (!g_fog_ready) lz_fog_init();
-            for (int rbi = 0; rbi < rnb; rbi++)
-                wl_traverse(&g_fog, lz_fog_id(rb[rbi]));
-        }
-        free(C);
-        LARGE_INTEGER qf, qt0, qt1;
-        QueryPerformanceFrequency(&qf);
-        QueryPerformanceCounter(&qt0);
-        int in_run = 0;
-        breads = 0;
-        for (int oi = 0; oi < nent; oi++) {
-            int ei = (int)ord[oi];
+            LARGE_INTEGER qf, qt0, qt1;
+            QueryPerformanceFrequency(&qf);
+            QueryPerformanceCounter(&qt0);
+            int in_run = 0;
+            breads = 0;
+            for (int oi = 0; ord && oi < nent; oi++) {
+                int ei = (int)ord[oi];
             if (ei < 0 || ei >= nent) continue;
             int sel = 1;
             /* sid pre-filter BEFORE anchor check (RNG-free,
@@ -473,9 +513,9 @@ static int lz_mem_search(const float *qv, int qd,
             if (!sel) { in_run = 0; continue; }
             if (!in_run) { breads++; in_run = 1; }
             if (ents[ei].dim != qd) continue;
-            double dot = 0, wn2 = 0;
-            for (int wi = 0; wi < qd; wi++) { dot += (double)qv[wi] * ents[ei].vec[wi]; wn2 += (double)ents[ei].vec[wi] * ents[ei].vec[wi]; }
-            double sc = (wn2 > 0) ? dot / (qn * sqrt(wn2)) : -1;
+            double dot = 0;
+            for (int wi = 0; wi < qd; wi++) dot += (double)qv[wi] * ents[ei].vec[wi];
+            double sc = (ents[ei].norm > 0) ? dot / (qn * ents[ei].norm) : -1;
             scored++;
             for (int ti = 0; ti < topk; ti++) {
                 if (sc > top_sc[ti]) {
@@ -495,11 +535,11 @@ static int lz_mem_search(const float *qv, int qd,
             if (scored >= budget) { truncated = 1; break; }
         }
         QueryPerformanceCounter(&qt1);
-        if (scored > 0 && qf.QuadPart > 0)
-            us_per_item = (double)(qt1.QuadPart - qt0.QuadPart) * 1e6 / (double)qf.QuadPart / scored;
-        free(ord);
-        if (!routed) breads = nent ? 1 : 0;
-    }
+                if (scored > 0 && qf.QuadPart > 0)
+                    us_per_item = (double)(qt1.QuadPart - qt0.QuadPart) * 1e6 / (double)qf.QuadPart / scored;
+                free(ord_own);
+                if (!routed) breads = nent ? 1 : 0;
+            }
     if (!use_cache) lz_index_free(ents, nent);
     if (route_mode) snprintf(route_mode, 16, "%s", rm);
     if (route_bk) for (int ri = 0; ri < 8; ri++) route_bk[ri] = rb[ri];
