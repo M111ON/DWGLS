@@ -275,6 +275,9 @@ static inline uint32_t lz_fog_id(int bucket) {
 #define LZ_ANCH_MIN 16
 #define LZ_ANCH_MAXK 8
 #define LZ_OVERLAP_TOPB 2
+/* extra buckets walked beyond topk so the returned rows are a superset
+ * of the true topk (measured: recall@3 0.78 at headroom 0). */
+#define LZ_ROUTE_HEADROOM_DEF 4
 #define LZ_SEARCH_BUDGET_DEF 512
 #define LZ_ANCH_PATH "build/kv_anchors.bin"
 #define LZ_ORDER_PATH "build/kv_index.order"
@@ -477,7 +480,19 @@ static int lz_mem_search(const float *qv, int qd,
             int routed = 0, K = 0;
             if (lz_route_cached(nent) && g_anch_dim == qd) {
                 C = g_anch_cache; ord = g_ord_cache; K = g_anch_k;
-                int topb = topk < K ? topk : K;
+                /* buckets walked vs rows returned are SEPARATE knobs.
+                 * Walking only `topk` buckets caps recall (measured: sweep of
+                 * topb showed recall rising as more buckets are covered).
+                 * auto = topk + headroom, clamped to K; LZ_ROUTE_BUCKETS
+                 * overrides for tuning/measurement. */
+                int topb;
+                { const char *beke = getenv("LZ_ROUTE_BUCKETS");
+                  if (beke && atoi(beke) > 0) topb = atoi(beke);
+                  else { const char *hre = getenv("LZ_ROUTE_HEADROOM");
+                         int hr = (hre && atoi(hre) >= 0) ? atoi(hre) : LZ_ROUTE_HEADROOM_DEF;
+                         topb = topk + hr; } }
+                if (topb > K) topb = K;
+                if (topb < 1) topb = 1;
                 rnb = anch_route(qv, C, K, qd, topb, rb);
                 routed = 1;
                 snprintf(rm, sizeof(rm), "%s", "anchor");
@@ -1932,7 +1947,17 @@ int main(int argc, char **argv) {
                                     }
                                     else { sock_close(cli); continue; }
                                     if (stopk < 1) stopk = 1;
-                                    if (stopk > 8) stopk = 8;
+                                    /* fail-loud: arrays and the anchor route are bounded
+                                     * at 8. A silent clamp would hand back fewer rows than
+                                     * asked with no signal (never-fail-behind-your-back). */
+                                    if (stopk > 8) {
+                                        char eb[160];
+                                        int el = snprintf(eb, sizeof(eb),
+                                            "{\"status\":\"error\",\"error\":\"topk_out_of_range\","
+                                            "\"requested\":%d,\"max\":8}", stopk);
+                                        lz_http_send(cli, "400 Bad Request", "application/json", eb, el);
+                                        sock_close(cli); continue;
+                                    }
                                     char sresp[4096];
                                     int srlen = 0;
                                     float qv[1024];
