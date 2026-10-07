@@ -233,27 +233,24 @@ static void lz_json_escape(char *dst, size_t cap, const char *src) {
  * Reload from the P3 route log on boot (computation-over-storage). */
 static wl_latch_t g_fog;
 static int g_fog_ready = 0;
+static wl_log_t g_fog_log;      /* P3 append sink: the fingerprint of each walk */
+static int g_fog_log_open = 0;
+static int g_fog_replayed = 0;  /* records read back from the log at boot */
 /* fog receipt: how many of the free branches are SHUT (traversed) vs OPEN. */
-typedef struct { int open; int shut; int lit; } LZFog;
+typedef struct { int open; int shut; int lit; int replayed; } LZFog;
 static void lz_fog_init(void) {
-    wl_reset(&g_fog);
-    /* derive from the P3 log if a path is configured (env LZ_ROUTE_LOG). */
+    /* boot = replay the P3 log into a fresh latch (computation-over-storage:
+     * the log is the truth, the bitset is a derived cache). A missing/empty
+     * log yields an all-OPEN latch, i.e. nothing has been walked yet. */
     const char *lp = getenv("LZ_ROUTE_LOG");
-    if (lp && lp[0]) {
-        FILE *f = fopen(lp, "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long n = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            /* log file = 2-byte magic + 1 version byte + 32-B records. */
-            if (n > 3) {
-                uint8_t *buf = (uint8_t *)malloc((size_t)n);
-                if (buf && fread(buf, 1, (size_t)n, f) == (size_t)n)
-                    wl_replay(&g_fog, buf + 3, (size_t)n - 3);
-                free(buf);
-            }
-            fclose(f);
-        }
+    long replayed = 0;
+    if (lp && lp[0]) replayed = wl_replay_log_file(&g_fog, lp);
+    else             wl_reset(&g_fog);
+    g_fog_replayed = (int)(replayed > 0 ? replayed : 0);   /* boot receipt */
+    /* open the same log for append so every walk writes its fingerprint —
+     * this is what makes the tombstone survive the next restart. */
+    if (lp && lp[0] && !g_fog_log_open) {
+        if (wl_log_open(&g_fog_log, lp) == 0) g_fog_log_open = 1;
     }
     g_fog_ready = 1;
 }
@@ -498,10 +495,16 @@ static int lz_mem_search(const float *qv, int qd,
                 snprintf(rm, sizeof(rm), "%s", "anchor");
                 /* the route WALKED shuts the latch: each followed bucket is
                  * traversed (OPEN -> SHUT, monotone). This IS the assignment —
-                 * the footprint lights itself, nothing pre-placed. */
+                 * the footprint lights itself, nothing pre-placed. Each walk
+                 * ALSO appends its fingerprint to the P3 log, so the tombstone
+                 * survives restart (replayed by lz_fog_init on boot). */
                 if (!g_fog_ready) lz_fog_init();
                 for (int rbi = 0; rbi < rnb; rbi++)
-                    wl_traverse(&g_fog, lz_fog_id(rb[rbi]));
+                    wl_traverse_log(&g_fog, lz_fog_id(rb[rbi]),
+                                    g_fog_log_open ? &g_fog_log : NULL);
+                /* flush so the fingerprint is durable the moment the query
+                 * returns — a kill -9 must not lose the walk we just did. */
+                if (g_fog_log_open && g_fog_log.fp) fflush(g_fog_log.fp);
             } else {
                 ord_own = (uint32_t *)malloc((nent ? (size_t)nent : 1) * sizeof(uint32_t));
                 if (ord_own) { for (int i = 0; i < nent; i++) ord_own[i] = (uint32_t)i; ord = ord_own; }
@@ -575,6 +578,7 @@ static int lz_mem_search(const float *qv, int qd,
         fog_out->open = (int)WL_FREE - sh;
         fog_out->shut = sh;
         fog_out->lit = rnb;
+        fog_out->replayed = g_fog_replayed;
     }
     int nh = 0;
     if (top_sc) for (int ti = 0; ti < topk && top_sc[ti] > -2; ti++) nh++;
@@ -2003,10 +2007,12 @@ int main(int argc, char **argv) {
                                             "],\"block_reads\":%d,\"items_scored\":%d,\"items_total\":%d,\"us_per_item\":%.2f,\"budget\":%d,\"truncated\":%d,",
                                             block_reads, items_scored, nent, us_per_item, budget, truncated);
                                         /* fog: the route walked shut these branches (OPEN->SHUT,
-                                         * monotone). lit = buckets followed this query. */
+                                         * monotone). lit = buckets followed this query;
+                                         * replayed = fingerprints read back from the P3 log
+                                         * at boot (0 on a cold log, >0 after a restart). */
                                         srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
-                                            "\"fog\":{\"lit\":%d,\"open\":%d,\"shut\":%d,\"free\":%u}}}",
-                                            fog.lit, fog.open, fog.shut, (unsigned)WL_FREE);
+                                            "\"fog\":{\"lit\":%d,\"open\":%d,\"shut\":%d,\"replayed\":%d,\"free\":%u}}}",
+                                            fog.lit, fog.open, fog.shut, fog.replayed, (unsigned)WL_FREE);
                                     } else {
                                         srlen = snprintf(sresp, sizeof(sresp), "{\"error\":\"embed unavailable\"}");
                                     }

@@ -79,6 +79,63 @@ int main(void) {
     CHECK(memcmp(&replayed, &live, sizeof live) != 0, "T4 misaligned buffer applies nothing");
     (void)seen;
 
+    /* T5 — SURVIVE RESTART: the fingerprint is appended to a P3 log file by
+     * wl_traverse_log, and a FRESH latch rebuilt from that file on boot must
+     * equal the one we walked in memory. This is the whole "tombstone index":
+     * the walk is learned, written down, and read back — no pre-placed map. */
+    {
+        const char *path = "build/t5_wl_restart.log";
+        remove(path);
+        wl_latch_t walked; wl_reset(&walked);
+        wl_log_t lg;
+        CHECK(wl_log_open(&lg, path) == 0, "T5 log opens for append");
+        /* header written once (2 magic + 1 version) */
+        FILE *hf = fopen(path, "rb");
+        long hsz = 0; if (hf) { fseek(hf, 0, SEEK_END); hsz = ftell(hf); fclose(hf); }
+        CHECK(hsz == 3, "T5 fresh log = 3-byte header only");
+
+        uint32_t ids[5] = { wl_id(0, 1), wl_id(3, 0), wl_id(77, 40),
+                            wl_id(142, 71), wl_id(5, 9) };
+        for (int i = 0; i < 5; i++)
+            CHECK(wl_traverse_log(&walked, ids[i], &lg) == 1, "T5 traverse+append accepted");
+        /* a reserved id must be refused AND write nothing */
+        CHECK(wl_traverse_log(&walked, 0, &lg) == 0, "T5 reserved id refused (not appended)");
+        CHECK(wl_traverse_log(&walked, 10367u, &lg) == 0, "T5 reserved HI id refused too");
+        CHECK(lg.n_appended == 5, "T5 exactly 5 fingerprints appended");
+        fflush(lg.fp);          /* append is buffered; flush = the serve-path contract */
+        wl_log_close(&lg);
+
+        FILE *cf = fopen(path, "rb");
+        long csz = 0; if (cf) { fseek(cf, 0, SEEK_END); csz = ftell(cf); fclose(cf); }
+        CHECK(csz == 3 + 5 * IR_LOG_RECORD_SIZE, "T5 file = header + 5 x 32B records");
+
+        /* "restart": fresh latch, replay the file (the boot path) */
+        wl_latch_t booted;
+        long applied = wl_replay_log_file(&booted, path);
+        CHECK(applied == 5, "T5 boot replay applied all 5 records");
+        CHECK(memcmp(&booted, &walked, sizeof walked) == 0,
+              "T5 rebooted latch == pre-restart latch (bit-identical)");
+        for (int i = 0; i < 5; i++)
+            CHECK(!wl_is_open(&booted, ids[i]), "T5 walked branch is SHUT after restart");
+        CHECK(wl_is_open(&booted, wl_id(9, 9)), "T5 un-walked branch still OPEN after restart");
+
+        /* reopening an existing log APPENDS (never truncates) — second run of
+         * the same route adds nothing to state but stays consistent */
+        CHECK(wl_log_open(&lg, path) == 0, "T5 reopen existing log for append");
+        CHECK(lg.n_appended == 0, "T5 reopen starts a fresh append counter");
+        wl_traverse_log(&walked, wl_id(9, 9), &lg);
+        fflush(lg.fp);
+        wl_log_close(&lg);
+        wl_latch_t booted2;
+        long applied2 = wl_replay_log_file(&booted2, path);
+        CHECK(applied2 == 6, "T5 reopen appended (6 records total, not truncated)");
+        CHECK(!wl_is_open(&booted2, wl_id(9, 9)), "T5 newly appended branch is SHUT");
+        CHECK(memcmp(&booted2, &walked, sizeof walked) == 0,
+              "T5 second-generation replay still bit-identical");
+
+        remove(path);
+    }
+
     printf(fails ? "FAIL %d\n" : "ALL PASS (%d)\n", fails);
     return fails != 0;
 }
