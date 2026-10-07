@@ -48,12 +48,27 @@ typedef SOCKET sock_t;
 /* ── minimal HTTP helpers (mirrors tesspack_server) ── */
 static int lz_http_recv(sock_t fd, char *buf, int cap) {
     int total = 0;
+    int hdr_end = -1, want = 0;
     while (total < cap - 1) {
         int n = recv(fd, buf + total, cap - total - 1, 0);
         if (n <= 0) break;
         total += n;
         buf[total] = '\0';
-        if (strstr(buf, "\r\n\r\n")) break;
+        char *hh = strstr(buf, "\r\n\r\n");
+        if (!hh) continue;
+        if (hdr_end < 0) {
+            hdr_end = (int)(hh + 4 - buf);
+            /* parse Content-Length so POST bodies are read fully */
+            char *cl = strstr(buf, "Content-Length:");
+            if (!cl || cl > hh) cl = strstr(buf, "content-length:");
+            if (cl && cl < hh) {
+                cl = strchr(cl, ':');
+                if (cl) want = atoi(cl + 1);
+            }
+            if (want < 0) want = 0;
+            if (want == 0) break;
+        }
+        if (hdr_end >= 0 && total >= hdr_end + want) break;
     }
     return total;
 }
@@ -180,7 +195,7 @@ static int lz_embed(const char *text, float *vec, int maxdim) {
     p++;
     int n = 0;
     while (*p && *p != ']' && n < maxdim) {
-        while (*p == ' ' || *p == ',') p++;
+        while (*p == ' ' || *p == ',' || *p == '[') p++;
         if (*p == ']' || !*p) break;
         vec[n++] = (float)atof(p);
         while (*p && *p != ',' && *p != ']') p++;
@@ -265,25 +280,40 @@ static inline uint32_t lz_fog_id(int bucket) {
 #define LZ_ORDER_PATH "build/kv_index.order"
 typedef struct { char sid[64]; char file[256]; int npast; int dim; int anchor; int anchor2; float *vec; } LZEntry;
 
+static const char *lz_json_val(const char *line, const char *key) {
+    /* key lookup tolerant to `"k":v` vs `"k": v` spacing (json.dumps writes the latter) */
+    char pat[32];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *pp = strstr(line, pat);
+    if (!pp) return NULL;
+    pp = strchr(pp + strlen(pat), ':');
+    if (!pp) return NULL;
+    pp++;
+    while (*pp == ' ') pp++;
+    return pp;
+}
+
 static int lz_entry_parse(const char *line, LZEntry *e) {
     memset(e, 0, sizeof(*e));
     e->anchor = -1;
     e->anchor2 = -1;
-    const char *pp = strstr(line, "\"sid\":\"");
-    if (pp) { pp += 7; int ii = 0; while (*pp && *pp != '"' && ii < 63) e->sid[ii++] = *pp++; e->sid[ii] = 0; }
-    pp = strstr(line, "\"file\":\"");
-    if (pp) { pp += 8; int ii = 0; while (*pp && *pp != '"' && ii < 255) e->file[ii++] = *pp++; e->file[ii] = 0; }
-    pp = strstr(line, "\"npast\":");
-    if (pp) e->npast = atoi(pp + 8);
-    pp = strstr(line, "\"anchor\":");
-    if (pp) e->anchor = atoi(pp + 9);
-    pp = strstr(line, "\"anchor2\":");
-    if (pp) e->anchor2 = atoi(pp + 10);
-    pp = strstr(line, "\"vec\":[");
-    if (!pp) return -1;
-    pp += 7;
+    const char *pp = lz_json_val(line, "sid");
+    if (pp && *pp == '"') { pp++; int ii = 0; while (*pp && *pp != '"' && ii < 63) e->sid[ii++] = *pp++; e->sid[ii] = 0; }
+    pp = lz_json_val(line, "file");
+    if (pp && *pp == '"') { pp += 1; int ii = 0; while (*pp && *pp != '"' && ii < 255) e->file[ii++] = *pp++; e->file[ii] = 0; }
+    pp = lz_json_val(line, "npast");
+    if (pp) e->npast = atoi(pp);
+    pp = lz_json_val(line, "anchor");
+    if (pp) e->anchor = atoi(pp);
+    pp = lz_json_val(line, "anchor2");
+    if (pp) e->anchor2 = atoi(pp);
+    pp = lz_json_val(line, "vec");
+    if (!pp || *pp != '[') return -1;
+    pp += 1;
     e->vec = (float *)malloc(1024 * sizeof(float));
     if (!e->vec) return -1;
+    /* llama-server /embedding returns nested [[...]] — skip extra brackets */
+    while (*pp == '[') pp++;
     while (*pp && *pp != ']' && e->dim < 1024) {
         while (*pp == ' ' || *pp == ',') pp++;
         if (*pp == ']' || !*pp) break;
@@ -317,6 +347,37 @@ static void lz_index_free(LZEntry *a, int n) {
     for (int i = 0; i < n; i++) free(a[i].vec);
     free(a);
 }
+/* ── index cache: load-once, reload on mtime change ──
+ * lz_mem_search runs per request; re-parsing 10.8MB + 2881 mallocs each time
+ * costs ~1.6s/request (bench 2026-10-08: 302-idx 0.2s vs 2881-idx 1.9s).
+ * Cache holds the parsed entries; stat() the file per request (cheap) and
+ * reload only when mtime/size changed. Single-threaded serve → no locks. */
+static LZEntry *g_idx_cache = NULL;
+static int g_idx_n = 0;
+static long g_idx_mtime = 0;
+static long g_idx_size = 0;
+static void lz_index_cache_invalidate(void) {
+    lz_index_free(g_idx_cache, g_idx_n);
+    g_idx_cache = NULL; g_idx_n = 0; g_idx_mtime = 0; g_idx_size = 0;
+}
+static int lz_index_cached(LZEntry **out, int *n_out) {
+    struct stat st;
+    if (stat("build/kv_index.jsonl", &st) == 0) {
+        long mt = (long)st.st_mtime, sz = (long)st.st_size;
+        if (g_idx_cache && mt == g_idx_mtime && sz == g_idx_size) {
+            *out = g_idx_cache; *n_out = g_idx_n;
+            return 1; /* cache hit: caller must NOT free */
+        }
+        lz_index_cache_invalidate();
+        if (lz_index_load(&g_idx_cache, &g_idx_n) == 0 && g_idx_cache) {
+            g_idx_mtime = mt; g_idx_size = sz;
+            *out = g_idx_cache; *n_out = g_idx_n;
+            return 1;
+        }
+    }
+    *out = NULL; *n_out = 0;
+    return 0;
+}
 /* ── lz-mem-search shared core ──
  * Sid-scoped memory selection over build/kv_index.jsonl, shared by the
  * /v1/state/search handler and the generate path (LZ_MEMORY_CTX=1) — no HTTP
@@ -345,7 +406,7 @@ static int lz_mem_search(const float *qv, int qd,
     /* route via anchors if fresh, else brute scan */
     LZEntry *ents = NULL;
     int nent = 0;
-    lz_index_load(&ents, &nent);
+    int use_cache = lz_index_cached(&ents, &nent);
     char rm[16];
     snprintf(rm, sizeof(rm), "%s", "brute");
     int rb[8];
@@ -366,9 +427,9 @@ static int lz_mem_search(const float *qv, int qd,
         /* anchor order: node-sorted .order perm if present */
         uint32_t *ord = (uint32_t *)malloc((nent ? (size_t)nent : 1) * sizeof(uint32_t));
         for (int i = 0; i < nent; i++) ord[i] = (uint32_t)i;
-        float C[ANCHR_MAXK * ANCHR_MAXD];
+        float *C = (float *)malloc((size_t)ANCHR_MAXK * ANCHR_MAXD * sizeof(float));
         int adim = 0, antr = 0;
-        int K = anch_load(LZ_ANCH_PATH, C, ANCHR_MAXK, ANCHR_MAXD, &adim, &antr);
+        int K = C ? anch_load(LZ_ANCH_PATH, C, ANCHR_MAXK, ANCHR_MAXD, &adim, &antr) : -1;
         int routed = 0;
         if (K > 0 && adim == qd && antr == nent) {
             FILE *of = fopen(LZ_ORDER_PATH, "rb");
@@ -389,6 +450,7 @@ static int lz_mem_search(const float *qv, int qd,
             for (int rbi = 0; rbi < rnb; rbi++)
                 wl_traverse(&g_fog, lz_fog_id(rb[rbi]));
         }
+        free(C);
         LARGE_INTEGER qf, qt0, qt1;
         QueryPerformanceFrequency(&qf);
         QueryPerformanceCounter(&qt0);
@@ -438,7 +500,7 @@ static int lz_mem_search(const float *qv, int qd,
         free(ord);
         if (!routed) breads = nent ? 1 : 0;
     }
-    lz_index_free(ents, nent);
+    if (!use_cache) lz_index_free(ents, nent);
     if (route_mode) snprintf(route_mode, 16, "%s", rm);
     if (route_bk) for (int ri = 0; ri < 8; ri++) route_bk[ri] = rb[ri];
     if (route_nb_out) *route_nb_out = rnb;
@@ -1878,7 +1940,7 @@ int main(int argc, char **argv) {
                                         /* fog: the route walked shut these branches (OPEN->SHUT,
                                          * monotone). lit = buckets followed this query. */
                                         srlen += snprintf(sresp + srlen, sizeof(sresp) - srlen,
-                                            "\"fog\":{\"lit\":%d,\"open\":%d,\"shut\":%d,\"free\":%u}}",
+                                            "\"fog\":{\"lit\":%d,\"open\":%d,\"shut\":%d,\"free\":%u}}}",
                                             fog.lit, fog.open, fog.shut, (unsigned)WL_FREE);
                                     } else {
                                         srlen = snprintf(sresp, sizeof(sresp), "{\"error\":\"embed unavailable\"}");
