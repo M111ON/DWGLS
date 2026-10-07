@@ -131,6 +131,12 @@ int main(int argc, char **argv){
     const char *hier = argc>1?argv[1]:"build/sift1m_hier";
     const char *sift = argc>2?argv[2]:"build/sift1m/sift";
     int nq = argc>3?atoi(argv[3]):50, topb = argc>4?atoi(argv[4]):8, topk = argc>5?atoi(argv[5]):1;
+    /* per-bucket cap (subway stops: แวะบ้านละ ≤M คน). 0 = unbounded (scan all
+     * postings). The cap is the remaining real accelerator: forage ORDER alone
+     * does not reduce members-visited; only the cap does. Set FORAGE_CURVE=1 to
+     * sweep M and print the recall@K vs members-visited curve. */
+    int cap = argc>6?atoi(argv[6]):0;
+    int curve = getenv("FORAGE_CURVE")?1:0;
     char p[512]; Npy C1, comp, mean, lab1, mem;
     snprintf(p,sizeof p,"%s/C1.npy",hier);          if(npy_load(p,&C1)) return 1;
     snprintf(p,sizeof p,"%s/pca_comp.npy",hier);    if(npy_load(p,&comp)) return 1;
@@ -212,6 +218,35 @@ int main(int argc, char **argv){
     int *bpost[10240]={0}; int64_t bfill[10240]={0};
     for(int s=0;s<10240;s++) bpost[s]=(int*)malloc((bcnt[s]+1)*sizeof(int));
     for(int64_t v=0;v<N;v++){ int s=blab[v]; bpost[s][bfill[s]++]=(int)v; }
+    /* FORAGE_ORDERCAP: order each bucket's postings by distance from the vector to
+     * its own leaf's fine centroid (the box center). Then a per-bucket cap M keeps
+     * the M members nearest the box center — the cap becomes a *radius* cut, not an
+     * arbitrary prefix. This is the difference between capping (arbitrary) and
+     * ordering-the-box (structured) that item 2 is really about. */
+    if(getenv("FORAGE_ORDERCAP") && fc){
+        for(int s=0;s<10240;s++){
+            int64_t n=bfill[s]; if(n<2) continue;
+            int cs=s/40, kk=(s%40)/4;
+            double *ctr=fc+((size_t)(cs*10+kk)*25);
+            /* insertion of centroid-distance into a parallel key array is O(n^2);
+             * use qsort_r-free approach: compute keys, sort indices by key. */
+            double *key=(double*)malloc((size_t)n*sizeof(double));
+            int *idx=(int*)malloc((size_t)n*sizeof(int));
+            for(int64_t i=0;i<n;i++){
+                int id=bpost[s][i]; float *bv=base+(size_t)id*128; double q25[25];
+                for(int j=0;j<25;j++){ double acc=0; for(int k=0;k<128;k++) acc+=((double)bv[k]-Md[k])*Cd[j*128+k]; q25[j]=acc; }
+                double d=0; for(int j=0;j<25;j++){ double e=q25[j]-ctr[j]; d+=e*e; } key[i]=d; idx[i]=(int)i;
+            }
+            /* simple shell sort on idx by key */
+            for(int64_t g=n/2; g>0; g/=2)
+                for(int64_t i=g;i<n;i++){ int64_t j=i; int ti=idx[i]; double tk=key[ti];
+                    while(j>=g && key[idx[j-g]]>tk){ idx[j]=idx[j-g]; j-=g; } idx[j]=ti; }
+            int *tmp=(int*)malloc((size_t)n*sizeof(int));
+            for(int64_t i=0;i<n;i++) tmp[i]=bpost[s][idx[i]];
+            memcpy(bpost[s],tmp,(size_t)n*sizeof(int)); free(tmp); free(key); free(idx);
+        }
+        printf("  ordercap: postings ordered by distance to fine centroid\n");
+    }
     int64_t shut=0; for(int i=0;i<162;i++){ uint64_t w=fog.w[i]; while(w){shut+=w&1;w>>=1;} }
     double t_train=(double)(clock()-t_train0)/CLOCKS_PER_SEC;
     printf("  train: 1M walked from entrance, latch SHUT=%I64d (%.2fs)\n",shut,t_train);
@@ -225,7 +260,15 @@ int main(int argc, char **argv){
     int *order=(int*)malloc(256*sizeof(int));
     long long scans=0, r1=0, r10=0;
     if(topb>32) topb=32;
+    /* per-bucket cap curve (item 2): members-visited is the real budget, not the
+     * number of buckets. Sweep M in {0(uncapped),64,32,16,8,4} and print recall@K
+     * against members-visited for each M. */
+    static const int CAPS[]={0,64,32,16,8,4};
+    const int NCAP=6;
     clock_t t_q0=clock();
+    for(int ci=0; ci<(curve?NCAP:1); ci++){
+    if(curve) cap=CAPS[ci];
+    scans=0; r1=0; r10=0;
     /* batch: all queries enter the same entrance together — nothing overlaps,
      * so the latch is walked once per visited anchor, not per query. */
     for(int q=0;q<nq;q++){
@@ -255,7 +298,8 @@ int main(int argc, char **argv){
                     for(int i=1;i<4;i++){ int kk2=gk[i],j=i-1; while(j>=0&&gd[kk2]<gd[gk[j]]){gk[j+1]=gk[j];j--;} gk[j+1]=kk2; }
                     for(int t3=0;t3<topk&&t3<4;t3++){
                         int s=(c*10+k)*4+gk[t3];
-                        for(int64_t j=0;j<bfill[s];j++){
+                        int64_t lim=bfill[s]; if(cap>0 && lim>(int64_t)cap) lim=cap;
+                        for(int64_t j=0;j<lim;j++){
                             int id=bpost[s][j]; sc++;
                             double d2=l2f(qv, base+(size_t)id*128, 128);
                             if(d2<best[9]){ best[9]=d2; besti[9]=id;
@@ -264,7 +308,8 @@ int main(int argc, char **argv){
                     }
                 } else {
                     int s=c*10+k;
-                    for(int64_t j=0;j<bfill[s];j++){
+                    int64_t lim=bfill[s]; if(cap>0 && lim>(int64_t)cap) lim=cap;
+                    for(int64_t j=0;j<lim;j++){
                         int id=bpost[s][j]; sc++;
                         double d2=l2f(qv, base+(size_t)id*128, 128);
                         if(d2<best[9]){ best[9]=d2; besti[9]=id;
@@ -310,8 +355,14 @@ int main(int argc, char **argv){
         int g0=gt[(size_t)q*100+0];
         for(int i=0;i<10;i++) if(besti[i]==g0){ r1+=(i==0); r10+=1; break; }
     }
+    if(curve)
+        printf("  CAP curve: M=%-3d members/query=%.1f recall@1=%.4f recall@10hit=%.4f\n",
+               cap,(double)scans/nq,(double)r1/nq,(double)r10/nq);
+    }
+    if(!curve){
     printf("  queries=%d topb=%d avg_scan=%.0f\n",nq,topb,(double)scans/nq);
     printf("  recall@1=%.4f recall@10hit=%.4f (query %.2fs, %.1fms/q)\n",(double)r1/nq,(double)r10/nq,(double)(clock()-t_q0)/CLOCKS_PER_SEC,(double)(clock()-t_q0)/CLOCKS_PER_SEC*1000/nq);
+    }
     CHECK(scans>0,"R6 forage loop scanned real buckets");
 
     /* ---- R7 stride-37 leaf IDENTITY (kis v6 helix) over the real leaf count.
