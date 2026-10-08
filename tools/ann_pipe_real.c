@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32
 #include <windows.h>
 #include <psapi.h>
@@ -188,7 +189,7 @@ int main(int argc, char **argv) {
     static int buckets[MAXK];
     static uint8_t span[BLKSZ];
     double freq = pc_freq();
-    double t_rank = 0, t_gate = 0, t_desc = 0, t_fault = 0;
+    double t_rank = 0, t_gate = 0, t_dist = 0, t_desc = 0, t_fault = 0;
     long r1hit = 0, r10hit = 0;
     long gh_routed = 0, gh_pass = 0;
     long ad_bypass = 0;
@@ -204,7 +205,7 @@ int main(int argc, char **argv) {
         int qb = anch_assign(q, C, KANCH, g_dim);
         int got = anch_route(q, C, KANCH, g_dim, TOPB, buckets);
         static int cand[MAXN]; int nc = 0;
-        static int segstart[65];
+        static int segstart[MAXK + 1];
         for (int t = 0; t < got; t++) {
             int b = buckets[t];
             segstart[t] = nc;
@@ -230,24 +231,25 @@ int main(int argc, char **argv) {
 
         /* gate + rank top10 */
         t0 = pc_now();
+        double dist_before = t_dist;
         MVNode qa = bnode((uint32_t)qb, slide);
-        /* C: valve decided at the pipe entrance — one color pass per query,
-         * candidate loop below only reads two precomputed bytes. */
+        /* C/fuse: valve decided at the pipe entrance — one color pass per
+         * query, candidate loop below only reads two precomputed bytes.
+         * All modes share the same bytes: mode 2 forces pass=1 (its old
+         * override opened the query E edge for every candidate), modes
+         * 0/3/4/5 are the color-match signature. No live mmw_open,
+         * no per-query mmw_clear/override, no MVNode in the loop. */
         uint8_t qcol = mmw_color(qa.node, qa.layer, slide, MMW_EDGE_E);
-        static uint8_t bcol[256];
-        for (int b = 0; b < KANCH && b < 256; b++) {
+        /* KUNCH/MAXK can exceed 256 buckets now — bcol sizes to KANCH,
+         * lab bound follows KANCH too (was a hardcoded 256). */
+        static uint8_t bcol[MAXK];
+        for (int b = 0; b < KANCH && b < MAXK; b++) {
             MVNode nb = bnode((uint32_t)b, slide);
             bcol[b] = mmw_color(nb.node, nb.layer, slide, MMW_EDGE_W);
         }
         if (MODE == 3) {
-            /* admit: query E-dimension vs fixed reference (bucket 0 W) */
-            MVNode ref = bnode(0u, slide);
-            if (!mmw_open(&qa, MMW_EDGE_E, &ref, MMW_EDGE_W)) { ad_bypass++; continue; }
-        }
-        if (MODE == 2) {
-            /* single-value flip: open this query's E edge, then normal path */
-            mmw_clear();
-            mmw_override(qa.node, MMW_EDGE_E, 1);
+            /* admit: query E vs fixed reference (bucket 0 W) — byte compare */
+            if (qcol != bcol[0]) { ad_bypass++; continue; }
         }
         static int topi[10]; static double topd[10]; static int topp[10];
         for (int t = 0; t < 10; t++) { topi[t] = -1; topd[t] = 1e300; topp[t] = 0; }
@@ -256,22 +258,21 @@ int main(int argc, char **argv) {
         for (int c = 0; c < nc; c++) {
             int i = cand[c];
             int pass = 1;
-            if (MODE != 1 && lab[i] != qb) {
-                if (MODE == 0 || MODE == 5) {
-                    /* C (spec: never-traversed = open): valve opened once at the
-                     * pipe entrance — pass is signature from precomputed bytes,
-                     * never a filter. Modes 2/3/4 keep the live mmw_open path. */
-                    pass = (lab[i] < 256) && (qcol == bcol[lab[i]]);
-                } else {
-                    MVNode bc = bnode((uint32_t)lab[i], slide);
-                    pass = (lab[i] < 256) && mmw_open(&qa, MMW_EDGE_E, &bc, MMW_EDGE_W);
-                }
+            if (MODE == 2) {
+                /* old path forced query-E open for every candidate:
+                 * mmw_open always hit the override → pass = lab bound only */
+                pass = (lab[i] >= 0 && lab[i] < KANCH);
+            } else if (MODE != 1 && lab[i] != qb) {
+                /* fused: every mode reads the same two precomputed bytes */
+                pass = (lab[i] >= 0 && lab[i] < KANCH) && (qcol == bcol[lab[i]]);
             }
             if (i == gt0early) { gh_routed++; if (pass) gh_pass++; }
             if (!pass && MODE != 0 && MODE != 4 && MODE != 5) continue;
+            uint64_t td0 = pc_now();
             /* early-exit: cap = worst of full top-10 (monotone sum), else no cap */
             double d = dist2_cap(q, g_base + (size_t)i * g_dim, g_dim,
                                  ntop == 10 ? topd[9] : 1e300);
+            t_dist += (double)(pc_now() - td0);
             /* A: O(1) reject when full — d >= worst implies all 10 compares fail;
              * mode 4 equal-worst + pass preference kept as the sole exception. */
             int rej = 0;
@@ -286,7 +287,9 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        t_gate += (double)(pc_now() - t0);
+        /* t_gate = loop overhead (pass+insert) only; dist2 inside loop
+         * is accounted in t_dist so the fuse effect is visible. */
+        t_gate += (double)(pc_now() - t0) - (t_dist - dist_before);
         if (topi[0] < 0) { bad++; continue; }
         if (MODE == 4) { for (int t = 0; t < 10 && topi[t] >= 0; t++) top10pass += topp[t]; }
 
@@ -336,15 +339,16 @@ int main(int argc, char **argv) {
     fclose(kvcb);
 #endif
 
-    double tot = t_rank + t_gate + t_desc + t_fault;
+    double tot = t_rank + t_gate + t_dist + t_desc + t_fault;
     double us = tot / freq * 1e6 / nq_use;
     printf("mode=%d recall@1=%.4f recall@10avg=%.4f bad=%d bypassed=%ld\n", MODE,
            (double)r1hit / nq_use, (double)r10hit / nq_use / 10.0, bad, ad_bypass);
     printf("gt0 routed=%ld/%d gatepass|routed=%.4f\n",
            gh_routed, nq_use, gh_routed ? (double)gh_pass / gh_routed : -1.0);
     if (MODE == 4) printf("top10 gate-pass retained: %ld\n", top10pass);
-    printf("rank=%.1f gate=%.1f desc=%.1f fault=%.1f us/q | total=%.1f us/q (%.0f q/s)\n",
+    printf("rank=%.1f gate=%.1f dist=%.1f desc=%.1f fault=%.1f us/q | total=%.1f us/q (%.0f q/s)\n",
            t_rank / freq * 1e6 / nq_use, t_gate / freq * 1e6 / nq_use,
+           t_dist / freq * 1e6 / nq_use,
            t_desc / freq * 1e6 / nq_use, t_fault / freq * 1e6 / nq_use,
            us, 1e6 / (us > 0 ? us : 1));
     printf("sink=%llu\n", (unsigned long long)g_sink);
