@@ -20,7 +20,7 @@
 #include <float.h>
 
 #define ANCHR_MAGIC   0x414E4352u /* "ANCR" */
-#define ANCHR_MAXK    64
+#define ANCHR_MAXK    512
 #define ANCHR_MAXD    1024
 #define ANCHR_ITERS   25
 
