@@ -17,6 +17,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#endif
 
 #include "anchor_route.h"   /* anch_load, anch_route, ANCHR_MAXK, ANCHR_MAXD */
 
@@ -313,6 +317,103 @@ static void t_prefix_monotonic(void) {
     check(ok, "prefix: recall is non-decreasing as more buckets are walked");
 }
 
+
+/* ── live HTTP: the ONLY part that can see the real response bytes. Opt-in via
+ * LZ_SERVE_ADDR=host:port so the default suite stays hermetic (no server, no
+ * socket, no flake). When set, a server that will not answer is a FAILURE, not
+ * a skip — you asked for the live path. ── */
+#ifdef _WIN32
+static int http_post(const char *host, int port, const char *path,
+                     const char *json, int *out_code, char *body, int cap) {
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
+    char ps[16]; snprintf(ps, sizeof(ps), "%d", port);
+    if (getaddrinfo(host, ps, &hints, &res) != 0) { WSACleanup(); return -1; }
+    SOCKET s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (s == INVALID_SOCKET) { freeaddrinfo(res); WSACleanup(); return -1; }
+    if (connect(s, res->ai_addr, (int)res->ai_addrlen) != 0) {
+        closesocket(s); freeaddrinfo(res); WSACleanup(); return -1;
+    }
+    freeaddrinfo(res);
+    char req[4096];
+    int n = snprintf(req, sizeof(req),
+        "POST %s HTTP/1.1\r\nHost: %s:%d\r\nContent-Type: application/json\r\n"
+        "Content-Length: %d\r\nConnection: close\r\n\r\n%s",
+        path, host, port, (int)strlen(json), json);
+    send(s, req, n, 0);
+    char buf[8192]; int tot = 0, r;
+    while ((r = recv(s, buf, sizeof(buf) - 1, 0)) > 0) {
+        if (tot + r < cap) { memcpy(body + tot, buf, r); tot += r; }
+    }
+    closesocket(s); WSACleanup();
+    body[tot < cap ? tot : cap - 1] = 0;
+    if (strncmp(body, "HTTP/", 5) == 0) {
+        const char *p = strchr(body, ' ');
+        if (p) *out_code = atoi(p + 1);
+    }
+    char *sep = strstr(body, "\r\n\r\n");
+    if (sep) { sep += 4; memmove(body, sep, strlen(sep) + 1); }
+    return 0;
+}
+#endif
+
+/* brace/bracket/quote balance — a cheap "did it parse" gate */
+static int json_balanced(const char *s, int n) {
+    int depth = 0, in_str = 0, esc = 0;
+    for (int i = 0; i < n; i++) {
+        char c = s[i];
+        if (in_str) {
+            if (esc) esc = 0;
+            else if (c == '\\') esc = 1;
+            else if (c == '"') in_str = 0;
+        } else if (c == '"') in_str = 1;
+        else if (c == '{' || c == '[') depth++;
+        else if (c == '}' || c == ']') { if (--depth < 0) return 0; }
+    }
+    return depth == 0 && !in_str;
+}
+
+static void t_live_http(void) {
+#ifdef _WIN32
+    const char *addr = getenv("LZ_SERVE_ADDR");
+    if (!addr || !*addr) { skip("live HTTP", "LZ_SERVE_ADDR not set (hermetic run)"); return; }
+    char host[64] = "127.0.0.1"; int port = 8096;
+    const char *colon = strrchr(addr, ':');
+    if (colon) {
+        int hl = (int)(colon - addr); if (hl > 63) hl = 63;
+        memcpy(host, addr, hl); host[hl] = 0; port = atoi(colon + 1);
+    } else snprintf(host, sizeof(host), "%s", addr);
+    printf("  [info] live target %s:%d\n", host, port);
+
+    static char body[16384]; int code = 0;
+    if (http_post(host, port, "/v1/state/search",
+                  "{\"query\":\"tesspack format spec\",\"topk\":3}",
+                  &code, body, sizeof(body)) != 0) {
+        check(0, "live HTTP: server reachable (LZ_SERVE_ADDR set, connect failed)");
+        return;
+    }
+    check(code == 200, "live HTTP: topk=3 -> 200");
+    check(json_balanced(body, (int)strlen(body)), "live HTTP: response body is well-formed JSON");
+    check(strstr(body, "\"status\"") != NULL, "live HTTP: response carries a status field");
+
+    code = 0;
+    http_post(host, port, "/v1/state/search", "{\"query\":\"x\",\"topk\":10}",
+              &code, body, sizeof(body));
+    check(code == 400, "live HTTP: topk=10 -> 400 (fail-loud, not clamped)");
+    check(strstr(body, "topk_out_of_range") != NULL, "live HTTP: 400 names topk_out_of_range");
+
+    code = 0;
+    http_post(host, port, "/v1/state/search", "{\"query\":\"x\",\"topk\":8}",
+              &code, body, sizeof(body));
+    check(code == 200, "live HTTP: topk=8 -> 200 (boundary accepted)");
+#else
+    skip("live HTTP", "winsock section is Windows-only");
+#endif
+}
+
 int main(int argc, char **argv) {
     printf("== lazy_serve search contracts ==\n");
 
@@ -334,6 +435,7 @@ int main(int argc, char **argv) {
         skip("recall", "index not found (run reindex first)");
         skip("prefix monotonicity", "index not found");
     }
+    t_live_http();
 
     printf("---------------------------------------\n");
     printf("PASS: %d  FAIL: %d  SKIP: %d\n", g_pass, g_fail, g_skip);

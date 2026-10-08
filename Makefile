@@ -12,7 +12,7 @@ export PATH := /mingw64/bin:$(PATH)
 
 CC      := gcc
 CFLAGS  := -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -I. -Icore -Icore/infra -Icore/infra -no-pie
-LDFLAGS := -lm
+LDFLAGS := -lm -lws2_32
 
 # ── Auto-discover test sources ────────────────────────
 ALL_TESTS := $(patsubst tests/%.c,%,$(wildcard tests/*.c))
