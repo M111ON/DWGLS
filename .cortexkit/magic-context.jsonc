@@ -32,10 +32,16 @@
         "schedule": "0 2 * * *"
       },
       "verify": {
-        "schedule": "0 3 * * *"
+        "schedule": ""
       },
       "maintain-docs": {
-        "schedule": "0 3 * * *"
+        "schedule": ""
+      },
+      "verify-broad": {
+        "schedule": ""
+      },
+      "curate": {
+        "schedule": ""
       }
     }
   },

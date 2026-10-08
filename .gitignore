@@ -83,6 +83,7 @@ py
 tmp_check_gguf.c
 cookies.txt
 .worktrees/
+experiments/Tri_semi_circle_scle
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/

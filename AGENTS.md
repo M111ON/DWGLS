@@ -10,6 +10,8 @@
 ## Tools 
 -suggest try using "graft grep <query>" instead of grep and "graft ask <query>" 
 **more info just type "graft" in terminal 
+-check drive and process before run a high usage task, kill unused/duplicate if needed with carefully checked.
+-alway set timeout or spawn separate console when running task that stuck inside (idle, loop)
 
 ## Tier map (load on demand, shallow → deep)
 | Tier | File | When |
@@ -27,7 +29,9 @@
 - MAP not COMPRESS — coordinate = address. 20736 = one cell. ★ 6ico/144 protagonist.
 - Working dirs: `I:\DWGLS-native-fs`, `I:\model`, `F:\model`, `I:\llama`. English/Thai only.
 
+##suggestion
+
 ## User Requested answered Pattern
 - User specialize on pattern matching and comparing structure, alway explain the result in 2 version contains:
- - technical universal terms
- - casual less technical summarizes
+ - technical universal terms (honestly, ไม่เดามีหลักฐานรองรับถ้าไม่มีให้แจ้ง, ตรงไปตรงมา)
+ - casual less technical summarizes (comparison if possible)
