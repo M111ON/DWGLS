@@ -10,8 +10,12 @@
  * Differences from FGLS_new (deliberate, not drops):
  *   - No ggml tensor->data +248 hack: uses public llama_state_seq_* API
  *     (llama.h), so no struct-layout dependency.
- *   - No binary-shell/zstd codec: base is F16 FULL (source of truth per
- *     arch — "original chat log never deleted", base is re-derivable).
+ *   - No binary-shell/zstd codec: base is a raw llama_state_seq blob whose
+ *     element size = the CTX's type_k/type_v (F16 full, or Q8_0/Q4_0 when
+ *     the ctx is built K8V4 — see tools/kv_cold_chat.c:40). Measured
+ *     2026-10-10: K8V4 vs F16 argmax identical on all 4 configs
+ *     (f16/q8v8/k8v4/q4v4, teacher-forced 39-tok prompt), blob 3.05 MB →
+ *     2.15 MB (1.42× overall, 1.62× on the longer turn).
  *     Compression of the base is step-2+ concern (K8V4 delta spill).
  *   - ctx is void* so this header stays std-only (repo rule for core/).
  *     The tool casts to struct llama_context*. Declarations only —

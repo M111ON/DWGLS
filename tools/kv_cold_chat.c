@@ -39,6 +39,15 @@ static struct llama_context *mk_ctx(struct llama_model *m) {
     cp.n_ctx = 4096; cp.n_batch = 512; cp.no_perf = true;
     cp.type_k = GGML_TYPE_Q8_0; cp.type_v = GGML_TYPE_Q4_0;
     cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    /* KV_TYPE env: f16 | q8v8 | q4v4 | k8v4 (default, unchanged) */
+    const char *kt = getenv("KV_TYPE");
+    if (kt) {
+        if (!strcmp(kt, "f16"))        { cp.type_k = GGML_TYPE_F16;  cp.type_v = GGML_TYPE_F16; }
+        else if (!strcmp(kt, "q8v8"))  { cp.type_k = GGML_TYPE_Q8_0; cp.type_v = GGML_TYPE_Q8_0; }
+        else if (!strcmp(kt, "q4v4"))  { cp.type_k = GGML_TYPE_Q4_0; cp.type_v = GGML_TYPE_Q4_0; }
+        else if (!strcmp(kt, "k8v4"))  { cp.type_k = GGML_TYPE_Q8_0; cp.type_v = GGML_TYPE_Q4_0; }
+        fprintf(stderr, "[kv] KV_TYPE=%s type_k=%d type_v=%d\n", kt, (int)cp.type_k, (int)cp.type_v);
+    }
     return llama_init_from_model(m, cp);
 }
 
