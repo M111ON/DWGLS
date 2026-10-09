@@ -42,14 +42,31 @@
 #define KVT_MAX_TOKENS 4096    /* per-frame delta cap (one turn) */
 #define KVT_PATH 128
 
-/* ── record kinds written to the log ── */
+/* ── record kinds written to the log ──
+ *
+ * A delta carries ONLY the tokens of its frame — but at a per-record width,
+ * not a fixed 4096-slot array. A fixed array costs 16 KB PER FRAME whether
+ * the turn had 5 tokens or 500 (measured: a 22-line log ballooned to 764 KB),
+ * which defeats the whole point of a lightweight frame log. The serialised
+ * form is therefore [header][tokens...] with n_tokens deciding the length.
+ */
+#define KVT_MAX_TOKENS 4096    /* per-frame cap (one turn) */
+#define KVT_PATH 128
+
 typedef struct {
     int32_t  turn;          /* 1-based frame index */
     uint64_t prefix_hash;   /* FNV-1a over this frame's tokens */
     int32_t  parent;        /* turn of the anchor this delta hangs off */
-    int32_t  n_tokens;      /* tokens in this frame */
-    int32_t  tokens[KVT_MAX_TOKENS];
-} KVTDelta;
+    int32_t  n_tokens;      /* tokens in this frame (<= KVT_MAX_TOKENS) */
+} KVTDeltaHdr;
+
+/* Serialised size of a delta with n tokens. */
+static inline size_t kvt_delta_size(int32_t n) {
+    return sizeof(KVTDeltaHdr) + (size_t)n * sizeof(int32_t);
+}
+
+/* Offset of the token array inside a serialised delta. */
+#define KVT_DELTA_TOK_OFF ((size_t)sizeof(KVTDeltaHdr))
 
 typedef struct {
     int32_t  turn;          /* frame index this anchor resumes to */
@@ -73,9 +90,17 @@ typedef struct {
     int (*blob_read)(void *ud, unsigned long long off, void *buf, size_t len);
 } KVTLog;
 
-/* ── the in-RAM hot window ── */
+/* ── the in-RAM hot window ──
+ * Each slot owns a small heap buffer sized to its own token count, so a
+ * resident frame costs ~16 B + 4 B/token, not the fixed 16 KB a slab of
+ * KVT_MAX_TOKENS would. */
 typedef struct {
-    KVTDelta *frames;       /* ring of resident frames (hot) */
+    KVTDeltaHdr hdr;
+    int32_t    *tokens;     /* malloc'd, hdr.n_tokens long (NULL when empty) */
+} KVTFrame;
+
+typedef struct {
+    KVTFrame *frames;       /* ring of resident frames (hot) */
     int       cap;          /* = K */
     int       head;         /* next write slot */
     int       count;        /* frames currently hot */
@@ -83,35 +108,65 @@ typedef struct {
     int       since_anchor; /* frames since the last anchor was cut */
 } KVTWindow;
 
+static inline void kvt_frame_free(KVTFrame *f) { free(f->tokens); f->tokens = NULL; f->hdr.n_tokens = 0; }
+
 static inline void kvt_init(KVTWindow *w, int cap) {
     w->cap = cap > 0 ? cap : 1;
-    w->frames = (KVTDelta *)calloc((size_t)w->cap, sizeof(KVTDelta));
+    w->frames = (KVTFrame *)calloc((size_t)w->cap, sizeof(KVTFrame));
     w->head = w->count = w->turn = w->since_anchor = 0;
 }
 
-static inline void kvt_free(KVTWindow *w) { free(w->frames); w->frames = NULL; }
+static inline void kvt_free(KVTWindow *w) {
+    if (w->frames) for (int i = 0; i < w->cap; i++) kvt_frame_free(&w->frames[i]);
+    free(w->frames); w->frames = NULL;
+}
 
 /* A host that wants to keep the ONLY copy of a frame must copy it out
- * before the ring overwrites it — hence the out param `evicted`. */
-static inline int kvt_commit_frame(KVTWindow *w, const KVTDelta *fr, KVTDelta *evicted) {
+ * before the ring overwrites it — hence the out param `evicted` (deep). */
+static inline int kvt_commit_frame(KVTWindow *w, const KVTFrame *fr, KVTFrame *evicted) {
     int had = (w->count == w->cap);
-    if (had && evicted) *evicted = w->frames[w->head];
+    if (had && evicted) {
+        *evicted = w->frames[w->head];              /* move ownership out */
+        w->frames[w->head].tokens = NULL;
+        w->frames[w->head].hdr.n_tokens = 0;
+    }
+    /* move the caller's frame in (caller must not free it afterwards) */
     w->frames[w->head] = *fr;
     w->head = (w->head + 1) % w->cap;
     if (w->count < w->cap) w->count++;
-    w->turn = fr->turn;
+    w->turn = fr->hdr.turn;
     w->since_anchor++;
     return had;   /* 1 = a frame was evicted (caller must persist it) */
 }
 
-/* Is an anchor due now? (every K frames, and on the first frame) */
+/* Build a frame from raw parts (allocates the token buffer). */
+static inline KVTFrame kvt_frame_make(int32_t turn, int32_t parent,
+                                      const int32_t *tokens, int32_t n) {
+    KVTFrame f; memset(&f, 0, sizeof(f));
+    f.hdr.turn = turn; f.hdr.parent = parent; f.hdr.n_tokens = n;
+    uint64_t h = 1469598103934665603ULL;
+    for (int32_t i = 0; i < n; i++) { h ^= (uint64_t)(uint32_t)tokens[i]; h *= 1099511628211ULL; }
+    f.hdr.prefix_hash = h;
+    if (n > 0) { f.tokens = (int32_t *)malloc((size_t)n * sizeof(int32_t)); memcpy(f.tokens, tokens, (size_t)n * sizeof(int32_t)); }
+    return f;
+}
+
+/* Is an anchor due now? (every K frames) */
 static inline int kvt_anchor_due(const KVTWindow *w) {
     return w->since_anchor >= KVT_ANCHOR_EVERY;
 }
 
-/* ── persistence: write one frame's delta to the log ── */
-static inline int kvt_persist_delta(const KVTLog *L, const KVTDelta *fr) {
-    return L->log_append(L->ud, "kv-delta", fr, sizeof(*fr));
+/* ── persistence: write one frame's delta to the log (variable width) ── */
+static inline int kvt_persist_delta(const KVTLog *L, const KVTFrame *fr) {
+    size_t len = kvt_delta_size(fr->hdr.n_tokens);
+    uint8_t *buf = (uint8_t *)malloc(len);
+    if (!buf) return -1;
+    memcpy(buf, &fr->hdr, sizeof(fr->hdr));
+    if (fr->hdr.n_tokens > 0)
+        memcpy(buf + KVT_DELTA_TOK_OFF, fr->tokens, (size_t)fr->hdr.n_tokens * sizeof(int32_t));
+    int rc = L->log_append(L->ud, "kv-delta", buf, len);
+    free(buf);
+    return rc;
 }
 
 /* ── cut an anchor: hand the caller a base blob + record; the caller

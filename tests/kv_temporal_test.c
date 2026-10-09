@@ -13,19 +13,27 @@
 
 /* ── fake log: two parallel arrays, one per record kind ── */
 typedef struct {
-    KVTDelta  deltas[128];  int n_delta;
-    KVTAnchor anchors[16];  int n_anchor;
-    uint8_t   blobs[1 << 20];
-    size_t    blob_used;
+    KVTDeltaHdr deltas[128]; int n_delta;
+    int32_t     dtokens[128][16];   /* tokens per delta (test uses <=9) */
+    KVTAnchor   anchors[16];   int n_anchor;
+    uint8_t     blobs[1 << 20];
+    size_t      blob_used;
 } FakeLog;
 
-static FakeLog g_fl;   /* ~2.6 MB — must not live on the stack */
+static FakeLog g_fl;   /* must not live on the stack */
 
 static int fl_append(void *ud, const char *kind, const void *rec, size_t len) {
     FakeLog *f = (FakeLog *)ud;
     if (!strcmp(kind, "kv-delta")) {
-        if (f->n_delta >= 128 || len != sizeof(KVTDelta)) return -1;
-        f->deltas[f->n_delta++] = *(const KVTDelta *)rec;
+        if (f->n_delta >= 128 || len < sizeof(KVTDeltaHdr)) return -1;
+        const KVTDeltaHdr *h = (const KVTDeltaHdr *)rec;
+        if (h->n_tokens < 0 || h->n_tokens > 16) return -1;
+        f->deltas[f->n_delta] = *h;
+        memcpy(f->dtokens[f->n_delta], (const uint8_t *)rec + KVT_DELTA_TOK_OFF,
+               (size_t)h->n_tokens * sizeof(int32_t));
+        f->n_delta++;
+        /* verify the serialised size matches n_tokens */
+        if (len != kvt_delta_size(h->n_tokens)) return -1;
     } else if (!strcmp(kind, "kv-anchor")) {
         if (f->n_anchor >= 16 || len != sizeof(KVTAnchor)) return -1;
         f->anchors[f->n_anchor++] = *(const KVTAnchor *)rec;
@@ -68,19 +76,17 @@ int main(void) {
     /* ── push N frames; persist every evicted frame + cut anchors ── */
     int evictions = 0, anchor_cuts = 0;
     for (int t = 1; t <= N; t++) {
-        KVTDelta fr; memset(&fr, 0, sizeof(fr));
-        fr.turn = t;
-        fr.n_tokens = 4 + (t % 5);
-        for (int i = 0; i < fr.n_tokens; i++) fr.tokens[i] = t * 100 + i;
-        fr.prefix_hash = fnv_tokens(fr.tokens, fr.n_tokens);
-        fr.parent = 0;
+        int32_t toks[KVT_MAX_TOKENS];
+        int32_t nt = 4 + (t % 5);
+        for (int i = 0; i < nt; i++) toks[i] = t * 100 + i;
+        KVTFrame fr = kvt_frame_make(t, 0, toks, nt);
 
-        KVTDelta ev;
+        KVTFrame ev; memset(&ev, 0, sizeof(ev));
         int had = kvt_commit_frame(&w, &fr, &ev);
 
         if (kvt_anchor_due(&w)) {
             /* fake base blob = n_tokens * 1024 bytes */
-            size_t blen = (size_t)fr.n_tokens * 1024;
+            size_t blen = (size_t)nt * 1024;
             uint8_t *blob = (uint8_t *)malloc(blen);
             for (size_t i = 0; i < blen; i++) blob[i] = (uint8_t)(t + i);
             uint64_t bfnv = 1469598103934665603ULL;
@@ -91,14 +97,11 @@ int main(void) {
             else anchor_cuts++;
             free(blob);
             w.since_anchor = 0;
-            /* mark this frame's delta as hanging off its own anchor */
-            fr.parent = t;
-            /* overwrite the just-committed slot's parent */
             int idx = (w.head - 1 + w.cap) % w.cap;
-            w.frames[idx].parent = t;
+            w.frames[idx].hdr.parent = t;
         }
         /* persist evicted frame (the only copy left of it) */
-        if (had) { if (kvt_persist_delta(&L, &ev) != 0) fail++; else evictions++; }
+        if (had) { if (kvt_persist_delta(&L, &ev) != 0) fail++; else evictions++; kvt_frame_free(&ev); }
     }
     /* drain the window at shutdown */
     for (int i = 0; i < w.count; i++) {
@@ -119,9 +122,9 @@ int main(void) {
     /* ── 3+4. log roundtrip: every frame reconstructable ── */
     int seen[64]; memset(seen, 0, sizeof(seen));
     for (int i = 0; i < flp->n_delta; i++) {
-        KVTDelta *d = &flp->deltas[i];
+        KVTDeltaHdr *d = &flp->deltas[i];
         if (d->turn >= 1 && d->turn < 64) seen[d->turn] = 1;
-        CHECK(d->prefix_hash == fnv_tokens(d->tokens, d->n_tokens), "delta prefix_hash matches its tokens");
+        CHECK(d->prefix_hash == fnv_tokens(flp->dtokens[i], d->n_tokens), "delta prefix_hash matches its tokens");
     }
     int all = 1;
     for (int t = 1; t <= N; t++) if (!seen[t]) { all = 0; printf("  missing frame t%d from log\n", t); }
