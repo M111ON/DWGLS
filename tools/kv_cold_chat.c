@@ -20,9 +20,11 @@
 #include "llama.h"
 #include "ggml-backend.h"
 #include "kv_cold_base.h"
+#include "kv_frame_index.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define HIST_CAP 3800
 #define GEN_CAP 128
@@ -126,6 +128,11 @@ int main(int argc, char **argv) {
     int turn = 0;
     char line[2048];
 
+    /* frame timeline: turn -> (base .kvcb, delta .kvd), seekable O(1) */
+    FTLIndex tl;
+    if (ftl_open(&tl, outdir, 4096, model_path) != 0)
+        fprintf(stderr, "[ftl] manifest open failed (continuing without index)\n");
+
     /* one persistent serving ctx: live state carries history across turns */
     struct llama_context *ctx = mk_ctx(model);
     if (!ctx) { fprintf(stderr, "FAIL: ctx\n"); return 1; }
@@ -215,11 +222,29 @@ int main(int argc, char **argv) {
         }
         printf("[turn %d] reply %d tok · base %llu B saved · delta %d tok spilled\n",
                turn, ngen, (unsigned long long)base.size, n_hist - prev_hist);
+
+        /* commit the frame into the timeline index (addresses only) */
+        {
+            FTLFrame fr; memset(&fr, 0, sizeof(fr));
+            fr.turn = turn;
+            fr.base_n_tokens = n_hist;
+            fr.n_delta = (uint32_t)(n_hist - prev_hist);
+            fr.prefix_hash = prefix_hash(hist, n_hist);
+            fr.t_unix = (uint64_t)time(NULL);
+            const char *bn = strrchr(pfx2, '\\'); bn = bn ? bn + 1 : pfx2;
+            const char *dn = strrchr(pd, '\\');  dn = dn ? dn + 1 : pd;
+            snprintf(fr.base_file, sizeof(fr.base_file), "%s", bn);
+            snprintf(fr.delta_file, sizeof(fr.delta_file), "%s", dn);
+            if (ftl_commit(&tl, &fr) != 0)
+                fprintf(stderr, "[ftl] commit turn %d failed\n", turn);
+        }
         kvcb_clear(&base); kvcb_clear(&anchor);
     }
 
     printf("\nchat done: %d turns · decoded %ld tok · resident-skipped %ld tok · generated %ld tok\n",
            turn, tot_dec, tot_skip, tot_gen);
+    ftl_print(&tl);
+    ftl_close(&tl);
     llama_free(ctx);
     llama_model_free(model);
     return 0;
