@@ -1,15 +1,19 @@
 /* tests/test_anchor_weight.c — self-check for include/anchor_weight.h.
  *
  * Oracles (independent of the header):
- *   pattern: determinism (rebuild -> memcmp) and slot divergence
- *            (the 8 patterns must not be all-identical).
- *   fold:    64->16->4->1 recomputed inline from the raw pattern.
- *   letter:  the 6 directions must be pairwise distinct (spec: "6 ทิศต้องต่าง")
- *            and the letter pool walk must be a bijection over 52 for
- *            dir = 0..51 (stride 37 coprime to 52).
- *   weight:  popcount of the 16-fold, range check 0..16.
- *   pair:    A/a share pair id; weight may differ (case bit does not enter
- *            the pattern, so weights match — the branch is available).
+ *   pattern: determinism (rebuild -> memcmp) and cell divergence
+ *            (the 9 patterns must not be all-identical, centre included).
+ *   overlay: cell pattern == RDH(+off) XOR RDH(-off) recomposed from the
+ *            halves, and the overlay is non-trivial (differs from each half).
+ *   fold:    64->16->4->1 recomputed inline from the raw pattern (9 cells).
+ *   letter:  the 6 directions must be pairwise distinct (spec: "6 ทิศต้องต่าง"),
+ *            their case-folded pairs (%26) distinct too, and the letter pool
+ *            walk must be a bijection over 52 for dir = 0..51 (stride 37
+ *            coprime to 52).
+ *   weight:  popcount of the 16-fold, range check 0..16 (9 cells);
+ *            weight[AW_CENTER] is the centre letter's [##].
+ *   pair:    A/a share pair id (letter % 26: 0 and 26 -> pair 0, 51 -> 25);
+ *            case bit does not enter the pattern.
  *
  * BUILD: gcc -O2 -Wall -I. -Icore -Iinclude -o build/test_anchor_weight tests/test_anchor_weight.c -lm
  * RUN:   ./build/test_anchor_weight
@@ -60,12 +64,30 @@ static void t_pattern_slots_diverge(void) {
     aw_anchor_t a;
     aw_anchor_build(s, sizeof s, 0, &a);
     int all_same = 1;
-    for (int i = 1; i < (int)AW_OUTER; i++)
+    for (int i = 1; i < (int)AW_CELLS; i++)
         if (a.pattern[i] != a.pattern[0]) { all_same = 0; break; }
-    check(!all_same, "8 outer slots produce different 64-bit patterns");
+    check(!all_same, "9 cells produce different 64-bit patterns");
     int any_nonzero = 0;
-    for (int i = 0; i < (int)AW_OUTER; i++) if (a.pattern[i]) any_nonzero = 1;
+    for (int i = 0; i < (int)AW_CELLS; i++) if (a.pattern[i]) any_nonzero = 1;
     check(any_nonzero, "patterns are non-trivial (not all zero)");
+}
+
+static void t_pm_overlay(void) {
+    /* composition oracle: cell == plus-half XOR minus-half, recomposed here
+     * from the halves (not via aw_rdh_pattern's own XOR line). */
+    uint8_t s[64];
+    fill(s, sizeof s, 0xA5A5u);
+    int ok = 1, nontrivial = 0;
+    for (int c = 0; c < (int)AW_CELLS; c++) {
+        uint64_t plus = aw_rdh_half(s, sizeof s, c, +1);
+        uint64_t minus = aw_rdh_half(s, sizeof s, c, -1);
+        aw_anchor_t a;
+        aw_anchor_build(s, sizeof s, 0, &a);
+        if (a.pattern[c] != (plus ^ minus)) { ok = 0; break; }
+        if (a.pattern[c] != plus && a.pattern[c] != minus) nontrivial = 1;
+    }
+    check(ok, "cell pattern = RDH(+off) XOR RDH(-off)");
+    check(nontrivial, "overlay is non-trivial (differs from each half)");
 }
 
 static void t_fold_correct(void) {
@@ -74,12 +96,12 @@ static void t_fold_correct(void) {
     aw_anchor_t a;
     aw_anchor_build(s, sizeof s, 0, &a);
     int ok = 1;
-    for (int i = 0; i < (int)AW_OUTER; i++) {
+    for (int i = 0; i < (int)AW_CELLS; i++) {
         if (a.fold16[i] != oracle_fold16(a.pattern[i])) { ok = 0; break; }
         if (a.fold4[i]  != oracle_fold4(a.fold16[i]))   { ok = 0; break; }
         if (a.fold1[i]  != (a.fold4[i] ? 1u : 0u))      { ok = 0; break; }
     }
-    check(ok, "64->16->4->1 fold matches independent oracle");
+    check(ok, "64->16->4->1 fold matches independent oracle (9 cells)");
 }
 
 static void t_six_directions_distinct(void) {
@@ -92,6 +114,24 @@ static void t_six_directions_distinct(void) {
         for (int j = i + 1; j < 6; j++)
             if (a.dir_letter[i] == a.dir_letter[j]) { distinct = 0; break; }
     check(distinct, "the 6 centre directions are pairwise distinct");
+}
+
+static void t_six_pairs_distinct(void) {
+    /* the stride-37 walk must also keep the 6 case-folded pairs distinct:
+     * 37k mod 52 never hits {0,26} for k=1..5, so no two of 6 dirs share a
+     * pair — verified here on real builds across seeds, not just arithmetic. */
+    int ok = 1;
+    for (uint32_t seed = 1; seed <= 8 && ok; seed++) {
+        uint8_t s[64];
+        fill(s, sizeof s, 0xF00u + seed);
+        aw_anchor_t a;
+        aw_anchor_build(s, sizeof s, 0, &a);
+        for (int i = 0; i < 6 && ok; i++)
+            for (int j = i + 1; j < 6; j++)
+                if ((a.dir_letter[i] % AW_PAIRS) == (a.dir_letter[j] % AW_PAIRS))
+                    ok = 0;
+    }
+    check(ok, "the 6 directions' pairs (%26) are pairwise distinct (8 seeds)");
 }
 
 static void t_letter_pool_bijection(void) {
@@ -114,23 +154,40 @@ static void t_weight_range(void) {
     aw_anchor_t a;
     aw_anchor_build(s, sizeof s, 0, &a);
     int ok = 1;
-    for (int i = 0; i < (int)AW_OUTER; i++) {
+    for (int i = 0; i < (int)AW_CELLS; i++) {
         if (a.weight[i] != (uint8_t)oracle_pop16(a.fold16[i])) { ok = 0; break; }
         if (a.weight[i] > 16) { ok = 0; break; }
     }
-    check(ok, "weight = popcount(fold16), range 0..16");
+    check(ok, "weight = popcount(fold16), range 0..16 (9 cells)");
+    check(a.weight[AW_CENTER] == (uint8_t)oracle_pop16(a.fold16[AW_CENTER]),
+          "centre letter carries its own [##] (same popcount rule)");
 }
 
 static void t_case_pair(void) {
+    /* the RULE (not self-agreement): pair = letter % 26, so A(0) and a(26)
+     * are pair 0, z(51) is pair 25. Case lives in the letter, identity in
+     * the pair; weights ride per side. */
+    aw_anchor_t t;
+    memset(&t, 0, sizeof t);
+    t.letter = 0;
+    int pA = aw_pair_id(&t);
+    t.letter = 26;
+    int pa = aw_pair_id(&t);
+    t.letter = 51;
+    int pz = aw_pair_id(&t);
+    t.letter = 1;
+    int pB = aw_pair_id(&t);
+    check(pA == 0 && pa == 0, "A(0) and a(26) share pair 0");
+    check(pz == 25, "z(51) is pair 25");
+    check(pA != pB, "A and B are different pairs");
+    /* the branch: same seed, both cases -> same pair id, case bit recorded */
     uint8_t s[64];
     fill(s, sizeof s, 0x9999u);
     aw_anchor_t up, lo;
     aw_anchor_build(s, sizeof s, 1, &up);
     aw_anchor_build(s, sizeof s, 0, &lo);
-    /* case bit does not enter the pattern: same pair id, weights available
-     * to differ per-walk (tombstone branch). Here they coincide. */
     check(aw_pair_id(&up) == aw_pair_id(&lo),
-          "A/a share pair id (case-opposite pair = same identity)");
+          "same seed both cases -> same pair id");
     check(up.is_upper == 1 && lo.is_upper == 0, "case bit recorded");
 }
 
@@ -147,8 +204,10 @@ int main(void) {
     printf("test_anchor_weight — RDH pattern wired into anchor\n\n");
     t_build_deterministic();
     t_pattern_slots_diverge();
+    t_pm_overlay();
     t_fold_correct();
     t_six_directions_distinct();
+    t_six_pairs_distinct();
     t_letter_pool_bijection();
     t_weight_range();
     t_case_pair();
