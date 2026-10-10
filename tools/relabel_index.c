@@ -132,12 +132,11 @@ int main(int argc, char **argv) {
     if (anch_perm(rows, (int)n, K, perm) != 0) {
         fprintf(stderr, "relabel: anch_perm failed\n"); fclose(fi); return 1;
     }
-    FILE *pf = fopen(ppath, "wb");
-    if (!pf) { fprintf(stderr, "relabel: cannot write %s\n", ppath); fclose(fi); return 1; }
-    if (n && fwrite(perm, sizeof(uint32_t), n, pf) != n) {
-        fprintf(stderr, "relabel: order short write\n"); fclose(pf); fclose(fi); return 1;
+    /* H2: stamp the pair — this perm is bound to the labeling table
+     * (K/ntr/table-checksum); a server holding any other table refuses it. */
+    if (ord_save(ppath, perm, (int)n, K, (int)n, anch_cksum(C, K, tdim)) != 0) {
+        fprintf(stderr, "relabel: order write failed\n"); fclose(fi); return 1;
     }
-    fclose(pf);
 
     /* pass 2: patch label span, vec bytes untouched */
     FILE *fo = fopen(opath, "wb");

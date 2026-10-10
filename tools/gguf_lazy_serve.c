@@ -415,11 +415,10 @@ static int lz_route_cached(int nent) {
     int adim = 0, antr = 0;
     int K = anch_load(LZ_ANCH_PATH, C, ANCHR_MAXK, ANCHR_MAXD, &adim, &antr);
     if (K <= 0 || antr != nent) { free(C); free(ord); return 0; }
-    FILE *of = fopen(LZ_ORDER_PATH, "rb");
-    if (!of) { free(C); free(ord); return 0; }
-    size_t nr = fread(ord, sizeof(uint32_t), (size_t)nent, of);
-    fclose(of);
-    if (nr != (size_t)nent) { free(C); free(ord); return 0; }
+    /* H2: the pair is bound — order must carry this table's K/ntr/checksum. */
+    if (ord_load(LZ_ORDER_PATH, ord, nent, K, anch_cksum(C, K, adim)) != 0) {
+        free(C); free(ord); return 0;
+    }
     g_anch_cache = C; g_anch_k = K; g_anch_dim = adim; g_anch_ntr = antr;
     g_ord_cache = ord; g_ord_n = nent;
     for (int i = 0; i < 4; i++) g_anch_key[i] = key[i];
@@ -674,8 +673,9 @@ static int lz_anchor_refresh(int *Kout, int *nout) {
                         }
                         uint32_t *perm = (uint32_t *)malloc((size_t)n * sizeof(uint32_t));
                         if (perm && anch_perm(rows, n, K, perm) == 0) {
-                            FILE *of = fopen(LZ_ORDER_PATH, "wb");
-                            if (of) { fwrite(perm, sizeof(uint32_t), (size_t)n, of); fclose(of); }
+                            /* H2: stamp the pair (table K/ntr/checksum bind) */
+                            ord_save(LZ_ORDER_PATH, perm, n, K, n,
+                                     anch_cksum(C, K, dim));
                             FILE *ix = fopen("build/kv_index.tmp", "w");
                             if (ix) {
                                 for (int i = 0; i < n; i++) {
