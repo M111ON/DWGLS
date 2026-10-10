@@ -3,7 +3,8 @@
  *
  * Proves:
  *   1. the ring keeps exactly K frames hot; the (K+1)th evicts the oldest
- *   2. an anchor is cut every K frames
+ *   2. an anchor is cut at each round boundary (turn 1, 145, 289, ...),
+ *      NOT every K frames (memory #7518: the anchor is born from step)
  *   3. seek(T) picks the nearest anchor <= T and replays the right deltas
  *   4. the log roundtrip reproduces every frame (tokens + prefix_hash)
  *   5. the anchor blob roundtrip reproduces the base bytes
@@ -13,8 +14,8 @@
 
 /* ── fake log: two parallel arrays, one per record kind ── */
 typedef struct {
-    KVTDeltaHdr deltas[128]; int n_delta;
-    int32_t     dtokens[128][16];   /* tokens per delta (test uses <=9) */
+    KVTDeltaHdr deltas[512]; int n_delta;
+    int32_t     dtokens[512][16];   /* tokens per delta (test uses <=9) */
     KVTAnchor   anchors[16];   int n_anchor;
     uint8_t     blobs[1 << 20];
     size_t      blob_used;
@@ -25,7 +26,7 @@ static FakeLog g_fl;   /* must not live on the stack */
 static int fl_append(void *ud, const char *kind, const void *rec, size_t len) {
     FakeLog *f = (FakeLog *)ud;
     if (!strcmp(kind, "kv-delta")) {
-        if (f->n_delta >= 128 || len < sizeof(KVTDeltaHdr)) return -1;
+        if (f->n_delta >= 512 || len < sizeof(KVTDeltaHdr)) return -1;
         const KVTDeltaHdr *h = (const KVTDeltaHdr *)rec;
         if (h->n_tokens < 0 || h->n_tokens > 16) return -1;
         f->deltas[f->n_delta] = *h;
@@ -62,8 +63,9 @@ static uint64_t fnv_tokens(const int32_t *t, int n) {
 }
 
 int main(void) {
-    const int K = KVT_ANCHOR_EVERY;     /* 8 */
-    const int N = 20;                   /* frames to push */
+    const int K = KVT_WINDOW;         /* 8: hot-window RAM budget only */
+    const int N = 300;                  /* crosses 3 round boundaries */
+    const int R = KVT_ROUND;            /* 144: anchor cadence */
     int pass = 0, fail = 0;
 #define CHECK(c, msg) do { if (c) { pass++; } else { fail++; printf("  FAIL: %s\n", msg); } } while (0)
 
@@ -116,14 +118,19 @@ int main(void) {
     CHECK(w.count == K, "ring holds exactly K frames");
     CHECK(w.turn == N, "window turn == last commit");
 
-    /* ── 2. anchors every K: cuts land at t = K, 2K, ... <= N ── */
-    CHECK(anchor_cuts == N / K, "one anchor every K frames (floor(N/K))");
+    /* ── 2. anchors at round boundaries only: t = 1, 145, 289 ── */
+    CHECK(anchor_cuts == 3, "3 anchors in 300 frames (t=1,145,289)");
+    int exp_turns[3] = {1, 1 + R, 1 + 2 * R};
+    int turns_ok = (flp->n_anchor == 3);
+    for (int i = 0; turns_ok && i < 3; i++)
+        if (flp->anchors[i].turn != exp_turns[i]) turns_ok = 0;
+    CHECK(turns_ok, "anchor turns are exactly {1,145,289}");
 
     /* ── 3+4. log roundtrip: every frame reconstructable ── */
-    int seen[64]; memset(seen, 0, sizeof(seen));
+    int seen[512]; memset(seen, 0, sizeof(seen));
     for (int i = 0; i < flp->n_delta; i++) {
         KVTDeltaHdr *d = &flp->deltas[i];
-        if (d->turn >= 1 && d->turn < 64) seen[d->turn] = 1;
+        if (d->turn >= 1 && d->turn < 512) seen[d->turn] = 1;
         CHECK(d->prefix_hash == fnv_tokens(flp->dtokens[i], d->n_tokens), "delta prefix_hash matches its tokens");
     }
     int all = 1;
@@ -146,23 +153,27 @@ int main(void) {
     CHECK(blob_ok, "anchor blob roundtrip byte-exact (fnv + content)");
 
     /* ── 6. seek picks the nearest anchor and the right replay range ── */
-    /* anchors were cut at t = K, 2K (8, 16) in this run */
+    /* anchors were cut at t = 1, 145, 289 in this run */
     KVTSeek s;
     kvt_seek(flp->anchors, flp->n_anchor, 10, &s);
-    CHECK(s.have_anchor && s.anchor.turn == 8, "seek(10) -> anchor@8");
-    CHECK(s.first_delta == 9 && s.last_delta == 10 && s.n_deltas == 2, "seek(10) -> replay t9..t10");
+    CHECK(s.have_anchor && s.anchor.turn == 1, "seek(10) -> anchor@1");
+    CHECK(s.first_delta == 2 && s.last_delta == 10 && s.n_deltas == 9, "seek(10) -> replay t2..t10");
 
-    kvt_seek(flp->anchors, flp->n_anchor, 5, &s);
-    CHECK(!s.have_anchor, "seek(5) -> no anchor, replay from scratch");
-    CHECK(s.first_delta == 1 && s.n_deltas == 5, "seek(5) -> replay t1..t5");
+    kvt_seek(flp->anchors, flp->n_anchor, 144, &s);
+    CHECK(s.have_anchor && s.anchor.turn == 1, "seek(144) -> anchor@1 (round edge)");
+    CHECK(s.first_delta == 2 && s.n_deltas == 143, "seek(144) -> replay t2..t144 (<=ROUND-1)");
 
-    kvt_seek(flp->anchors, flp->n_anchor, 20, &s);
-    CHECK(s.have_anchor && s.anchor.turn == 16, "seek(20) -> anchor@16");
-    CHECK(s.first_delta == 17 && s.n_deltas == 4, "seek(20) -> replay t17..t20 (<=K)");
+    kvt_seek(flp->anchors, flp->n_anchor, 145, &s);
+    CHECK(s.have_anchor && s.anchor.turn == 145, "seek(145) -> anchor@145 itself");
+    CHECK(s.n_deltas == 0, "seek(145) -> zero deltas (anchor covers it)");
 
-    kvt_seek(flp->anchors, flp->n_anchor, 8, &s);
-    CHECK(s.have_anchor && s.anchor.turn == 8, "seek(8) -> anchor@8 itself");
-    CHECK(s.n_deltas == 0, "seek(8) -> zero deltas (anchor covers it)");
+    kvt_seek(flp->anchors, flp->n_anchor, 200, &s);
+    CHECK(s.have_anchor && s.anchor.turn == 145, "seek(200) -> anchor@145");
+    CHECK(s.first_delta == 146 && s.n_deltas == 55, "seek(200) -> replay t146..t200");
+
+    kvt_seek(flp->anchors, flp->n_anchor, 300, &s);
+    CHECK(s.have_anchor && s.anchor.turn == 289, "seek(300) -> anchor@289");
+    CHECK(s.first_delta == 290 && s.n_deltas == 11, "seek(300) -> replay t290..t300");
 
     kvt_print_seek(&s);
     printf("=== kv_temporal: %d PASS, %d FAIL ===\n", pass, fail);

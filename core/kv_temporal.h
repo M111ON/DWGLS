@@ -12,8 +12,10 @@
  *                          ▼
  *   append to LOG (append-only, hash-chained by the host)
  *     - every frame    -> a kv-delta  record (token suffix, ~200 B)
- *     - every K frames -> a kv-anchor record (resume point) whose base
- *                         BLOB is written to a side blob file, NOT the log
+ *     - round boundary -> a kv-anchor record (resume point, memory #7501:
+ *                         the anchor is born from step, cut at the first
+ *                         step of every round) whose base BLOB is written
+ *                         to a side blob file, NOT the log
  *
  * WHY THIS SHAPE (measured, not assumed):
  *   - byte-deltas on the KV blob do not pay: 98.6% churn/token, so we
@@ -21,7 +23,7 @@
  *   - storing a full base per turn duplicates the whole prefix KV each
  *     time (666 KB/turn observed) — so bases are only kept every K frames.
  *   - the log therefore stays light (delta-sized), while seek() replays at
- *     most K deltas from the nearest anchor.
+ *     most KVT_ROUND-1 deltas from the nearest anchor.
  *
  * The header is HOST-AGNOSTIC: it never includes pool.h or llama.h. The
  * host supplies two callbacks (append a record, read records back), so the
@@ -37,7 +39,17 @@
 #include <stdio.h>
 
 #ifndef KVT_ANCHOR_EVERY
-#define KVT_ANCHOR_EVERY 8     /* a full base blob every K frames */
+#define KVT_ANCHOR_EVERY 8     /* COMPAT: the old single knob (window cap AND
+                                  cadence). Cadence was wrong in principle —
+                                  8 has no meaning as a cadence (#7518).
+                                  Kept so old callers compile; equals the
+                                  window default below. */
+#endif
+#define KVT_WINDOW 8         /* hot-window RAM budget: frames kept resident */
+#ifndef KVT_ROUND
+#define KVT_ROUND 144        /* steps per round (memory #7501). An anchor is
+                                cut at the first step of every round:
+                                turn 1, 145, 289, ... */
 #endif
 #define KVT_MAX_TOKENS 4096    /* per-frame delta cap (one turn) */
 #define KVT_PATH 128
@@ -151,9 +163,14 @@ static inline KVTFrame kvt_frame_make(int32_t turn, int32_t parent,
     return f;
 }
 
-/* Is an anchor due now? (every K frames) */
+/* Is an anchor due now? The anchor is born from STEP: due iff the just-
+ * committed turn is the first step of a round, i.e. round(step) changes
+ * here — round(step) = (step-1) / KVT_ROUND, O(1), no scan (memory #7501,
+ * #7518). CALL AFTER kvt_commit_frame (w->turn is the turn just committed:
+ * due at turn 1, 145, 289, ...). since_anchor stays as accounting (it
+ * becomes the anchor's n_back); it no longer drives the decision. */
 static inline int kvt_anchor_due(const KVTWindow *w) {
-    return w->since_anchor >= KVT_ANCHOR_EVERY;
+    return w->turn > 0 && ((w->turn - 1) % KVT_ROUND) == 0;
 }
 
 /* ── persistence: write one frame's delta to the log (variable width) ── */

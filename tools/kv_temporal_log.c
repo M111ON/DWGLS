@@ -129,7 +129,7 @@ static uint64_t fnv(const void *b, size_t n) {
 int main(int argc, char **argv) {
     const char *dir = argc > 1 ? argv[1] : ".";
     int N = argc > 2 ? atoi(argv[2]) : 20;
-    const int K = KVT_ANCHOR_EVERY;
+    const int K = KVT_WINDOW;   /* hot-window RAM budget, not cadence */
 
     /* fresh run */
     char lp[KVT_PATH + 40], bp[KVT_PATH + 40];
@@ -180,7 +180,7 @@ int main(int argc, char **argv) {
     /* ── verify: seek a few turns and check the plan ── */
     printf("log lines=%d anchors=%d\n", h.n_lines, n_anchors);
     int ok = 1;
-    struct { int want, exp_anchor; } probe[] = {{3,-1},{8,8},{13,8},{16,16},{20,16}};
+    struct { int want, exp_anchor; } probe[] = {{3,1},{8,1},{13,1},{16,1},{20,1}};
     for (int i = 0; i < 5 && probe[i].want <= N; i++) {
         KVTSeek s; kvt_seek(anchors, n_anchors, probe[i].want, &s);
         int got = s.have_anchor ? s.anchor.turn : -1;

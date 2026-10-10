@@ -245,7 +245,7 @@ int main(int argc, char **argv) {
     const char *model_path = argc > 1 ? argv[1] : "I:\\model\\Qwen2.5-0.5B-Instruct-Q8_0.gguf";
     const char *outdir     = argc > 2 ? argv[2] : ".";
     const char *backend    = argc > 3 ? argv[3] : "build\\cpuonly";
-    const int K = KVT_ANCHOR_EVERY;
+    const int K = KVT_WINDOW;   /* hot-window RAM budget, not cadence */
 
     char lp[KVT_PATH + 40], bp[KVT_PATH + 40];
     snprintf(lp, sizeof(lp), "%s\\kvt_llama.log.jsonl", outdir);

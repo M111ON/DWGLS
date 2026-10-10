@@ -18,7 +18,8 @@
 
 #define TK 8      /* table buckets */
 #define TD 16     /* test dim (small; shape is dim-agnostic) */
-#define TN 24     /* frames (crosses the KVT_ANCHOR_EVERY=8 boundary x3) */
+#define TN 24     /* frames (section shape is cadence-agnostic; the anchor
+                     rule itself lives in kv_temporal.h, tested there) */
 
 static int passes, failures;
 #define CHECK(cond, msg) do { \
