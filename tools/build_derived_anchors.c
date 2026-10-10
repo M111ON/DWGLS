@@ -13,6 +13,8 @@
  *   (deterministic) tables = the seed-sensitivity axis of the A/B.
  *   seedmode 0 = gear seeds (S4 converter story); 1 = plain byte strings
  *   "s1-row-k" (S1 active-full story: ordinary per-anchor builds).
+ *   norm 1 = unit-normalize rows (spread fix: removes the norm term from
+ *   L2 ranking so direction decides; see ac_normalize_table).
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -32,6 +34,7 @@ int main(int argc, char **argv) {
     int dx = argc > 4 ? atoi(argv[4]) : 0;
     int abase = argc > 5 ? atoi(argv[5]) : 0;
     int seedmode = argc > 6 ? atoi(argv[6]) : 0;
+    int norm = argc > 7 ? atoi(argv[7]) : 0;
 
     /* 8 seeds, one per table row. Gear (S4) or plain strings (S1). */
     uint8_t seeds[DK * 16];
@@ -64,9 +67,11 @@ int main(int argc, char **argv) {
     /* clock() resolution (~15ms) dwarfs this build; arena-grade timing is
      * ~0.14 ms for 8x384 (see tools/anchor_arena.c). Printed as-is. */
     double ms = (double)(clock() - t0) / CLOCKS_PER_SEC * 1000.0;
+    if (norm) ac_normalize_table(table, DK, DDIM);
     int rc = anch_save(out, table, DK, DDIM, ntr);
     free(table);
     if (rc != 0) { fprintf(stderr, "build/save failed\n"); return 1; }
-    printf("wrote %s (%d x %d, seedmode %d, build %.1f ms)\n", out, DK, DDIM, seedmode, ms);
+    printf("wrote %s (%d x %d, seedmode %d, norm %d, build %.1f ms)\n",
+           out, DK, DDIM, seedmode, norm, ms);
     return 0;
 }

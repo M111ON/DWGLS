@@ -26,6 +26,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <math.h>
 
 #include "anchor_weight.h"   /* aw_anchor_t, AW_OUTER, AW_LETTERS */
 #include "anchor_route.h"    /* ANCHR_MAXK, ANCHR_MAXD, anch_save */
@@ -80,6 +81,33 @@ static inline int ac_build_and_save(const uint8_t *seeds, size_t seed_len,
                                     const char *path) {
     if (ac_build_table(seeds, seed_len, K, dim, table) != 0) return -1;
     return anch_save(path, table, K, dim, K);
+}
+
+/* ── spread fix: normalize every row to unit norm ─────────────────────
+ * anch_assign/anch_route compare RAW squared-L2 (no normalization). A row
+ * 12x oversized (ac rows norm ~11 vs data ~0.9) wins every query by norm
+ * alone, whatever its direction — all queries collapse onto the min-norm
+ * row and the table routes nothing (measured: derived tables route every
+ * query to one bucket; trained rows at data scale fan out over 5).
+ * Normalizing all rows to ONE common scale removes the norm term from the
+ * ranking, so DIRECTION decides again. Any common scale works (the |row|^2
+ * term becomes constant); unit norm is the neutral choice. Zero rows are
+ * left alone. Call after ac_build_table / the centroid loop, before save. */
+static inline int ac_normalize_table(float *table, int K, int dim) {
+    if (!table || K <= 0 || dim <= 0) return -1;
+    for (int k = 0; k < K; k++) {
+        double n = 0;
+        for (int d = 0; d < dim; d++) {
+            double v = table[(size_t)k * dim + d];
+            n += v * v;
+        }
+        n = sqrt(n);
+        if (n > 0) {
+            for (int d = 0; d < dim; d++)
+                table[(size_t)k * dim + d] = (float)(table[(size_t)k * dim + d] / n);
+        }
+    }
+    return 0;
 }
 
 /* ── link the anchor into ann's LETTER/FACE layer (anchor_letter.h) ──────

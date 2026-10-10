@@ -63,7 +63,13 @@ int main(int argc, char **argv) {
         printf("  row %d letter=0x%02x pair=%d\n",
                k, t.anchor.letter, aw_pair_id(&t.anchor));
     }
-    int rc = anch_save(out, table, TK, TDIM, ntr);
+    int rc = 0;
+    {
+        /* argv[4]: norm 1 = unit-normalize rows (spread fix) */
+        int norm = argc > 4 ? atoi(argv[4]) : 0;
+        if (norm) ac_normalize_table(table, TK, TDIM);
+        rc = anch_save(out, table, TK, TDIM, ntr);
+    }
     free(table);
     if (rc != 0) { fprintf(stderr, "save failed\n"); return 1; }
     printf("wrote %s (variant %d, ntr %d)\n", out, variant, ntr);
