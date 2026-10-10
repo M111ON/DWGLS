@@ -1,6 +1,6 @@
 /* build_derived_anchors.c — derive an ann anchor table with NO training.
  *
- * Uses include/anchor_centroid.h (ac_build_and_save): 8 gear seeds
+ * Uses include/anchor_centroid.h (ac_build_table + anch_save): 8 gear seeds
  * (ac_gear_seed, anchor 0..7 at tooth (0,0)) -> deterministic 8x384 table
  * in ann's exact kv_anchors.bin shape. For the derived-vs-trained A/B:
  * point a scratch ann_search at this file via ANN_ANCH_PATH and compare
