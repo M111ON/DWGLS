@@ -197,7 +197,78 @@ static void t_weight_bias(void) {
     aw_anchor_t a;
     aw_anchor_build(s, sizeof s, 0, &a);
     check(aw_weight_bias(&a, 0) == (int)a.weight[0] - 8, "bias = weight - 8");
+    check(aw_weight_bias(&a, 8) == (int)a.weight[AW_CENTER] - 8, "bias covers centre slot");
     check(aw_weight_bias(&a, -1) == 0 && aw_weight_bias(&a, 99) == 0, "bias out-of-range = 0");
+    check(aw_weight_bias(NULL, 0) == 0, "bias NULL anchor = 0");
+}
+
+static void t_width_prefix(void) {
+    /* the rung promise: narrow bits are a PREFIX of the full 64 (group
+     * salts depend only on g), so small spaces never open full width. */
+    uint8_t s[64];
+    fill(s, sizeof s, 0xB16Bu);
+    aw_anchor_t full, n16, n4, n1;
+    int ok = 1;
+    if (aw_anchor_build_w(s, sizeof s, 0, 64, &full) != 0) ok = 0;
+    if (aw_anchor_build_w(s, sizeof s, 0, 16, &n16) != 0) ok = 0;
+    if (aw_anchor_build_w(s, sizeof s, 0, 4, &n4) != 0) ok = 0;
+    if (aw_anchor_build_w(s, sizeof s, 0, 1, &n1) != 0) ok = 0;
+    for (int c = 0; c < (int)AW_CELLS && ok; c++) {
+        if (n16.pattern[c] != (full.pattern[c] & 0xFFFFu)) ok = 0;
+        if (n4.pattern[c] != (full.pattern[c] & 0xFu)) ok = 0;
+        if (n1.pattern[c] != (full.pattern[c] & 0x1u)) ok = 0;
+    }
+    check(ok, "narrow captures are prefixes of full 64 (16/4/1)");
+}
+
+static void t_width_rungs(void) {
+    /* each rung: deterministic, width recorded, weight bounded by rung,
+     * letter in range, fold chain consistent. */
+    static const int rungs[4] = {64, 16, 4, 1};
+    static const int wmax[4] = {16, 16, 4, 1};
+    int ok = 1;
+    for (int ri = 0; ri < 4 && ok; ri++) {
+        uint8_t s[64];
+        fill(s, sizeof s, 0x100u + (uint32_t)ri);
+        aw_anchor_t a, b;
+        if (aw_anchor_build_w(s, sizeof s, 1, rungs[ri], &a) != 0) { ok = 0; break; }
+        if (aw_anchor_build_w(s, sizeof s, 1, rungs[ri], &b) != 0) { ok = 0; break; }
+        if (memcmp(&a, &b, sizeof a) != 0) { ok = 0; break; }
+        if (a.width != rungs[ri]) { ok = 0; break; }
+        if (a.letter >= AW_LETTERS) { ok = 0; break; }
+        for (int c = 0; c < (int)AW_CELLS && ok; c++) {
+            if (a.pattern[c] != (a.pattern[c] & aw_width_mask(rungs[ri]))) ok = 0;
+            if (a.weight[c] != (uint8_t)oracle_pop16(a.fold16[c])) ok = 0;
+            if (a.weight[c] > wmax[ri]) ok = 0;
+            if (a.fold4[c] != oracle_fold4(a.fold16[c])) ok = 0;
+            if (a.fold1[c] != (a.fold4[c] ? 1u : 0u)) ok = 0;
+        }
+    }
+    check(ok, "all rungs deterministic, bounded, chain-consistent");
+    /* pairs still distinct at narrow width (construction, any base) */
+    {
+        uint8_t s[64];
+        fill(s, sizeof s, 0x77u);
+        aw_anchor_t a;
+        aw_anchor_build_w(s, sizeof s, 0, 16, &a);
+        int distinct = 1;
+        for (int i = 0; i < 6 && distinct; i++)
+            for (int j = i + 1; j < 6; j++)
+                if ((a.dir_letter[i] % AW_PAIRS) == (a.dir_letter[j] % AW_PAIRS))
+                    distinct = 0;
+        if (!distinct) ok = 0;
+    }
+    check(ok, "pairs distinct at width 16 too");
+    aw_anchor_t a;
+    uint8_t s[64];
+    fill(s, sizeof s, 1u);
+    int bad = 0;
+    bad += (aw_anchor_build_w(s, sizeof s, 0, 32, &a) == -1);
+    bad += (aw_anchor_build_w(s, sizeof s, 0, 8, &a) == -1);
+    bad += (aw_anchor_build_w(s, sizeof s, 0, 0, &a) == -1);
+    bad += (aw_anchor_build_w(s, sizeof s, 0, -1, &a) == -1);
+    bad += (aw_anchor_build_w(s, sizeof s, 0, 64, NULL) == -1);
+    check(bad == 5, "5/5 bad widths/args rejected");
 }
 
 int main(void) {
@@ -212,6 +283,8 @@ int main(void) {
     t_weight_range();
     t_case_pair();
     t_weight_bias();
+    t_width_prefix();
+    t_width_rungs();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

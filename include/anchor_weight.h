@@ -53,6 +53,12 @@
 #define AW_STRIDE     37u   /* coprime to 52; also the placement stride */
 #define AW_OFFSET     13u   /* +-offset magnitude (fixed, arbitrary) */
 
+/* Capture width = a rung of the 64>16>4>1 ladder (owner: "แล้วแต่สะดวก" —
+ * small spaces capture narrow, never opening full). Widths are the rungs
+ * themselves: 64, 16, 4, 1. A narrow capture runs fewer RDH groups and the
+ * fold chain starts at the captured rung; group salts depend only on g, so
+ * narrow bits are always a PREFIX of the full 64 (proven in test). */
+
 /* 8 outer slot positions of the 3x3 (skip the centre), row-major */
 static const int AW_SLOT_RC[AW_OUTER][2] = {
     {0,0},{0,1},{0,2},
@@ -71,6 +77,7 @@ typedef struct {
     uint8_t  letter;             /* centre letter index 0..51 */
     uint8_t  dir_letter[6];      /* the 6 directions' letters (all differ) */
     uint8_t  is_upper;           /* case of the centre letter */
+    uint8_t  width;              /* capture rung: 64, 16, 4 or 1 */
 } aw_anchor_t;
 
 /* 64 -> 16 -> 4 -> 1 fold: OR-reduce halves at each level (a boolean
@@ -91,13 +98,29 @@ static inline uint8_t aw_fold16_4(uint16_t p) {
 }
 static inline uint8_t aw_fold4_1(uint8_t p) { return (p != 0) ? 1u : 0u; }
 
+/* rung helpers: groups per width, bit mask per width. Group salts depend
+ * only on g (not on the total), so a narrow capture is always a PREFIX of
+ * the full 64-bit pattern — space pays only for what it opens. */
+static inline int aw_groups_for(int width) {
+    if (width == 64) return 8;
+    if (width == 16) return 2;
+    if (width == 4 || width == 1) return 1;
+    return -1;
+}
+
+static inline uint64_t aw_width_mask(int width) {
+    if (width == 64) return ~0ULL;
+    if (width > 0 && width < 64) return (1ULL << (uint64_t)width) - 1ULL;
+    return 0ULL;
+}
+
 /* one 64-bit RDH capture for a (cell, group, sign): the seed bytes shifted
  * by cell/group salt plus sign*AW_OFFSET (uint8 wrap). Deterministic. */
-static inline uint64_t aw_rdh_half(const uint8_t *seed, size_t len, int cell,
-                                   int sign) {
+static inline uint64_t aw_rdh_half_n(const uint8_t *seed, size_t len, int cell,
+                                     int sign, int groups) {
     RDHConfig cfg = RDH_CAPTURE_144;
     uint64_t p = 0;
-    for (int g = 0; g < 8; g++) {           /* 8 groups x 8 bits = 64 */
+    for (int g = 0; g < groups; g++) {
         /* perturb the seed per (cell, group, sign) without touching the
          * caller's buffer */
         uint8_t tmp[64];
@@ -113,10 +136,26 @@ static inline uint64_t aw_rdh_half(const uint8_t *seed, size_t len, int cell,
     return p;
 }
 
+static inline uint64_t aw_rdh_half(const uint8_t *seed, size_t len, int cell,
+                                   int sign) {
+    return aw_rdh_half_n(seed, len, cell, sign, 8);
+}
+
+/* one cell's pattern at a rung: +offset OVERLAID (XOR) with -offset,
+ * masked to the rung width. cell 0..7 = outer, AW_CENTER (8) = centre. */
+static inline uint64_t aw_cell_pattern_w(const uint8_t *seed, size_t len,
+                                         int cell, int width) {
+    int groups = aw_groups_for(width);
+    if (groups < 0) return 0;
+    uint64_t p = aw_rdh_half_n(seed, len, cell, +1, groups)
+               ^ aw_rdh_half_n(seed, len, cell, -1, groups);
+    return p & aw_width_mask(width);
+}
+
 /* one cell's 64-bit pattern: +offset OVERLAID (XOR) with -offset.
  * cell 0..7 = outer slots, cell AW_CENTER (8) = centre. */
 static inline uint64_t aw_rdh_pattern(const uint8_t *seed, size_t len, int cell) {
-    return aw_rdh_half(seed, len, cell, +1) ^ aw_rdh_half(seed, len, cell, -1);
+    return aw_cell_pattern_w(seed, len, cell, 64);
 }
 
 /* centre letter from the folded pattern: walk the 52-pool by STRIDE and
@@ -127,16 +166,28 @@ static inline uint8_t aw_letter_from(const aw_anchor_t *a, int dir) {
     return (uint8_t)((base + (uint32_t)dir * AW_STRIDE) % AW_LETTERS);
 }
 
-/* build the whole per-anchor structure from seed bytes + a case bit.
- * dir_seed selects which 6 letters the 6 directions show; they are forced
- * distinct by construction (stride coprime to 52, dir < 6 < 52). */
-static inline void aw_anchor_build(const uint8_t *seed, size_t len,
-                                   uint8_t is_upper, aw_anchor_t *out) {
+/* build the whole per-anchor structure from seed bytes + a case bit,
+ * capturing DIRECTLY at the rung `width` (64, 16, 4 or 1 — anything else
+ * is rejected). dir_seed selects which 6 letters the 6 directions show;
+ * they are forced distinct by construction (stride coprime to 52,
+ * dir < 6 < 52). Folds start at the captured rung: a 16-wide capture IS
+ * the 16 level (zero-extended), and the chain continues 16->4->1, so a
+ * small space never pays for bits it does not open. Weight = popcount of
+ * the rung value (range scales: 0..16 at 64/16, 0..4 at 4, 0..1 at 1).
+ * Returns 0 ok, -1 bad width/args. */
+static inline int aw_anchor_build_w(const uint8_t *seed, size_t len,
+                                    uint8_t is_upper, int width,
+                                    aw_anchor_t *out) {
+    if (!out || aw_groups_for(width) < 0) return -1;
     memset(out, 0, sizeof(*out));   /* clear pad bytes: the struct is memcmp-safe */
+    out->width = (uint8_t)width;
     for (int s = 0; s < (int)AW_CELLS; s++) {
-        uint64_t p = aw_rdh_pattern(seed, len, s);
+        uint64_t p = aw_cell_pattern_w(seed, len, s, width);
         out->pattern[s] = p;
-        out->fold16[s]  = aw_fold64_16(p);
+        /* fold from the captured rung (narrow values are already their
+         * level; the OR-reduce below is identity on them where exact) */
+        uint16_t f16 = (width == 64) ? aw_fold64_16(p) : (uint16_t)p;
+        out->fold16[s]  = f16;
         out->fold4[s]   = aw_fold16_4(out->fold16[s]);
         out->fold1[s]   = aw_fold4_1(out->fold4[s]);
         /* weight = popcount of the 16-fold (0..16), fixed at the anchor.
@@ -152,6 +203,13 @@ static inline void aw_anchor_build(const uint8_t *seed, size_t len,
     for (int s = 0; s < (int)AW_CELLS; s++) agg += out->fold16[s];
     out->letter = (uint8_t)((agg * AW_STRIDE) % AW_LETTERS);
     for (int d = 0; d < 6; d++) out->dir_letter[d] = aw_letter_from(out, d);
+    return 0;
+}
+
+/* full-width build (the original entry point): rung 64. */
+static inline void aw_anchor_build(const uint8_t *seed, size_t len,
+                                   uint8_t is_upper, aw_anchor_t *out) {
+    aw_anchor_build_w(seed, len, is_upper, 64, out);
 }
 
 /* case-folded pair id: A and a = pair 0..25, same identity (owner:
@@ -162,10 +220,12 @@ static inline uint8_t aw_pair_id(const aw_anchor_t *a) {
 }
 
 /* route bias from fixed weights: a deterministic integer pull toward the
- * heavier slots, added to the anchor's normal nearest-centroid score.
- * Returns a signed bias in [-8, +8] (weights are 0..16). */
+ * heavier cells, added to the anchor's normal nearest-centroid score.
+ * Slot range covers all 9 cells (centre included). Returns a signed bias
+ * in [-8, +8] at full width (weights 0..16); at narrow rungs weights are
+ * smaller so the pull skews negative — same formula, honest range. */
 static inline int aw_weight_bias(const aw_anchor_t *a, int slot) {
-    if (slot < 0 || slot >= (int)AW_OUTER) return 0;
+    if (!a || slot < 0 || slot >= (int)AW_CELLS) return 0;
     return (int)a->weight[slot] - 8;
 }
 
