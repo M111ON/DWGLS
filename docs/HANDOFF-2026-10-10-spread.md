@@ -104,3 +104,45 @@ table matter".
 3. **Miss-write measurement**: per-pass head/fp disk cost (fsync reality)
    before any production talk about traps.
 4. Merge-minors note #16 stays PARKED (owner: เอาไว้ก่อน).
+
+## 7. Addendum — manifold alignment + big-N (same evening)
+
+Official corrections (owner, supersede §1–§4 wording where they conflict):
+
+- **"Training buys manifold alignment, not just centroid quality"** —
+  spread is a SYMPTOM of alignment, not the mechanism. Q1 measured:
+  trained rows cos(data-mean) 0.97–0.99, tangential 0.17 (inside the data
+  cap); derived rows cos(mean) ~0 (orthogonal, tangential ~1.0); queries
+  at 0.86. k-means puts centroids at data scale INSIDE the cap; equal
+  norms cancel the L2 norm term so tiny angular differences fan queries
+  out. Letters innocent (52-hist 24–53, uniform).
+- **"Distinct bucket ≠ recall"** — the earlier metric is insufficient:
+  Jpc spreads over all 8 buckets yet recalls 1/30. Spread enables
+  multi-bucket walks; it does not score.
+- **"Min-norm collapse = L2 raw + unnormalized derived rows"** —
+  checkable (row norms ~11 vs 0.9), predictable (collapse bucket IS the
+  min-norm row: S1→7, V0→5, V1→7), fixable (ac_normalize_table).
+- **"Restart per table"** — permanent rule, no in-process table swap
+  (hot-swap reload proved intermittent: 2/5 stale clones).
+
+Direction injection (Q2): rows = normalize(mean + 0.17·axis), axes =
+trap-tangential (Jmean) or pure top-8 PCs (Jpc, zero trap content).
+Geometry matches trained (cos_mean 0.986, paircos 0.97); routing spreads
+(Jmean 7, Jpc 8 distinct buckets).
+Big-N (210 queries: 70 exchange + 70 chatlog + 70 dictionary_entry,
+exact frozen truth, 13% scan, fresh restarts):
+
+| table | top-1/199 | overlap/5 | per-corpus top-1 (ex/cg/dict) |
+|---|---|---|---|
+| S5p trained | 96 (48%) | 2.28 | 39/64, 25/66, 32/69 |
+| Jpc manifold axes | 25 (12.6%) | 0.65 | 15/64, 4/66, 6/69 |
+| V0n trap painted | 13 (6.5%) | 0.39 | 6/64, 3/66, 4/69 |
+
+Injection doubles trap recall (13→25, ~2σ) but stays far below trained
+(25 vs 96, 6σ+). Verdict: alignment buys spread (proven) but NOT recall
+(hypothesis refuted in strong form) — recall needs LABEL correspondence
+(entries carry trained integers; any other table's integers are arbitrary).
+Re-label experiment (§6.1) is now THE next step with a predicted payoff;
+big-N after re-label, not before. Builder: `ann/scripts/build_inject_table.py`
+(byte-reproducible, verified sha-identical rebuild).
+A–F arena revisit deferred until routing parity (owner).
