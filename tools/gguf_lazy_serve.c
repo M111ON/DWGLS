@@ -498,9 +498,14 @@ static int lz_mem_search(const float *qv, int qd,
                  * ALSO appends its fingerprint to the P3 log, so the tombstone
                  * survives restart (replayed by lz_fog_init on boot). */
                 if (!g_fog_ready) lz_fog_init();
-                for (int rbi = 0; rbi < rnb; rbi++)
-                    wl_traverse_log(&g_fog, lz_fog_id(rb[rbi]),
-                                    g_fog_log_open ? &g_fog_log : NULL);
+                for (int rbi = 0; rbi < rnb; rbi++) {
+                    uint32_t fid = lz_fog_id(rb[rbi]);
+                    /* only the OPEN->SHUT transition is a new fingerprint; a
+                     * repeat walk is a no-op, not a log record (monotone latch). */
+                    if (wl_is_open(&g_fog, fid))
+                        wl_traverse_log(&g_fog, fid,
+                                        g_fog_log_open ? &g_fog_log : NULL);
+                }
                 /* flush so the fingerprint is durable the moment the query
                  * returns — a kill -9 must not lose the walk we just did. */
                 if (g_fog_log_open && g_fog_log.fp) fflush(g_fog_log.fp);
