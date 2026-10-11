@@ -275,7 +275,7 @@ static inline uint32_t lz_fog_id(int bucket) {
 /* extra buckets walked beyond topk so the returned rows are a superset
  * of the true topk (measured: recall@3 0.78 at headroom 0). */
 #define LZ_ROUTE_HEADROOM_DEF 4
-#define LZ_SEARCH_BUDGET_DEF 8000
+#define LZ_SEARCH_BUDGET_DEF 24000
 #define LZ_ANCH_PATH "build/kv_anchors.bin"
 #define LZ_ORDER_PATH "build/kv_index.order"
 typedef struct { char sid[64]; char file[256]; int npast; int dim; int anchor; int anchor2; float *vec; double norm; } LZEntry;
@@ -460,14 +460,16 @@ static int lz_mem_search(const float *qv, int qd,
     int rnb = 0, breads = 1, scored = 0;
     int truncated = 0;
     /* G survivor: single-round cutoff — fixed candidate
-     * budget per scan (env LZ_SEARCH_BUDGET, default 512). */
+     * budget per scan (env LZ_SEARCH_BUDGET overrides). Default raised to the
+     * recall knee (measured 2026-10-11: R@10 0.47@8000, 0.90@16000,
+     * 0.96@24000, 0.995@full). */
     int budget = LZ_SEARCH_BUDGET_DEF;
     { const char *be = getenv("LZ_SEARCH_BUDGET");
-      if (be && atoi(be) > 0) budget = atoi(be);
-      /* bench 2026-09-25: walk-order cutoff at fixed 512
-       * truncates 999/1000 on large nent; default must
-       * cover the index (explicit env still wins). */
-      else if (nent > budget) budget = nent; }
+      if (be && atoi(be) > 0) budget = atoi(be); }
+      /* NO silent widen-to-full-scan here: the old `else if (nent > budget)
+       * budget = nent` trap made the default unreachable for any index larger
+       * than it (proven 2026-10-11 on the 59756-row index), so queries paid a
+       * full scan while reporting truncated=0. Default is now a real cutoff. */
     double us_per_item = 0;
         if (ents && qn > 0) {
             const uint32_t *ord = NULL;          /* route cache: borrowed, not freed */
