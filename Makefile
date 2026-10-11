@@ -11,7 +11,7 @@
 export PATH := /mingw64/bin:$(PATH)
 
 CC      := gcc
-CFLAGS  := -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -I. -Icore -Icore/infra -Icore/infra -no-pie
+CFLAGS  := -O2 -Wall -Wextra -Wno-unused-parameter -Wno-format -I. -Iinclude -Icore -Icore/infra -Icore/infra -no-pie
 LDFLAGS := -lm -lws2_32
 
 # ── Auto-discover test sources ────────────────────────
@@ -211,7 +211,7 @@ TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   t
 
 # GEO: geometry core + address space + hyperbolic
 # GEO_FAST: <0.5s each — run often
-GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_mm_wang6   test_lblock6   test_frustum_trit   test_frustum_slot64   test_frustum_route   test_frustum_memory_adapter   test_frustum_memory_resolve   test_gguf_frustum_direct   test_gguf_frustum_pointer   test_bfs_tensor_pipeline   test_bfs_gguf_frustum   test_voronoi_mask   test_tower_ladder   test_chain_compile   test_ghost_haunt   test_id_route_log \
+GEO_FAST :=   geo_cube_in_dodeca_test   test_cell_classify   test_cube_addr   test_cube_container   test_cube_in_dodeca   test_geo_diamond_map   test_geo_prune   test_geo_fs   test_geo_fs_generalize   test_dodeca_x2   test_geo_sync_bridge   test_geo_hyperbolic   test_geo_hyper_fs   test_geo_hyper_real   test_geo_dual_view   test_geo_lblock   test_wang_tantrix   test_goldberg_decagram   test_goldberg_store   test_goldberg_file   test_goldberg_lazy   test_hex_quad_dual   test_hex_quad_dual_upgrades   test_geo_inner_field   test_planet_detach   test_goldberg_frame   test_net_walk   test_wonder_cube   test_planet12   test_gp16_neighbors   test_dual_loop   test_poly11_oracle   test_kineticfan_field   test_clim_record   test_mv_node   test_mm_route   test_mm_wang   test_mm_wang6   test_lblock6   test_frustum_trit   test_frustum_slot64   test_frustum_route   test_frustum_memory_adapter   test_frustum_memory_resolve   test_gguf_frustum_direct   test_gguf_frustum_pointer   test_bfs_tensor_pipeline   test_bfs_gguf_frustum   test_voronoi_mask   test_tower_ladder   test_chain_compile   test_ghost_haunt   test_id_route_log   test_anchor_metatron \
 	test_id_feedback \
 	test_id_contract \
 	test_p5_value_gate \
@@ -656,6 +656,12 @@ anchor-route: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-format \
 	    -I . -I core -o $(BUILD)/anchor_route_cli tools/anchor_route_cli.c -lm
 	./$(BUILD)/anchor_route_cli 1000
+
+# Anchor arena: S1-S5 build/steady standings + A3 frustum ray-order top-k (measured).
+anchor-arena: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare \
+	    -I . -I include -I core -o $(BUILD)/anchor_arena tools/anchor_arena.c -lws2_32 -lpsapi -lm
+	./$(BUILD)/anchor_arena
 
 # P0/P1 semantic Hyper Address vertical slice and brute-force comparison.
 semantic-route-bench: | $(BUILD)

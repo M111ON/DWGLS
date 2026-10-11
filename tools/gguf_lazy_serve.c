@@ -275,7 +275,7 @@ static inline uint32_t lz_fog_id(int bucket) {
 /* extra buckets walked beyond topk so the returned rows are a superset
  * of the true topk (measured: recall@3 0.78 at headroom 0). */
 #define LZ_ROUTE_HEADROOM_DEF 4
-#define LZ_SEARCH_BUDGET_DEF 512
+#define LZ_SEARCH_BUDGET_DEF 8000
 #define LZ_ANCH_PATH "build/kv_anchors.bin"
 #define LZ_ORDER_PATH "build/kv_index.order"
 typedef struct { char sid[64]; char file[256]; int npast; int dim; int anchor; int anchor2; float *vec; double norm; } LZEntry;

@@ -25,6 +25,7 @@
 #include "anchor_weight.h"
 #include "anchor_trap.h"
 #include "anchor_centroid.h"
+#include "anchor_frustum.h"
 
 static void fill(uint8_t *b, size_t n, uint32_t seed) {
     uint32_t s = seed ? seed : 1u;
@@ -75,6 +76,84 @@ static uint8_t g_seeds[8 * 4];
 static void op_table8(uint8_t *s, int i) {
     (void)s; (void)i;
     ac_build_table(g_seeds, 4, 8, 384, g_tab);
+}
+
+/* ---- A3: frustum ray-order top-k, measured here (not a tagged query number) ----
+ * Build N anchors; for a query anchor descend its 4-level frustum ray from the
+ * core outward and check the exact-nearest anchor (by anchor-weight distance) is
+ * reachable through the descent's own ray order rather than a flat score cutoff.
+ * The descent is pure geometry (af_anchor_descent/af_child_seed_bytes); this is a
+ * hit-rate assertion, oracle = brute nearest over the same N. */
+#define A3_N 4096
+static aw_anchor_t g_anch[A3_N];
+static uint8_t     g_seedbuf[A3_N][32];
+
+static uint32_t aw_dist(const aw_anchor_t *a, const aw_anchor_t *b) {
+    uint32_t d = 0;
+    for (int i = 0; i < AW_CELLS; i++) {
+        int t = (int)a->pattern[i] - (int)b->pattern[i];
+        d += (uint32_t)(t < 0 ? -t : t);
+    }
+    return d;
+}
+
+/* returns hit-rate *100 (integer %) of exact-nearest reachable via ray order */
+static uint32_t a3_ray_seed(const aw_anchor_t *a) {
+    FrustumRouteEvent ev[FR_MAX_DEPTH];
+    int n = af_anchor_descent(a, ev);
+    if (n <= 0) return 0;
+    /* ray identity = the anchor's DIRECTION chain across all levels,
+     * not the folded major seed (which proved anchor-invariant: 1 bucket/4096).
+     * Each level's branch_path is biased by aw_weight_bias(a,d) -> anchor-specific. */
+    uint32_t h = 2166136261u;
+    for (int d = 0; d < n; d++) {
+        h ^= (uint32_t)ev[d].branch_path; h *= 16777619u;
+        h ^= (uint32_t)ev[d].level;       h *= 16777619u;
+    }
+    return h;
+}
+
+static void a3_build_corpus(void) {
+    /* deterministic corpus — MUST run before any a3_ray_seed() consumer,
+     * including the bucket diagnostic (a zero corpus reports 1 bogus ray). */
+    for (int i = 0; i < A3_N; i++) {
+        fill(g_seedbuf[i], 32, (uint32_t)(i * 2654435761u + 7u));
+        aw_anchor_build(g_seedbuf[i], 32, (i & 1), &g_anch[i]);
+    }
+}
+
+static int a3_ray_topk(int k) {
+    int hits = 0, qn = 256;
+    int same_bucket = 0, rank_sum = 0, rank_n = 0;
+    for (int q = 0; q < qn; q++) {
+        int qi = (q * 7919) % A3_N;
+        const aw_anchor_t *Q = &g_anch[qi];
+        /* brute nearest (oracle) */
+        uint32_t best = 0xFFFFFFFFu; int bi = -1;
+        for (int i = 0; i < A3_N; i++) {
+            if (i == qi) continue;
+            uint32_t d = aw_dist(Q, &g_anch[i]);
+            if (d < best) { best = d; bi = i; }
+        }
+        if (bi < 0) continue;
+        uint32_t qseed = a3_ray_seed(Q);
+        if (qseed == 0) continue;
+        /* does the exact-nearest share Q's ray bucket at all? and at what rank
+         * (corpus position) inside that bucket? */
+        if (a3_ray_seed(&g_anch[bi]) == qseed) same_bucket++;
+        int rank = 0;
+        for (int i = 0; i < A3_N; i++) {
+            if (i == qi) continue;
+            if (a3_ray_seed(&g_anch[i]) == qseed) {
+                rank++;
+                if (i == bi) { rank_sum += rank; rank_n++; if (rank <= k) hits++; break; }
+            }
+        }
+    }
+    int hr = hits * 100 / qn, sb = same_bucket * 100 / qn;
+    printf("A3 ray-order hits: k=%d %d%% (nearest shares ray=%d%%, mean bucket rank=%.1f)\n",
+           k, hr, sb, rank_n ? (double)rank_sum / rank_n : 0.0);
+    return hr;
 }
 
 int main(void) {
@@ -133,5 +212,34 @@ int main(void) {
     printf("S4 derived-table : table %.0f ns one-time | steady 12 KB fixed | recall 2.17/5 pruned (=trained tier) | determ yes | redo: rebuild table ms | upfront 1M: ~0 s + 12 KB\n",
            ns_tab);
     printf("S5 trained       : regrow ~60 s documented | steady 12 KB fixed | recall 2.70/5 pruned, 5.00/5 full | determ retrain-dependent | redo: retrain ~60 s | upfront 1M: ~60 s + 12 KB\n");
+    printf("--- A3 frustum ray-order top-k (MEASURED here, corpus N=%d, queries 256) ---\n", A3_N);
+    a3_build_corpus();
+    /* diagnostic: ray bucket size distribution (how many of N share one ray) */
+    {
+        int occ[64] = {0};
+        int nb = 0;
+        uint32_t seen[64]; int nseen = 0;
+        for (int i = 0; i < A3_N; i++) {
+            uint32_t s = a3_ray_seed(&g_anch[i]);
+            int j = 0; for (; j < nseen; j++) if (seen[j] == s) break;
+            if (j == nseen && nseen < 64) { seen[nseen++] = s; }
+            if (j < 64) occ[j]++;
+        }
+        int distinct = nseen;
+        int mx = 0; for (int j = 0; j < distinct; j++) if (occ[j] > mx) mx = occ[j];
+        printf("A3 ray buckets   : %d distinct rays over %d anchors, max bucket %d (mean %.1f)\n",
+               distinct, A3_N, mx, distinct ? (double)A3_N / distinct : 0.0);
+        nb = distinct;
+        (void)nb;
+    }
+    /* per-k line carries hit%, nearest-shares-ray%, mean bucket rank. NOTE:
+     * the frustum descent ray is geometry-only and, as a routing key over
+     * anchor-weight space, is nearly ORTHOGONAL to the metric that matters:
+     * the exact-nearest neighbour shares the query's ray ~1% of the time
+     * (mean bucket rank ~195), so ray order is NOT a valid retrieval order
+     * (measured 2026-10-11; consistent with #7346/#7348 route-identity). */
+    a3_ray_topk(1);
+    a3_ray_topk(5);
+    a3_ray_topk(16);
     return 0;
 }
