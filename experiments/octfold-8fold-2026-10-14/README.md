@@ -14,20 +14,23 @@ comparison, G1–G6 evidence, honest status).
 - `octfold_view_probe.c`   — G1–G5: bijection, inverse, pure-int grammar, oracles, mutation
 - `octfold_roundtrip.c`    — G6: full GGUF bake → readback → rebuild → damage → persist
 - `octfold_bridge_probe.c` — bake ONCE via octfold, cross-read hosoya/limacon/reverse
+- `octfold_tolerance_probe.c` — D: decode margins, radial erasure, multi-view majority
 - `evidence/`              — pixel crops from the source image (gitignored, regenerable)
 
 ## Run
 ```sh
-make octfold            # all three
+make octfold            # all four
 make octfold-probe      # G1-G5 only (no model needed)
 make octfold-roundtrip  # needs $(LLAMA_GGUF)  [Qwen2.5-0.5B-Instruct-Q8_0.gguf]
 make octfold-bridge     # needs $(LLAMA_GGUF)
+make octfold-tolerance  # D: error tolerance (no model needed)
 ```
 
 ## Result (2026-10-14, Qwen2.5-0.5B Q8_0 · 675.7 MB · 5156 parts)
 - G1–G5: ALL GREEN (9/9)
 - G6: 5156 parts lossless · rebuild byte-identical · damage localized+restored · twin 676.3 MB
 - Bridge: cross-read hosoya/limacon/reverse bad=0 · XOR-consensus YES
+- D: margins +-16% radial / +-22.5 deg angular · 2-ring erasure recovery · 2-of-3 view majority
 
 ## Honest scope
 `octfold` is a **drawing-derived constructed** view (same category as pascal/hexagram,

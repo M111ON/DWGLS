@@ -59,6 +59,36 @@ address translation sigma = vwA o vwB^-1 (no re-bake, no copy):
 - damage through cross-view ordering -> localized same part -> restore once
 => octfold is a first-class 10th view on the 60-slot carrier
 
+## D) ERROR TOLERANCE — PASSED
+`octfold_tolerance_probe.c` — the source drawing is IMPERFECT (layers have gaps,
+hand-drawn edges), so the real question is how much noise the ADDRESS LAW absorbs.
+
+D1 GEOMETRIC MARGIN (decode basin) — two legitimate decoders, each matching theory:
+- arithmetic nearest |r-r(n)|: up +20.71% (=(sqrt2-1)/2) · down -14.65% (=(1-1/sqrt2)/2)
+- geometric  nearest |log r-log r(n)|: up +18.92% (=2^(1/4)-1) · down -15.91% (=1-2^(-1/4))
+- angular margin: +-22.50 deg (45/2), exact
+=> a cell can drift ~+-16% radially / +-22.5 deg angularly and still decode right.
+
+D2 RADIAL ERASURE (why the ladder is self-healing)
+- log2 r(n) = log2 R0 + n/2 is AFFINE in n (slope exactly 1/2)
+- single interior ring erased -> geometric mean of neighbours recovers it (err 1.2e-16)
+- whole block erased -> affine fit on the 2 surviving boundary rings recovers all
+  (max rel err 6.6e-16)
+=> TWO surviving rings determine the entire ladder losslessly. The drawing's "gaps"
+   are exactly the structure this law sits on.
+
+D3 MULTI-VIEW MAJORITY (error tolerance by view redundancy)
+- 3 independent bijections (octfold/hosoya/limacon) over the same 60-slot carrier
+- smash 5 bytes in ONE view -> 2-of-3 majority recovers 60/60 lossless, 0 unrecoverable
+=> redundancy is free (address translation only, no copy)
+
+MUT: wrong ratio (1.40 instead of sqrt2) -> affine slope test goes RED (b=0.485 != 0.5)
+
+Bug found & fixed while wiring: the limacon map in the probe had 59 entries
+(1 + 29*2), leaving one slot uninitialized -> nondeterministic pass. The mirror-pair
+view `[30,31,29,...,1,0]` ends with slot 0; adding it makes 60 and the suite is
+deterministic (verified 3/3 runs).
+
 ## STATUS vs GATE "gear = language"  (all six)
 | gate | evidence | status |
 |---|---|---|
