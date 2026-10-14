@@ -871,6 +871,30 @@ gguf-roundtrip: | $(BUILD)
 	    -I core -o $(BUILD)/gguf_roundtrip tools/gguf_roundtrip.c -lm
 	./$(BUILD)/gguf_roundtrip $(LLAMA_GGUF)
 
+# ── 10th language: OCTFOLD (8-fold ladder) — G1-G6 ──
+# Parked experiment: experiments/octfold-8fold-2026-10-14/ (REPORT.md + probes + evidence/).
+# G1-G5 probe + G6 full GGUF roundtrip + multi-view bridge (bake once, serve all).
+OCTFOLD_DIR := experiments/octfold-8fold-2026-10-14
+
+octfold-probe: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter \
+	    -o $(BUILD)/octfold_view_probe $(OCTFOLD_DIR)/octfold_view_probe.c
+	./$(BUILD)/octfold_view_probe
+
+octfold-roundtrip: | $(BUILD)
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter \
+	    -I core -o $(BUILD)/octfold_roundtrip $(OCTFOLD_DIR)/octfold_roundtrip.c -lm
+	./$(BUILD)/octfold_roundtrip $(LLAMA_GGUF)
+
+octfold-bridge: | $(BUILD)
+	@test -f $(LLAMA_GGUF) || { echo "  (skip: $(LLAMA_GGUF) not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter \
+	    -I core -o $(BUILD)/octfold_bridge $(OCTFOLD_DIR)/octfold_bridge_probe.c -lm
+	./$(BUILD)/octfold_bridge $(LLAMA_GGUF)
+
+octfold: octfold-probe octfold-roundtrip octfold-bridge
+
 # ── MoE Expert Bake: GGUF → DtSlotRegion roundtrip ──
 # Reads any GGUF, stores attn projection tensors via geometric addressing,
 # loads back lossless. Proves moe_expert_addr.h + moe_expert_store.h work on real weights.

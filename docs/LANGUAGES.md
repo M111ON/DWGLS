@@ -24,6 +24,7 @@
 | 7 | **pascal** | zig-zag diagonal stream → `A(n)=Σ(−1)^k C(n−k,k)` period-6 | Fibonacci identity · period-6 {1,1,0,−1,−1,0} | `pascal_zigzag_probe.c` |
 | 8 | **hexagram** | hex-distance rank (axial coords, x+y+z=0) | hexagon ≡ cube-in-2D · MacMahon count 20 | `hexagram_cubes_probe.c` |
 | 9 | **limacon** | radial ascent from cardioid cusp, mirror pairs {30−k,30+k} share radius (`view=[30,31,29,…,59,1,0]`) | int cos-LUT monotone · bijection+inverse · mutation red · GGUF 5156 parts R1/R2 lossless | `limacon_view_probe.c` (+`limacon_seek_probe.c`, `invert_bridge_probe.c`) |
+| 10 | **octfold** | 8-fold scale ladder (regolo54 star): sector s = (3·(w%8))%8 from the ring-24 stride-3 embed, read sector-major with depth ascending (`r(n)=R0·2^(n/2)`) | hand head/tail · count law {8,8,7,8,7,7,8,7} · 3 unit mod 8 · mutation red · GGUF 5156 parts R1/R2/R3 lossless · bridge cross-read vs hosoya/limacon lossless | `experiments/octfold-8fold-2026-10-14/octfold_view_probe.c` (+`octfold_roundtrip.c`, `octfold_bridge_probe.c`) |
 
 ทุกภาษา = structural bijection บน slot เดียวกัน → **XOR ทุก view ต้องเท่ากับ source**
 (verify แล้วบน GGUF 675.7MB · 5156 parts · commit `76aee0c`, Colab T4 `99109c4`)
