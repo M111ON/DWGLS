@@ -89,6 +89,37 @@ Bug found & fixed while wiring: the limacon map in the probe had 59 entries
 view `[30,31,29,...,1,0]` ends with slot 0; adding it makes 60 and the suite is
 deterministic (verified 3/3 runs).
 
+## E) HYBRID C MICRO-BENCHMARK — quadtree vs octfold vs octave-hybrid
+`octfold_hybrid_bench.c` (make octfold-hybrid, no model needed). Proposal claimed
+the crossover is at depth 2 (4^n = 8*2^(n/2) -> n=2) and asked whether hybrid C
+"wins at depth<=2" (shallow coincidence) or ">=8" (asymptotic, -> candidate #11).
+
+Three structures matched to the SAME finest scale eps=2^-L:
+- Q = quadtree, depth L, step x2 (a PARTITION, canonical address)
+- O = octfold, 2L half-steps, step xsqrt2 (a LADDER, closed-form address)
+- C = hybrid: c coarse octaves (quadtree, 4^c) + 2(L-c) fine half-steps
+
+Results (all int64_t; MinGW `long` is 32-bit and 4^16 overflowed it):
+- Part 0  node-count crossover 4^2 == 8*2^1 == 16 at n=2 EXACT (proposal confirmed)
+- Part 2  MEASURED leaf count == 4^L for L=0..10 (validates the model, not assumed)
+- Part 2b SMART region query is SUB-exponential (L=8: 1232 visits vs 4^8=65536);
+          4^L is the FULL-subtree worst case, not a typical region query
+- Part 4  C beats the PARTITION (Q) from L=1 (free split c=0) / L=2 (coarse c>=1)
+- Part 4  C beats OCTFOLD (O) at NO depth: c=0 makes C == O exactly
+          (CHECK: h_prune(L,0)==o_prune(L) for L=0..40); c>=1 only ADDS cost
+- Part 5  C/Q and O/Q prune ratios -> 0 as L grows (exp vs linear) => ASYMPTOTIC
+
+VERDICT:
+- depth-2 is where raw NODE COUNTS meet, NOT where performance flips. The cost
+  advantage over the partition GROWS with depth -> the "shallow coincidence"
+  reading is FALSE for cost; it is asymptotic (L>=8 comfortably).
+- BUT C does NOT beat octfold: it IS octfold (c=0) plus a canonical quadtree
+  coarse address. Its only edge over O is the canonical coarse address
+  (dedup / byte-identical storage), not a cost win.
+- => hybrid C is a STORAGE CONVENTION on top of octfold, not a new language.
+  It does NOT clear the bar for candidate #11 on its own. It is exactly the
+  "address translation only, never replicate" pattern the proposal warned about.
+
 ## STATUS vs GATE "gear = language"  (all six)
 | gate | evidence | status |
 |---|---|---|

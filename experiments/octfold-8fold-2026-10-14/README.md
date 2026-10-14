@@ -15,6 +15,7 @@ comparison, G1–G6 evidence, honest status).
 - `octfold_roundtrip.c`    — G6: full GGUF bake → readback → rebuild → damage → persist
 - `octfold_bridge_probe.c` — bake ONCE via octfold, cross-read hosoya/limacon/reverse
 - `octfold_tolerance_probe.c` — D: decode margins, radial erasure, multi-view majority
+- `octfold_hybrid_bench.c`  — E: quadtree vs octfold vs hybrid C (point/prune/damage)
 - `evidence/`              — pixel crops from the source image (gitignored, regenerable)
 
 ## Run
@@ -24,6 +25,7 @@ make octfold-probe      # G1-G5 only (no model needed)
 make octfold-roundtrip  # needs $(LLAMA_GGUF)  [Qwen2.5-0.5B-Instruct-Q8_0.gguf]
 make octfold-bridge     # needs $(LLAMA_GGUF)
 make octfold-tolerance  # D: error tolerance (no model needed)
+make octfold-hybrid     # E: Q vs O vs hybrid C micro-benchmark (no model needed)
 ```
 
 ## Result (2026-10-14, Qwen2.5-0.5B Q8_0 · 675.7 MB · 5156 parts)
@@ -31,6 +33,9 @@ make octfold-tolerance  # D: error tolerance (no model needed)
 - G6: 5156 parts lossless · rebuild byte-identical · damage localized+restored · twin 676.3 MB
 - Bridge: cross-read hosoya/limacon/reverse bad=0 · XOR-consensus YES
 - D: margins +-16% radial / +-22.5 deg angular · 2-ring erasure recovery · 2-of-3 view majority
+- E: hybrid C micro-benchmark — Q vs O vs C at equal resolution; C beats the
+     partition from L=1 but never beats octfold itself (C==O at c=0) => C is a
+     storage convention, NOT a new language (#11 declined)
 
 ## Honest scope
 `octfold` is a **drawing-derived constructed** view (same category as pascal/hexagram,

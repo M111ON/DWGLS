@@ -898,7 +898,12 @@ octfold-tolerance: | $(BUILD)
 	    -o $(BUILD)/octfold_tolerance $(OCTFOLD_DIR)/octfold_tolerance_probe.c -lm
 	./$(BUILD)/octfold_tolerance
 
-octfold: octfold-probe octfold-roundtrip octfold-bridge octfold-tolerance
+octfold-hybrid: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare \
+	    -o $(BUILD)/octfold_hybrid_bench $(OCTFOLD_DIR)/octfold_hybrid_bench.c -lm
+	./$(BUILD)/octfold_hybrid_bench
+
+octfold: octfold-probe octfold-roundtrip octfold-bridge octfold-tolerance octfold-hybrid
 
 # ── MoE Expert Bake: GGUF → DtSlotRegion roundtrip ──
 # Reads any GGUF, stores attn projection tensors via geometric addressing,
