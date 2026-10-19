@@ -78,6 +78,14 @@ corpus, run 6 times across three sessions on a **shared 2-core machine**:
 | 5 | 12.73 ms | 11.90 ms | 1.07× |
 | 6 (first rerun) | 13.82 ms | — | — |
 
+**Provenance warning — `sse.csv` on disk holds only the LAST run.** The tracked
+`sse.csv` currently contains run 5 (`C 12.73 / E 11.90 / F 11.41 / R 6.01`); the
+program overwrites it on every invocation, so the run-1 numbers that produced the
+original 0.98× headline (`C 18.11 / E 18.45`) are **no longer in the repo**. Runs
+2–4 and 6 were printed to stdout only. If a specific run needs to be auditable
+later, tee it to a per-run name; the single tracked CSV is the last writer, not
+the evidence set.
+
 `C` varies **1.4×** run to run (12.7–18.1 ms) while `E` is far more stable
 (10.9–11.9 ms). That is the signature of a **memory-contended** host: the scalar
 version's tail latency tracks whatever else is pulling DRAM (during these runs
@@ -236,6 +244,13 @@ X="I:/tmp/ann_eval_me/X.f32"      # 94 MB, regenerable — not committed
 gcc -O2 -std=c11 -I "$INC" -o build_knobs.exe  ann_robust.c -lm && ./build_knobs.exe  "$X" 61241 384
 gcc -O2 -std=c11 -I "$INC" -o build_kernel.exe ann_kernel.c -lm && ./build_kernel.exe "$X" 61241 384
 gcc -O2 -std=c11 -msse2 -I "$INC" -o build_sse.exe ann_sse.c -lm && ./build_sse.exe "$X" 61241 384
+```
+
+`make` is **not on `PATH`** in this shell (`bash: make: command not found`,
+rc=127). The working invocation for the repo suite is:
+
+```sh
+cd I:/DWGLS-native-fs && export PATH="/c/mingw64/bin:$PATH" && mingw32-make test
 ```
 
 Outputs land in `robust.{log,csv}`, `kernel.{log,csv}`, `sse.{log,csv}`,
