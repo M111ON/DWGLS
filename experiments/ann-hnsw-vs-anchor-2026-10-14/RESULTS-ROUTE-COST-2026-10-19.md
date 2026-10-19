@@ -204,6 +204,14 @@ matched pair shares an mtime):
 | `kernelE/F/G/H*.{log,csv}` | 10-19 18:29–18:53 | §1.1 runs. **Per-run names**, so these do not collide — the fix the single tracked `kernel.csv` still lacks |
 | `kernel-verify-run3.csv` | 10-19 19:14 | third independent H→G run (1.73×/1.80×). Renamed after the run because the harness overwrote the tracked `kernel.csv`; that file was then restored from HEAD |
 
+**Do not count `kernelE-run1.log` / `kernelG-run1.log` as runs.** Both are
+byte-identical copies of their siblings (`md5sum` matches `kernelE.log` and
+`kernelG.log` exactly, differing only by mtime) — a copy made for safety, not a
+second invocation. The H→G evidence is **three** distinct runs and they are
+distinct by content (`kernelH.csv`, `kernelH-run2.csv`, `kernel-verify-run3.csv`
+all differ). A match count on files that are copies is the same error this
+section already documents for stdout-only runs, in the other direction.
+
 `sse.csv` post-dating `sse.log` by 4 minutes is the whole contradiction below.
 
 **Provenance warning — the two tracked files are from DIFFERENT runs and

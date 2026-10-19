@@ -1,0 +1,16 @@
+=== distance kernel: where the ms go (K=8, iters=2, top-5) ===
+corpus 61241 x 384, 200 queries, -O2, single-thread
+
+kernel      config   mean_ms   p50_ms    p95_ms    scanned  top5     vs A
+A dbl+norm  topb2    43.43     45.73     92.48     4653434  200/200    1.00x
+A dbl+norm  brute    116.65    107.39    191.04    61241    167/200    1.00x
+B flt+norm  topb2    37.25     42.49     80.18     4653434  200/200    1.17x
+B flt+norm  brute    97.68     86.03     145.80    61241    167/200    1.19x
+C f4(unit)  topb2    8.83      8.48      16.64     4653434  200/200    4.92x
+C f4(unit)  brute    17.43     15.23     31.68     61241    167/200    6.69x
+D f4+norm   topb2    27.56     30.80     58.93     4653434  200/200    1.58x
+D f4+norm   brute    66.94     62.39     99.12     61241    167/200    1.74x
+E d4+norm   topb2    31.75     32.05     68.94     4653434  200/200    1.37x
+E d4+norm   brute    78.60     68.11     117.78    61241    167/200    1.48x
+
+DONE
