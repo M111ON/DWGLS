@@ -198,7 +198,7 @@ matched pair shares an mtime):
 | file | mtime | note |
 |---|---|---|
 | `robust.log` | 10-19 17:13 | the 5-seed §3.2 evidence |
-| `kernel.csv` | 10-19 17:44 → **later** | run 2 kernel table (A–D). **Overwritten again at 18:51** by the §1.1 A–H run; the 4-variant run-2 table now lives only in git history (`git show <commit>:…/kernel.csv`) |
+| `kernel.csv` | 10-19 17:44 → **later** | run 2 kernel table (A–D). **Overwritten at 18:51** by the §1.1 A–H run and **again at 18:57** by its run 2, so the 4-variant run-2 table that §1's "run 2" column quotes now lives **only in git history** (`git show a866512:…/kernel.csv`; run 1's is at `905f620`). Then overwritten a third time at 19:14 by the run-3 harness and **restored from HEAD**, which is why its mtime reads **19:15** — that mtime is the `git checkout`, **not a run**. Its committed content is the A–H run-2 table and is md5-identical to `kernelH-run2.csv` (both `2b5af98…`), so the two files are one measurement; do not read them as two |
 | `sse.log` | 10-19 17:44 | same invocation as the original `kernel.csv` |
 | `sse.csv` | 10-19 17:48 | **4 min later → a different run** (the 3-rep loop) |
 | `kernelE/F/G/H*.{log,csv}` | 10-19 18:29–18:53 | §1.1 runs. **Per-run names**, so these do not collide — the fix the single tracked `kernel.csv` still lacks |
