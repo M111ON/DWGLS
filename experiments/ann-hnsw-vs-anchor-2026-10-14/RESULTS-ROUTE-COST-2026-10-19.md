@@ -374,10 +374,17 @@ Two real defects sit underneath it, both worth fixing regardless of RAM:
    looks like a safety check and is really a silent-corruption path.
 
 The `25 MB → 378 MB → 302 MB` I saw across the session is this same allotment
-being rebuilt by `lz_index_cache_invalidate()` + `lz_index_load()` each time the
-index's mtime/size changed (the file was rewritten at 18:19 while the server held
-it). Each reload `calloc`s/touches a fresh ~274 MB; what the OS retains between
-reloads is the commit, not the pages.
+being rebuilt each time the index's mtime/size changed (the file was rewritten at
+18:19 while the server held it). **This is not a leak** — `lz_index_cached()`
+compares mtime+size, and on change calls `lz_index_cache_invalidate()`, which
+runs `lz_index_free()`: that frees **every** `a[i].vec` in a loop and then the
+array itself (`ann_search.c:474-477`). The realloc'd `LZEntry` array is likewise
+freed. So a reload drops the old ~274 MB *before* allocating the new one, and the
+peak is one allotment, not two. The earlier reading of "no free on the reload
+path" was wrong — I had grepped only the surrounding 30 lines and missed
+`lz_index_cache_invalidate` at 484. What actually moves is the **commit** (what
+the process has reserved), while the **working set stays 3.4 MB**: the pages are
+genuinely released and re-committed, so the RSS number is not evidence of growth.
 
 ---
 
