@@ -242,4 +242,22 @@ Outputs land in `robust.{log,csv}`, `kernel.{log,csv}`, `sse.{log,csv}`,
 `knobs_{iters,width,frontier}.csv`, `lat.csv`. `build_*.exe` are
 `build/`-ignored by `.gitignore:2` — only the `.c` and the `.csv` are tracked.
 
+**Run under the real host name, not a renamed copy.** These harnesses hard-code
+`HOST_NAME`/`SRC_LABEL` as string literals (e.g. `"X_unitnorm"`, `"ann_sse"`), so
+a copy compiled under a different name stamps wrong provenance into the CSV. Keep
+the filename as listed above.
+
+**Keep the `.log` files, not just the `.csv`.** `robust.log` carries the per-seed
+detail *and* the aggregate that the §3.2 table summarises — it is the evidence
+that the recall table is a real 5-seed draw. A later session (or an auditor) can
+re-derive the table only from the log.
+
+**Verification scope, stated explicitly.** `make test` in this repo covers
+TIER1/TIER2 (154 + 4) and does **not** include these harnesses — they are
+standalone and outside the build graph. They were verified by: (1) clean compile
+under `-Wall -Wextra -pedantic` (0 warnings), (2) each harness's own in-built
+correctness gate — `top5_match` 200/200 for the kernel/SSE variants, and the
+unit-norm precondition `max |‖x‖−1| = 5.96e-07`, (3) `make test` green as a
+no-regression control on the core it links against.
+
 *Session 2026-10-19 · DWGLS-native-fs `feat/geo-native-fs` · 6 sources, real corpus*
