@@ -33,30 +33,32 @@ therefore cannot pay for a kernel that is 5× too slow.
 ## 1. Kernel isolation — `ann_kernel.c`
 
 Same corpus, same queries, same top-k insertion loop; only the kernel changes.
-`topb=2` vs full exact scan, `K=8`, `iters=2`.
+`topb=2` vs full exact scan, `K=8`, `iters=2`. Two runs, ~5 h apart, different
+host load — both shown, because the gap between them is itself a result:
 
-| kernel | routed topb=2 | brute (exact) | note |
-|---|---|---|---|
-| A `double` scalar + `double` norm | 45.5 ms | 113.9 ms | **what the server does** |
-| B `float` scalar + `float` norm | 43.1 ms | 111.6 ms | 1.06× |
-| C `float` 4-accumulator, **no norm** | **9.5 ms** | **20.3 ms** | cosine == dot (unit-norm) |
-| D `float` 4-accumulator + `float` norm | 31.1 ms | 76.8 ms | norm alone costs 3.3× |
+| kernel | routed run1 | routed run2 | brute run1 | brute run2 | note |
+|---|---|---|---|---|---|
+| A `double` scalar + norm | 45.5 ms | 31.8 ms | 113.9 ms | 79.5 ms | **what the server does** |
+| B `float` scalar + norm | 43.1 ms | 30.0 ms | 111.6 ms | 78.9 ms | ~1.06× |
+| C `float` 4-acc, **no norm** | **9.5 ms** | **7.07 ms** | **20.3 ms** | **13.8 ms** | cosine == dot (unit-norm) |
+| D `float` 4-acc + `float` norm | 31.1 ms | 21.7 ms | 76.8 ms | 56.6 ms | norm alone ≈ 3× |
 
-**A → C is 4.8×.** Two separate wins, and they are not the same size:
+**A → C is 4.8× in run 1 and 4.5× in run 2.** Two separate wins, and they are not
+the same size:
 
 1. **drop the norm pass** (safe: every row is unit-norm — `max | ‖x‖−1 | = 5.96e-07`)
-   A → D is 1.47×, D → C is 3.26×.
+   A → D is 1.47×, D → C is 3.26× (run 1 ratios).
 2. **break the accumulator dependency chain** `double` → 4× `float` (A → B is only
    1.06× on its own, so the scalar *type* is not the issue — the *chain* is).
 
 Routing's ceiling is fixed by how much it prunes: `topb=2` scores ~35% of the
-rows, so at best ~2.9× exact **with the same kernel**. C shows 2.1×. Both
-numbers are real; routing is not broken, it was simply being compared against a
-handicapped baseline.
+rows, so at best ~2.9× exact **with the same kernel**. C shows 2.1× (run 1) /
+1.96× (run 2). Both numbers are real; routing is not broken, it was simply being
+compared against a handicapped baseline.
 
 ---
 
-## 2. SSE2 buys nothing — `ann_sse.c`
+## 2. SIMD is real but modest, and the box is too noisy to pin it — `ann_sse.c`
 
 The obvious next move is SIMD. On this box only SSE2 is safe (no AVX/AVX2/FMA —
 G4400). Same 200 queries, exact scan, variants C/E/F confirmed **200/200 identical
@@ -64,21 +66,45 @@ top-5**. Variant R is deliberately *not* identical — it is the approximate rou
 and matches the exact answer on **167/200** (0.835 @ top-5), which is the
 recall it is buying its speed with. That is the whole trade, side by side.
 
-| variant | mean | p50 | p95 | speedup |
-|---|---|---|---|---|
-| C scalar `float` 4-acc | 18.11 ms | 15.91 ms | 32.97 ms | 1.00× |
-| E SSE2 (4× unrolled, 4 acc) | 18.45 ms | 14.90 ms | 31.98 ms | **0.98×** |
-| F SSE2 + 64-row blocking | 16.26 ms | 14.82 ms | 30.58 ms | **1.11×** |
-| R routed `topb=2`, SSE2 | 8.03 ms | 6.75 ms | 16.22 ms | **2.26×** |
+**Repeatability first, because it changed the answer.** The same binary, same
+corpus, run 6 times across three sessions on a **shared 2-core machine**:
 
-SSE2 is a **wash** — faster p50, slower mean, no honest gain. The exact scan is
-**memory-bandwidth bound**, not compute bound: 61,241 × 384 × 4 B = 94 MB pulled
-from DRAM per query at ~5 GB/s effective. Blocking helps only 1.11× because the
-tile still has to come from DRAM.
+| run | C | E SSE2 | speedup E vs C |
+|---|---|---|---|
+| 1 (quiet) | 18.11 ms | 18.45 ms | **0.98×** |
+| 2 | 13.56 ms | 10.94 ms | 1.24× |
+| 3 | 15.12 ms | 10.96 ms | 1.38× |
+| 4 | 13.49 ms | 11.10 ms | 1.21× |
+| 5 | 12.73 ms | 11.90 ms | 1.07× |
+| 6 (first rerun) | 13.82 ms | — | — |
+
+`C` varies **1.4×** run to run (12.7–18.1 ms) while `E` is far more stable
+(10.9–11.9 ms). That is the signature of a **memory-contended** host: the scalar
+version's tail latency tracks whatever else is pulling DRAM (during these runs
+`ann_search.exe` had grown 25 MB → 378 MB re-indexing, and the CPU was at 87% of
+a 2-core box).
+
+**Honest verdict: SSE2 is worth roughly 1.1–1.4×, not 0.98×.** Run 1 was taken
+on a quiet machine and is the least representative of the six. I published
+"0.98×, buys nothing" off that single run; five reruns do not support it. The
+correction favours SIMD, and it does **not** change the conclusion below.
+
+What survives, because it is a same-run ratio and both variants are measured
+back-to-back: **routed `topb=2` is 2.1–2.6× the exact scan (mean 2.30× across
+the 3-rep batch)** — stable across every run, consistent with the ~2.9× ceiling
+implied by its 35% scan fraction.
+
+Blocking (F) is consistently no better than plain SSE2 (1.11–1.24× vs C), so
+the 64-row tile is **not** earning its complexity — and it is the reason I
+cannot claim the scan is purely bandwidth bound. What is defensible without a
+quiet machine is only this: a 1.4× run-to-run swing on the scalar path while
+the SIMD path stays flat points at **memory contention**, and SSE2's flatness
+is the real argument for using it.
 
 **Consequence for §3.3:** widening the route (bigger `K`, more `topb`) trades
-recall for bandwidth, and bandwidth is exactly the scarce resource here.
-Routing is worth keeping precisely because it touches less memory.
+recall for bandwidth, and bandwidth is the contended resource on this host.
+Routing is worth keeping precisely because it touches less memory — that
+argument rests on the 2.3× (same-run, reproducible), not on the SIMD number.
 
 ---
 
@@ -147,35 +173,50 @@ anchor budget itself grows (train 70.9 s at K=64).
 
 ---
 
-## 5. Method notes — why absolute ms differ between these files
+## 5. Method notes — why absolute ms differ between these files, and between runs
 
-`lat.csv` records brute at **57.6 ms**; `kernel.csv` records brute variant A at
-**113.9 ms**. Both are real measurements of the same configuration. Causes:
+`lat.csv` records brute at **57.6 ms**; `kernel.csv` run 1 records brute variant A
+at **113.9 ms**; `kernel.csv` run 2 records the same config at **79.5 ms**. All
+three are real measurements of the same configuration. Causes:
 
 - different `k` (top-10 vs top-5) → different insertion-loop cost;
 - cache state (in `kernel.csv` brute runs immediately after a routed pass);
-- 200 queries is small: p95/max are dominated by a handful of outliers.
+- 200 queries is small: p95/max are dominated by a handful of outliers;
+- **host contention** — these runs share a 2-core G4400 with a live `ann_search.exe`
+  that grew 25 MB → 378 MB mid-session (§2).
 
-**Cross-harness absolute times are not comparable; only within-run ratios are.**
-The 4.8× A→C and 2.1× C→routed ratios are same-run, same-query, same-k and are
-the numbers to trust. The `16 ms` in the handoff was never reproduced by any
-harness here.
+**Cross-harness and cross-run absolute times are not comparable; only within-run
+ratios are.** An earlier version of this section called the A→C gap "4.8×" as if
+it were stable. Run 2 measured it at 4.5× (31.8 → 7.07 ms), and C itself moved
+9.5 → 7.07 ms. The ratio is robust; the multiplier is approximate.
+
+| ratio | run 1 | run 2 | 3-rep batch |
+|---|---|---|---|
+| A → C (kernel fix) | 4.8× | 4.5× | — |
+| C → routed topb2 | 2.1× | 1.96× | 2.30× (mean) |
+| C → E (SSE2) | 0.98× | 1.24× | 1.07–1.38× |
+
+Order of magnitude is verified; the exact figures are subject to the ±30% host
+noise documented in §2. The `16 ms` in the handoff was never reproduced by any
+harness here, in any run.
 
 ---
 
 ## 6. Recommendation
 
 1. **Kernel first** (`src/ann_search.c:835`): single-pass `float` with 4
-   accumulators, norm skipped for unit-norm entries — **4.8×** on the scan,
+   accumulators, norm skipped for unit-norm entries — **~4.5–4.8×** on the scan,
    applies to *every* path including full scan. Store a `unit_norm` flag per
    entry rather than assuming, and keep the norm path for any entry that fails.
-2. **Do not add SIMD for speed** on this hardware — memory-bound. Blocking is
-   the only true 1.11× and it is marginal.
-3. **`iters=2`** for regrow: regrow 9.22 s → **0.90 s**, recall within noise.
-4. **`K=8, topb=4`** as the serving default: 0.989 recall at 59% scan,
-   ~8 ms with the fixed kernel.
-5. Routing keeps its case, but its value is **bandwidth**, not arithmetic —
-   re-evaluate it whenever corpus size changes, since the 2.1× is a function of
+2. **SSE2 is a modest win (1.1–1.4×) with a stability bonus** — it is flat across
+   runs while the scalar path swings 1.4×. Take it, but do not expect it to
+   dominate. Blocking adds complexity for nothing → drop.
+3. **Never benchmark this box while `ann_search.exe` is indexing.** Same-run
+   pairs only; single runs have already produced one wrong published number (§2).
+4. **`iters=2`** for regrow: regrow 9.22 s → **0.90 s**, recall within noise.
+5. **`K=8, topb=4`** as the serving default: 0.989 recall at 59% scan.
+6. Routing keeps its case, but its value is **bandwidth**, not arithmetic —
+   re-evaluate it whenever corpus size changes, since the ~2.3× is a function of
    the 35% scan fraction, not of routing's design.
 
 ---

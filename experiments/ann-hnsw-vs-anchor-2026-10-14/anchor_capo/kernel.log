@@ -2,13 +2,13 @@
 corpus 61241 x 384, 200 queries, -O2, single-thread
 
 kernel      config   mean_ms   p50_ms    p95_ms    scanned  top5     vs A
-A dbl+norm  topb2    45.53     53.40     100.79    4653434  200/200    1.00x
-A dbl+norm  brute    113.94    100.50    167.14    61241    167/200   
-B flt+norm  topb2    43.14     51.50     99.08     4653434  200/200    1.00x
-B flt+norm  brute    111.63    98.94     175.26    61241    167/200   
-C f4(unit)  topb2    9.54      8.53      17.48     4653434  200/200    1.00x
-C f4(unit)  brute    20.32     17.04     38.29     61241    167/200   
-D f4+norm   topb2    31.08     34.17     69.63     4653434  200/200    1.00x
-D f4+norm   brute    76.75     69.04     110.45    61241    167/200   
+A dbl+norm  topb2    31.78     34.60     62.68     4653434  200/200    1.00x
+A dbl+norm  brute    79.51     73.37     105.12    61241    167/200   
+B flt+norm  topb2    29.99     34.43     52.66     4653434  200/200    1.00x
+B flt+norm  brute    78.85     71.94     107.51    61241    167/200   
+C f4(unit)  topb2    7.07      7.48      13.29     4653434  200/200    1.00x
+C f4(unit)  brute    13.82     12.96     21.97     61241    167/200   
+D f4+norm   topb2    21.65     26.90     39.44     4653434  200/200    1.00x
+D f4+norm   brute    56.59     51.13     77.47     61241    167/200   
 
 DONE
