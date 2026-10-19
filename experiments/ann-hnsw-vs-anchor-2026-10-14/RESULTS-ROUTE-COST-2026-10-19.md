@@ -67,16 +67,48 @@ and matches the exact answer on **167/200** (0.835 @ top-5), which is the
 recall it is buying its speed with. That is the whole trade, side by side.
 
 **Repeatability first, because it changed the answer.** The same binary, same
-corpus, run 6 times across three sessions on a **shared 2-core machine**:
+corpus, run repeatedly on a **shared 2-core machine**. Only two runs left an
+artifact; the rest were stdout-only and are **not recoverable** — I checked the
+scratch and cache directories and found no saved copy of them, so they cannot be
+re-audited and are marked as such rather than presented as equal evidence:
 
-| run | C | E SSE2 | speedup E vs C |
-|---|---|---|---|
-| 1 (quiet) | 18.11 ms | 18.45 ms | **0.98×** |
-| 2 | 13.56 ms | 10.94 ms | 1.24× |
-| 3 | 15.12 ms | 10.96 ms | 1.38× |
-| 4 | 13.49 ms | 11.10 ms | 1.21× |
-| 5 | 12.73 ms | 11.90 ms | 1.07× |
-| 6 (first rerun) | 13.82 ms | — | — |
+| run | evidence | C | E SSE2 | E vs C |
+|---|---|---|---|---|
+| 1 (quiet) | stdout only — **unrecoverable** | 18.11 ms | 18.45 ms | **0.98×** |
+| 2 | `sse.log` (17:44) | 13.56 ms | 10.94 ms | 1.24× |
+| 3 | stdout only — **unrecoverable** | 15.12 ms | 10.96 ms | 1.38× |
+| 4 | stdout only — **unrecoverable** | 13.49 ms | 11.10 ms | 1.21× |
+| 5 | `sse.csv` (17:48, last of a 3-rep loop) | 12.73 ms | 11.90 ms | 1.07× |
+
+Two consequences, both of which weaken the section's own "run 6 times" framing:
+
+- The **0.98× headline rests on the single run with no artifact.** That is
+  precisely why it was published wrong: one unrepeatable observation, no saved
+  output, and the doc then cited "6 runs" as if the count were the evidence.
+- The "3-rep batch, mean 2.30×" is **also only partially recoverable** — the loop
+  wrote the same fixed `sse.csv` each iteration, so the file preserves the *last*
+  rep (row 5), not the mean. Only the `R/C` ratio survived in both files
+  (2.30× in `sse.log`, 2.12× here).
+
+What is evidenced and therefore defensible: **routed `topb=2` sits at 2.1–2.3×
+the exact scan in every measurement that has an artifact**, and `C` is measured
+independently by two different harnesses in the same 12.7–13.8 ms band
+(`sse.csv`, `kernel.csv`). The SIMD multiplier is the unstable quantity. Treat the
+"6 runs" as "≥2 evidenced runs plus 3 unrecoverable observations" — the
+conclusion does not need the count, and the count should not be used to sell it.
+
+**Forensic check on the tracked artifacts** (use these, not memory, to tell which
+run a file came from — one invocation writes both its csv and its log, so a
+matched pair shares an mtime):
+
+| file | mtime | note |
+|---|---|---|
+| `robust.log` | 10-19 17:13 | the 5-seed §3.2 evidence |
+| `kernel.csv` | 10-19 17:44 | run 2 kernel table — matches §1 run-2 column |
+| `sse.log` | 10-19 17:44 | same invocation as `kernel.csv` |
+| `sse.csv` | 10-19 17:48 | **4 min later → a different run** (the 3-rep loop) |
+
+`sse.csv` post-dating `sse.log` by 4 minutes is the whole contradiction below.
 
 **Provenance warning — the two tracked files are from DIFFERENT runs and
 disagree.** `sse.csv` and `sse.log` are both committed, but they do not describe
@@ -90,13 +122,14 @@ the same measurement, and a reader diffing them gets contradictory ratios:
 Neither is run 1 — the run that produced the original 0.98× headline
 (`C 18.11 / E 18.45`) is in the repo in **no** file. The program `fopen`s a fixed
 name and overwrites on every invocation, so the csv is simply whichever run
-finished last (a later 3-rep batch rebuilt it after the log was written). The
+finished last. The
 timestamps not matching is the tell: a matched pair always shares one, because a
 single invocation writes both.
 
 What survives this contradiction is the one thing both files agree on: **routed
-`topb=2` is ~2.1–2.3× the exact scan** (2.30× and 2.12× here, 2.30× mean of the
-3-rep batch). The SIMD ratio is the unstable one, which is the point.
+`topb=2` is ~2.1–2.3× the exact scan** (2.30× in `sse.log`, 2.12× in `sse.csv`).
+Two independent artifacts, two runs, same conclusion. The SIMD ratio is the
+unstable one, which is the point.
 
 If a specific run must be auditable, tee it to a per-run name; the single tracked
 csv is the last writer, not the evidence set.
@@ -113,9 +146,10 @@ on a quiet machine and is the least representative of the six. I published
 correction favours SIMD, and it does **not** change the conclusion below.
 
 What survives, because it is a same-run ratio and both variants are measured
-back-to-back: **routed `topb=2` is 2.1–2.6× the exact scan (mean 2.30× across
-the 3-rep batch)** — stable across every run, consistent with the ~2.9× ceiling
-implied by its 35% scan fraction.
+back-to-back: **routed `topb=2` is 2.1–2.3× the exact scan** — true in both
+artifacts that exist (2.30× `sse.log`, 2.12× `sse.csv`), consistent with the
+~2.9× ceiling implied by its 35% scan fraction. This is the one claim in the
+section resting on two independent saved outputs rather than on a single run.
 
 Blocking (F) is consistently no better than plain SSE2 (1.11–1.24× vs C), so
 the 64-row tile is **not** earning its complexity — and it is the reason I
@@ -218,11 +252,16 @@ ratios are.** An earlier version of this section called the A→C gap "4.8×" as
 it were stable. Run 2 measured it at 4.5× (31.8 → 7.07 ms), and C itself moved
 9.5 → 7.07 ms. The ratio is robust; the multiplier is approximate.
 
-| ratio | run 1 | run 2 | 3-rep batch |
+| ratio | run 1 (stdout only) | run 2 (`sse.log`, `kernel.csv`) | `sse.csv` (later run) |
 |---|---|---|---|
 | A → C (kernel fix) | 4.8× | 4.5× | — |
-| C → routed topb2 | 2.1× | 1.96× | 2.30× (mean) |
-| C → E (SSE2) | 0.98× | 1.24× | 1.07–1.38× |
+| C → routed topb2 | 2.1× | 1.96× | 2.12× |
+| C → E (SSE2) | 0.98× | 1.24× | 1.07× |
+
+Only the middle column has artifacts behind it; run 1 and the `sse.csv` run are
+each a single unrecoverable/last-writer observation. The `C → routed` ratio is
+the only one that is ≥2-sigma stable across every run — which is why §6 leans on
+it and not on the others.
 
 Order of magnitude is verified; the exact figures are subject to the ±30% host
 noise documented in §2. The `16 ms` in the handoff was never reproduced by any
