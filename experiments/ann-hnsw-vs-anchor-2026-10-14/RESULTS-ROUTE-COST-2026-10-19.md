@@ -78,13 +78,28 @@ corpus, run 6 times across three sessions on a **shared 2-core machine**:
 | 5 | 12.73 ms | 11.90 ms | 1.07× |
 | 6 (first rerun) | 13.82 ms | — | — |
 
-**Provenance warning — `sse.csv` on disk holds only the LAST run.** The tracked
-`sse.csv` currently contains run 5 (`C 12.73 / E 11.90 / F 11.41 / R 6.01`); the
-program overwrites it on every invocation, so the run-1 numbers that produced the
-original 0.98× headline (`C 18.11 / E 18.45`) are **no longer in the repo**. Runs
-2–4 and 6 were printed to stdout only. If a specific run needs to be auditable
-later, tee it to a per-run name; the single tracked CSV is the last writer, not
-the evidence set.
+**Provenance warning — the two tracked files are from DIFFERENT runs and
+disagree.** `sse.csv` and `sse.log` are both committed, but they do not describe
+the same measurement, and a reader diffing them gets contradictory ratios:
+
+| tracked file | C | E SSE2 | E/C | R routed | R/C |
+|---|---|---|---|---|---|
+| `sse.log` (17:44) | 13.56 ms | 10.94 ms | **1.24×** | 5.89 ms | 2.30× |
+| `sse.csv` (17:48) | 12.73 ms | 11.90 ms | **1.07×** | 6.01 ms | 2.12× |
+
+Neither is run 1 — the run that produced the original 0.98× headline
+(`C 18.11 / E 18.45`) is in the repo in **no** file. The program `fopen`s a fixed
+name and overwrites on every invocation, so the csv is simply whichever run
+finished last (a later 3-rep batch rebuilt it after the log was written). The
+timestamps not matching is the tell: a matched pair always shares one, because a
+single invocation writes both.
+
+What survives this contradiction is the one thing both files agree on: **routed
+`topb=2` is ~2.1–2.3× the exact scan** (2.30× and 2.12× here, 2.30× mean of the
+3-rep batch). The SIMD ratio is the unstable one, which is the point.
+
+If a specific run must be auditable, tee it to a per-run name; the single tracked
+csv is the last writer, not the evidence set.
 
 `C` varies **1.4×** run to run (12.7–18.1 ms) while `E` is far more stable
 (10.9–11.9 ms). That is the signature of a **memory-contended** host: the scalar
