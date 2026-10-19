@@ -38,7 +38,7 @@ host load — both shown, because the gap between them is itself a result:
 
 | kernel | routed run1 | routed run2 | brute run1 | brute run2 | note |
 |---|---|---|---|---|---|
-| A `double` scalar + norm | 45.5 ms | 31.8 ms | 113.9 ms | 79.5 ms | **what the server does** |
+| A `double` scalar + norm | 45.5 ms | 31.8 ms | 113.9 ms | 79.5 ms | ~~what the server does~~ **NOT the server — see §1.1** |
 | B `float` scalar + norm | 43.1 ms | 30.0 ms | 111.6 ms | 78.9 ms | ~1.06× |
 | C `float` 4-acc, **no norm** | **9.5 ms** | **7.07 ms** | **20.3 ms** | **13.8 ms** | cosine == dot (unit-norm) |
 | D `float` 4-acc + `float` norm | 31.1 ms | 21.7 ms | 76.8 ms | 56.6 ms | norm alone ≈ 3× |
@@ -55,6 +55,44 @@ Routing's ceiling is fixed by how much it prunes: `topb=2` scores ~35% of the
 rows, so at best ~2.9× exact **with the same kernel**. C shows 2.1× (run 1) /
 1.96× (run 2). Both numbers are real; routing is not broken, it was simply being
 compared against a handicapped baseline.
+
+### 1.1 Correction: variant A is NOT the server, and the win does not need `float`
+
+Re-reading `src/ann_search.c` before proposing the patch showed the table above
+mislabel A. The server parses `norm` **once per entry at index-load time**
+(`lz_entry_parse`, lines 449–451: `e->norm = sqrt(n2)`) and its only scoring loop
+is `dot / (qn * ents[ei].norm)` (835–837). A **recomputes** the norm inside the
+scored loop, so A is a *pessimised* baseline that no deployed path has.
+
+Added H (server's real shape: `double` 1-acc + precomputed norm) and G (H with
+the dot widened to 4 independent `double` accumulators — the actual proposed
+patch) to isolate the accumulator change by itself:
+
+| kernel | what it is | topb2 run1 | topb2 run2 | brute run1 | brute run2 |
+|---|---|---|---|---|---|
+| H `double` 1-acc + stored norm | **the live server, verbatim** | 23.66 ms | 21.10 ms | 55.66 ms | 54.00 ms |
+| G `double` 4-acc + stored norm | H + widened accumulators, **still exact** | 14.64 ms | 11.85 ms | 32.73 ms | 28.10 ms |
+| E `double` 4-acc + inline norm | G with norm recomputed per row | 35.76 ms | 30.63 ms | 86.41 ms | 80.24 ms |
+| F `double` 4-acc, no norm | G, correctness from unit-norm | 13.03 ms | 13.15 ms | 29.65 ms | 26.91 ms |
+| C `float` 4-acc, no norm | F in `float` | 11.59 ms | 9.42 ms | 19.22 ms | 18.09 ms |
+
+Three conclusions, all from same-run pairs of two independent runs:
+
+1. **`float` is worth only 1.26× over `double`** at identical structure (G/C:
+   14.64→11.59 and 11.85→9.42 — 1.26× both runs). The **≈4.5–4.8×** headline was
+   never a precision win; **3.1× of it was dropping a norm pass the server does
+   not even perform.**
+2. **H → G = 1.62×/1.78× (routed), 1.70×/1.92× (brute)** — a pure-`double`
+   accumulator widening, arithmetic unchanged, `top5_match` 200/200. Real, free,
+   and it needs **no** float and **no** unit-norm assumption.
+3. **H → C** (server → the float/no-norm variant) is **2.04×/2.24×** routed,
+   i.e. the *honest* total from today's server. Quoting 4.5–4.8× against A
+   overstated the live improvement by roughly 2×.
+
+The earlier SSE2 variant **R** result (167/200, §2) is the standing reminder that
+not every kernel rewrite preserves ranking; G/H are safe by construction because
+the accumulators stay `double` and the norm is unchanged — only the *order* of
+additions moves, and `top5_match` is 200/200 across both runs and both configs.
 
 ---
 
@@ -104,9 +142,10 @@ matched pair shares an mtime):
 | file | mtime | note |
 |---|---|---|
 | `robust.log` | 10-19 17:13 | the 5-seed §3.2 evidence |
-| `kernel.csv` | 10-19 17:44 | run 2 kernel table — matches §1 run-2 column |
-| `sse.log` | 10-19 17:44 | same invocation as `kernel.csv` |
+| `kernel.csv` | 10-19 17:44 → **later** | run 2 kernel table (A–D). **Overwritten again at 18:51** by the §1.1 A–H run; the 4-variant run-2 table now lives only in git history (`git show <commit>:…/kernel.csv`) |
+| `sse.log` | 10-19 17:44 | same invocation as the original `kernel.csv` |
 | `sse.csv` | 10-19 17:48 | **4 min later → a different run** (the 3-rep loop) |
+| `kernelE/F/G/H*.{log,csv}` | 10-19 18:29–18:53 | §1.1 runs. **Per-run names**, so these do not collide — the fix the single tracked `kernel.csv` still lacks |
 
 `sse.csv` post-dating `sse.log` by 4 minutes is the whole contradiction below.
 
@@ -271,21 +310,74 @@ harness here, in any run.
 
 ## 6. Recommendation
 
-1. **Kernel first** (`src/ann_search.c:835`): single-pass `float` with 4
-   accumulators, norm skipped for unit-norm entries — **~4.5–4.8×** on the scan,
-   applies to *every* path including full scan. Store a `unit_norm` flag per
-   entry rather than assuming, and keep the norm path for any entry that fails.
-2. **SSE2 is a modest win (1.1–1.4×) with a stability bonus** — it is flat across
+1. **Kernel, and stay in `double`** (`src/ann_search.c:835`): widen the dot to 4
+   independent `double` accumulators (variant G) — **1.6–1.9×** on the scan
+   against the live server (H), applies to *every* path including full scan, and
+   changes nothing but the order of additions (`top5_match` 200/200). Reaching
+   variant C's 4.5–4.8× needs `float` (only 1.26× more) **plus** dropping the
+   norm pass — and the norm pass is already dropped server-side, so that number
+   was never available. Do not trade exactness for 1.26×.
+2. **Do not "optimise" the norm away.** It is already computed once per entry at
+   load (§1.1). The 3.1× the old headline attributed to skipping it was an
+   artifact of benchmarking against variant A, which no deployed path resembles.
+3. **SSE2 is a modest win (1.1–1.4×) with a stability bonus** — it is flat across
    runs while the scalar path swings 1.4×. Take it, but do not expect it to
    dominate. Blocking adds complexity for nothing → drop.
-3. **Never benchmark this box while `ann_search.exe` is indexing.** Same-run
+4. **Never benchmark this box while `ann_search.exe` is indexing.** Same-run
    pairs only; single runs have already produced one wrong published number (§2).
-4. **`iters=2`** for regrow: anchor train 1.08 s vs 15.31 s (**14.2×** measured,
+5. **`iters=2`** for regrow: anchor train 1.08 s vs 15.31 s (**14.2×** measured,
    14.9× on an earlier run) at identical recall — regrow drops from ~9 s to ~1 s.
-5. **`K=8, topb=4`** as the serving default: 0.989 recall at 59% scan.
-6. Routing keeps its case, but its value is **bandwidth**, not arithmetic —
+6. **`K=8, topb=4`** as the serving default: 0.989 recall at 59% scan.
+7. Routing keeps its case, but its value is **bandwidth**, not arithmetic —
    re-evaluate it whenever corpus size changes, since the ~2.3× is a function of
    the 35% scan fraction, not of routing's design.
+
+---
+
+## 6.1 Why the server fills 300 MB — `ann_search.c:440`
+
+Not a leak. The loader allocates the **maximum** vector width for every entry
+instead of the width actually present:
+
+```c
+e->vec = (float *)malloc(1024 * sizeof(float));   /* 4096 B, always */
+...
+while (*pp && *pp != ']' && e->dim < 1024) { ... }   /* dim ends up 384 */
+```
+
+The arithmetic against the live process is what matters:
+
+| item | bytes/entry | × 61,539 | note |
+|---|---|---|---|
+| `LZEntry` (with `char file[256]`, `char sid[64]`) | ~360 | **22.2 MB** | in `realloc`'d array |
+| `vec = malloc(1024 * sizeof(float))` | 4096 | **252.1 MB** | **only 1536 B used at dim=384** |
+| — of which wasted | 2560 | **157.5 MB** | allocated, never touched |
+| **total committed** | 4456 | **274.2 MB** | matches the live process |
+
+Live process: `PrivateMemorySize64` = **302.4 MB**, `WorkingSet64` = **3.4 MB**
+over three samples 2 s apart. So ~274 MB of it is this data and the residual is
+allocator/loader overhead. The **3.4 MB working set** is the interesting number:
+Linux/zram-style paging aside, Windows is trimming pages the server never touches
+— the resident footprint is already ~1/90th of the commitment, so this is not a
+live performance problem, and it is **not** growth-by-leak.
+
+Two real defects sit underneath it, both worth fixing regardless of RAM:
+
+1. **157 MB of pure waste** — `malloc(1024 * sizeof(float))` when `dim` is known
+   to be 384. `malloc((size_t)e->dim * sizeof(float))` after parsing would save
+   it, but `dim` is only learned *during* parse; either parse into a stack buffer
+   of 1024 and then copy out at `dim`, or two-pass the line.
+2. **The hard cap is wrong for the data**: `dim < 1024` silently **truncates**
+   any embedding ≥1024 dims into a wrong-length vector. Nothing in the corpus
+   is that wide today (384 everywhere), so it is latent, not active — but it is
+   the same class of bug as the `ANCHR_MAXK`-style fixed bound: a constant that
+   looks like a safety check and is really a silent-corruption path.
+
+The `25 MB → 378 MB → 302 MB` I saw across the session is this same allotment
+being rebuilt by `lz_index_cache_invalidate()` + `lz_index_load()` each time the
+index's mtime/size changed (the file was rewritten at 18:19 while the server held
+it). Each reload `calloc`s/touches a fresh ~274 MB; what the OS retains between
+reloads is the commit, not the pages.
 
 ---
 

@@ -13,15 +13,20 @@
  *   B  float  scalar dot + float  norm
  *   C  float  4-accumulator dot, norm skipped (corpus is unit-norm)
  *   D  float  4-accumulator dot + float norm
+ *   E  double 4-accumulator dot + double norm   <-- stays in double throughout
  *
- * Why the double loop is slow: `s += a[j]*b[j]` is a serial dependency chain
- * on a double accumulator (4-cycle add latency on this G4400). 384 dims =
- * ~1500 cycles per vector before any throughput. Four independent accumulators
- * let the adds overlap.
+ * Variant E exists to answer "does the speedup require leaving double?".
+ * A is slow because `s += a[j]*b[j]` is a serial dependency chain (4-cycle add
+ * latency on this G4400): 384 dims ~ 1500 cycles before any throughput. The fix
+ * is INDEPENDENT accumulators so the adds overlap — NOT lower precision. E has
+ * the same 4-accumulator structure as C/D but every accumulator is double, so if
+ * E is near C's speed the double path is what the server should adopt: exact
+ * arithmetic, no unit-norm precondition, and no change in the scoring type.
  *
  * Correctness gate: every variant must return the SAME top-5 as variant A.
  * C is only valid because all 61,241 rows are unit-norm (verified: |x|-1 <
- * 1e-7 for 100.00% of rows), which makes cosine == dot.
+ * 1e-7 for 100.00% of rows), which makes cosine == dot. E needs no such
+ * precondition.
  *
  * Build: gcc -O2 -std=c11 -I I:/DWGLS-native-fs/core -o ann_kernel ann_kernel.c -lm
  * Run:   ./ann_kernel X.f32 61241 384
@@ -65,6 +70,17 @@ static double dot_f4(const float *a, const float *b, int d) {
     for (; j < d; j++) s0 += a[j]*b[j];
     return (double)((s0 + s1) + (s2 + s3));
 }
+/* same 4-accumulator structure, all-double: answers "is the win from breaking
+ * the dependency chain, or from dropping to float?" */
+static double dot_d4(const float *a, const float *b, int d) {
+    double s0 = 0, s1 = 0, s2 = 0, s3 = 0; int j = 0;
+    for (; j + 4 <= d; j += 4) {
+        s0 += (double)a[j]*(double)b[j]; s1 += (double)a[j+1]*(double)b[j+1];
+        s2 += (double)a[j+2]*(double)b[j+2]; s3 += (double)a[j+3]*(double)b[j+3];
+    }
+    for (; j < d; j++) s0 += (double)a[j]*(double)b[j];
+    return (s0 + s1) + (s2 + s3);
+}
 
 static double norm_double(const float *a, int d) {
     double s = 0; for (int j = 0; j < d; j++) s += (double)a[j]*a[j];
@@ -75,6 +91,26 @@ static double norm_float(const float *a, int d) {
     return s > 0 ? sqrt((double)s) : 1;
 }
 
+/* Production shape: the per-entry norm is computed ONCE at index-load time
+ * (the server stores ents[ei].norm and never recomputes it per query), so the
+ * hot loop is pure dot. Same 4-double-accumulator dot as E/F => exact. */
+static float *g_norms = NULL;      /* precomputed ||x|| per row */
+static const float *g_X0 = NULL;   /* corpus base, to recover the row index */
+static int g_dim0 = 0;
+static double score_d4_precomp(const float *qv, const float *xi, int dim, double qn) {
+    int idx = (int)((xi - g_X0) / g_dim0);
+    return dot_d4(qv, xi, dim) / (qn * (double)g_norms[idx]);
+}
+/* H = the ACTUAL server shape: 1-accumulator double dot + the per-entry norm
+ * the loader stored at index-load time (ann_search.c parses `norm` into
+ * LZEntry.norm once and never recomputes it per query). G is H with the dot
+ * widened to 4 independent accumulators, so H->G isolates the accumulator
+ * change alone — the exact patch under consideration. */
+static double score_h_precomp(const float *qv, const float *xi, int dim, double qn) {
+    int idx = (int)((xi - g_X0) / g_dim0);
+    return dot_double(qv, xi, dim) / (qn * (double)g_norms[idx]);
+}
+
 /* score one vector with the chosen kernel */
 static double score(const float *qv, const float *xi, int dim, int kernel, double qn) {
     double dot, xn = 1;
@@ -82,7 +118,12 @@ static double score(const float *qv, const float *xi, int dim, int kernel, doubl
     case 0: dot = dot_double(qv, xi, dim); xn = norm_double(xi, dim); break;
     case 1: dot = dot_float(qv, xi, dim);  xn = norm_float(xi, dim);  break;
     case 2: dot = dot_f4(qv, xi, dim);     xn = 1;                    break;
-    default:dot = dot_f4(qv, xi, dim);     xn = norm_float(xi, dim);  break;
+    case 3: dot = dot_f4(qv, xi, dim);     xn = norm_float(xi, dim);  break;
+    case 4: dot = dot_d4(qv, xi, dim);     xn = norm_double(xi, dim); break;
+    case 5: dot = dot_d4(qv, xi, dim);     xn = 1;                    break;
+    case 6: return score_d4_precomp(qv, xi, dim, qn);
+    case 7: return score_h_precomp(qv, xi, dim, qn);
+    default:dot = dot_f4(qv, xi, dim);     xn = 1;                    break;
     }
     return dot / (qn * xn);
 }
@@ -202,6 +243,11 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* kernel G: precompute per-row norms once, like the server does at load */
+    g_norms = (float *)malloc((size_t)n*sizeof(float));
+    g_X0 = X; g_dim0 = dim;
+    for (int i = 0; i < n; i++) g_norms[i] = (float)norm_double(X + (size_t)i*dim, dim);
+
     int *qi = (int *)malloc((size_t)NQ*sizeof(int));
     srand(11);
     for (int q = 0; q < NQ; q++) qi[q] = rand() % n;
@@ -211,24 +257,27 @@ int main(int argc, char **argv) {
     for (int q = 0; q < NQ; q++)
         serve_routed(X,n,dim,C,2,lab,X+(size_t)qi[q]*dim,0,ref[q]);
 
-    const char *kname[] = {"A dbl+norm", "B flt+norm", "C f4(unit)", "D f4+norm"};
+    const char *kname[] = {"A dbl+norm", "B flt+norm", "C f4(unit)", "D f4+norm", "E d4+norm", "F d4(unit)", "G d4+pre", "H dbl+pre"};
     FILE *csv = fopen("kernel.csv", "w");
     fprintf(csv, "kernel,config,mean_ms,p50_ms,p95_ms,max_ms,scanned,top5_match\n");
 
     printf("%-11s %-8s %-9s %-9s %-9s %-8s %-8s %-s\n",
            "kernel", "config", "mean_ms", "p50_ms", "p95_ms", "scanned", "top5", "vs A");
-    for (int kd = 0; kd < 4; kd++) {
+    double baseA[2] = {0, 0};
+    for (int kd = 0; kd < 8; kd++) {
         /* topb=2 */
         Cell c1 = run_cell("topb2", kd, 2, X,n,dim,C,lab,qi,NQ,(const int (*)[KV])ref);
+        if (kd == 0) baseA[0] = c1.mean;
         printf("%-11s %-8s %-9.2f %-9.2f %-9.2f %-8ld %d/%-6d %.2fx\n",
-               kname[kd], c1.name, c1.mean, c1.p50, c1.p95, c1.scanned, c1.match, NQ, 1.0);
+               kname[kd], c1.name, c1.mean, c1.p50, c1.p95, c1.scanned, c1.match, NQ, baseA[0]/c1.mean);
         fprintf(csv, "%s,%s,%.2f,%.2f,%.2f,%.2f,%ld,%d\n",
                 kname[kd], "topb2", c1.mean, c1.p50, c1.p95, c1.mx, c1.scanned, c1.match);
 
         /* brute */
         Cell cb = run_cell("brute", kd, 0, X,n,dim,C,lab,qi,NQ,(const int (*)[KV])ref);
-        printf("%-11s %-8s %-9.2f %-9.2f %-9.2f %-8ld %d/%-6d\n",
-               kname[kd], cb.name, cb.mean, cb.p50, cb.p95, cb.scanned, cb.match, NQ);
+        if (kd == 0) baseA[1] = cb.mean;
+        printf("%-11s %-8s %-9.2f %-9.2f %-9.2f %-8ld %d/%-6d %.2fx\n",
+               kname[kd], cb.name, cb.mean, cb.p50, cb.p95, cb.scanned, cb.match, NQ, baseA[1]/cb.mean);
         fprintf(csv, "%s,%s,%.2f,%.2f,%.2f,%.2f,%ld,%d\n",
                 kname[kd], "brute", cb.mean, cb.p50, cb.p95, cb.mx, cb.scanned, cb.match);
         fflush(csv);
