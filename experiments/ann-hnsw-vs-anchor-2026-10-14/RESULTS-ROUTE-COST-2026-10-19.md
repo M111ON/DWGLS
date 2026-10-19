@@ -76,6 +76,50 @@ patch) to isolate the accumulator change by itself:
 | F `double` 4-acc, no norm | G, correctness from unit-norm | 13.03 ms | 13.15 ms | 29.65 ms | 26.91 ms |
 | C `float` 4-acc, no norm | F in `float` | 11.59 ms | 9.42 ms | 19.22 ms | 18.09 ms |
 
+A **third** independent run (`kernel-verify-run3.csv`) reproduced the pair at
+**1.73× routed / 1.80× brute**, inside the run1–run2 band. Across the three runs:
+
+| run | H→G routed | H→G brute |
+|---|---|---|
+| 1 | 1.62× | 1.70× |
+| 2 | 1.78× | 1.92× |
+| 3 | 1.73× | 1.80× |
+| **spread** | **1.62–1.78×** | **1.70–1.92×** |
+
+Two notes on that third run, because they bear on how much it is worth — and the
+first one corrects a misreading I made while writing this section:
+
+- **What `top5_match` actually compares** (`ann_kernel.c:255-259`): the reference
+  is built once as `serve_routed(..., kernel=0 /* variant A */, topb=2, ...)` —
+  i.e. **variant A's own routed output**. Two consequences:
+  1. **A's `topb2` row reads 200/200 by construction.** The "reference" is that
+     same cell, so it is a self-comparison, not a validation. Only B–H are
+     genuine comparisons against A.
+  2. **Every `brute` row reads 167/200** because the reference is *routed* (2
+     buckets, ~35% of rows) while the brute cell scans all 61,241 rows. The
+     candidate sets differ, so the two rankings can only agree where the
+     full-scan top-5 happens to fall inside the routed bucket pair. **167/200 =
+     0.835 is the route's ranking cost against full scan, not a kernel defect
+     and not a float-safety signal.**
+- **The meaningful safety column is `topb2` for B–H: 200/200, in all three
+  runs.** That is the real claim — every variant reproduces the reference
+  kernel's routed top-5 exactly — and it holds.
+- **Caveat this exposes:** because the reference is routed, the harness cannot
+  detect a kernel whose ranking error would appear only over the full candidate
+  set. "Exact" is proven for `topb2`, and **not** proven for full-scan order. A
+  self-excluded exact oracle (the HONEST ORACLE protocol) would be needed for
+  that, and is not what this harness implements.
+- **Flag, resolved:** the earlier `variant R = 167/200 (0.835)` verdict is the
+  **same artifact** — `ann_sse.c` uses an exact full-scan reference and only the
+  *routed* variant reads 167 (C/E/F full scans read 200/200). So R was never a
+  kernel-safety signal; it is the route's ranking cost, which that file already
+  documents as deliberate. Do not carry a "float/SSE2 kernels are unsafe" reading
+  from it.
+- **That run overwrote the tracked `kernel.csv`** (the fixed-path hazard the
+  Provenance table above documents). It is preserved as
+  `kernel-verify-run3.csv` and the tracked file was restored to its committed
+  content, so no unlabeled run sits in a tracked path.
+
 Three conclusions, all from same-run pairs of two independent runs:
 
 1. **`float` is worth only 1.26× over `double`** at identical structure (G/C:
@@ -89,10 +133,22 @@ Three conclusions, all from same-run pairs of two independent runs:
    i.e. the *honest* total from today's server. Quoting 4.5–4.8× against A
    overstated the live improvement by roughly 2×.
 
-The earlier SSE2 variant **R** result (167/200, §2) is the standing reminder that
-not every kernel rewrite preserves ranking; G/H are safe by construction because
-the accumulators stay `double` and the norm is unchanged — only the *order* of
-additions moves, and `top5_match` is 200/200 across both runs and both configs.
+**R's 167/200 is not a kernel-safety finding.** `ann_sse.c` compares every
+variant against an **exact full-scan** reference, and C/E/F (full scans) all read
+**200/200** — only R, which is the *routed* path, reads 167. So 167/200 = 0.835 is
+the **route's** cost against full scan (a 2-bucket candidate set missing the
+true top-5 on ~17% of queries), which §2 documents as the deliberate trade.
+Earlier in this section I had cited it as evidence that "not every kernel rewrite
+preserves ranking"; that reading is wrong. **Kernel-level exactness is not what
+that number measures, and it should not be used to argue float is unsafe.**
+
+The honest statement of what proves G/H safe: `topb2` compares B–H against
+variant A's routed output on 200/200 queries across three runs, accumulators stay
+`double`, the norm is unchanged, and only the order of additions moves. **That
+proves exactness over the routed candidate set — not over the full scan**, which
+this harness cannot test (see §1.1 note). The `float`-is-1.26× conclusion does not
+rest on the R number at all: it is a same-run ratio between G and C, which differ
+*only* in accumulator dtype.
 
 ---
 
@@ -146,6 +202,7 @@ matched pair shares an mtime):
 | `sse.log` | 10-19 17:44 | same invocation as the original `kernel.csv` |
 | `sse.csv` | 10-19 17:48 | **4 min later → a different run** (the 3-rep loop) |
 | `kernelE/F/G/H*.{log,csv}` | 10-19 18:29–18:53 | §1.1 runs. **Per-run names**, so these do not collide — the fix the single tracked `kernel.csv` still lacks |
+| `kernel-verify-run3.csv` | 10-19 19:14 | third independent H→G run (1.73×/1.80×). Renamed after the run because the harness overwrote the tracked `kernel.csv`; that file was then restored from HEAD |
 
 `sse.csv` post-dating `sse.log` by 4 minutes is the whole contradiction below.
 
