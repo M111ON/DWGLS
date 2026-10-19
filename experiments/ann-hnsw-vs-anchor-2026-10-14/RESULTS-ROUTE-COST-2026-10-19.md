@@ -111,16 +111,20 @@ argument rests on the 2.3× (same-run, reproducible), not on the SIMD number.
 ## 3. §3.2 — how few kmeans iterations? (`ann_knobs.c` + `ann_robust.c`)
 
 Recall is **flat across `iters` 2…25** (one seed: 0.9265–0.9310). Repeating over
-**5 independent query seeds × 200 queries** confirms it is not one lucky draw:
+**5 independent query seeds × 200 queries** confirms it is not one lucky draw.
+Train time is given as a ratio, not as seconds — the absolute value moves with
+host load (see §2/§5): the same pair measured **1.075 s / 15.308 s = 14.2×** on
+the 2026-10-19 rerun and 0.60 s / 8.93 s on an earlier quiet run. Recall is
+bit-identical between runs; only the clock differs.
 
 | iters | topb | mean | min | max | seed spread | train |
 |---|---|---|---|---|---|---|
-| 2 | 2 | 0.9281 | 0.9055 | 0.9400 | 0.0345 | **0.60 s** |
-| 2 | 4 | 0.9896 | 0.9855 | 0.9920 | 0.0065 | 0.60 s |
-| 2 | 6 | 0.9982 | 0.9975 | 0.9995 | 0.0020 | 0.60 s |
-| 25 | 2 | 0.9315 | 0.9180 | 0.9500 | 0.0320 | 8.93 s |
-| 25 | 4 | 0.9894 | 0.9845 | 0.9920 | 0.0075 | 8.93 s |
-| 25 | 6 | 0.9980 | 0.9970 | 0.9990 | 0.0020 | 8.93 s |
+| 2 | 2 | 0.9281 | 0.9055 | 0.9400 | 0.0345 | 1.08 s |
+| 2 | 4 | 0.9896 | 0.9855 | 0.9920 | 0.0065 | 1.08 s |
+| 2 | 6 | 0.9982 | 0.9975 | 0.9995 | 0.0020 | 1.08 s |
+| 25 | 2 | 0.9315 | 0.9180 | 0.9500 | 0.0320 | 15.31 s |
+| 25 | 4 | 0.9894 | 0.9845 | 0.9920 | 0.0075 | 15.31 s |
+| 25 | 6 | 0.9980 | 0.9970 | 0.9990 | 0.0020 | 15.31 s |
 
 At `topb=2` the sign **flips** between seeds: `iters=2` wins on seed 12345
 (0.9310 vs 0.9305) and loses on the 5-seed mean (0.9281 vs 0.9315). The gap is
@@ -128,9 +132,10 @@ At `topb=2` the sign **flips** between seeds: `iters=2` wins on seed 12345
 larger. At `topb≥4` the difference is ≤0.0002.
 
 **Verdict:** `iters=2` is safe. The 0.003 at `topb=2` is inside the noise the
-query draw already produces, and it buys **14.9×** on train (0.60 s vs 8.93 s)
-→ regrow **0.90 s instead of 9.22 s**. Handoff §1.2's 9.9 s was ~89% kmeans
-iterations for no measurable recall.
+query draw already produces, and it buys **14.2–14.9×** on anchor train
+(measured 14.2× on the rerun, 14.9× earlier) → regrow collapses from ~9 s to
+~1 s. Handoff §1.2's 9.9 s was dominated by kmeans iterations for no measurable
+recall.
 
 > Caveat, stated honestly: this is a *statistical* null, not a proof of identity.
 > `iters=2` is not provably equal to `iters=25`; it is provably not
@@ -213,7 +218,8 @@ harness here, in any run.
    dominate. Blocking adds complexity for nothing → drop.
 3. **Never benchmark this box while `ann_search.exe` is indexing.** Same-run
    pairs only; single runs have already produced one wrong published number (§2).
-4. **`iters=2`** for regrow: regrow 9.22 s → **0.90 s**, recall within noise.
+4. **`iters=2`** for regrow: anchor train 1.08 s vs 15.31 s (**14.2×** measured,
+   14.9× on an earlier run) at identical recall — regrow drops from ~9 s to ~1 s.
 5. **`K=8, topb=4`** as the serving default: 0.989 recall at 59% scan.
 6. Routing keeps its case, but its value is **bandwidth**, not arithmetic —
    re-evaluate it whenever corpus size changes, since the ~2.3× is a function of
