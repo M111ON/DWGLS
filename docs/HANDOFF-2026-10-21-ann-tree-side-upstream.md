@@ -17,6 +17,8 @@ The session started from the 10-20 handoff's open item (flip `ANN_DOOR` after a 
 5. **The door's recall contract.** The door REPLACES the below-floor fallback (which scans every row). Keeping the pruned cap made it score fewer rows than the path it replaced — measured against a numpy oracle on 300 real queries: recall@5 0.9307 vs 1.0000, 56/300 queries worse. The handoff's "recall cannot drop" claim was false. Fixed (`cap = nent`): now 1.0000 both arms, 300/300 paired equal. It is still slightly SLOWER than the scan it replaces and is almost never reached at the production floor, so it **ships OFF** (`ANN_DOOR=0`).
 6. `ann_route_watch.py` gained an H2 heal (dead route → restamp → fallback full regrow); `ann_sync.py` now always regrows after a rebuild (the old "regrow == sig" shortcut skipped it and left the tree dead).
 7. Upstream bug found while reviewing our own diff: `d48bc08` had `pseen2 = pseen2` (self-assign) → buffer leak on every door query. Fixed.
+8. **Graft as hard fallback** (env `ANN_GRAFT_FALLBACK=1`, default OFF) — the open item from the 10-20 handoff, built at the door branch: when the below-floor fallback fires, the graph proposes the walk order (entries carrying the query's file keys first). Same recall contract as the door: it must score at least what the fallback scored, so the walk covers every row (`cap = nent`); with the pruned cap it lost recall (0.2833 vs 0.4167 against a numpy oracle). Now recall-neutral.
+9. **Keepalive startup fix** — the live server was restarted and the supervisor logged "never answered", then started a SECOND instance (which cannot bind). Cause: loading 62k rows from a 257 MB jsonl takes 31 s and the health wait measured 57 s, so the 60 s budget failed at the margin. `WAIT_HEALTHY` 60 → 180, a port check before starting anything, and a startup grace so a slow start is not read as a crash.
 
 ## Interface deltas (for anything calling the ANN server)
 
@@ -24,7 +26,8 @@ The session started from the 10-20 handoff's open item (flip `ANN_DOOR` after a 
 - `GET /health` adds `stamps_live` and `route_dead`.
 - `route.mode` may be `dead-route`.
 - `regrow.mode` may be `no_tree`.
-- New env: `ANN_DOOR_EXIT` (default OFF) + `ANN_DOOR_EXIT_FLOOR` (separate from the trigger floor).
+- New env: `ANN_DOOR_EXIT` (default OFF) + `ANN_DOOR_EXIT_FLOOR` (separate from the trigger floor) and `ANN_GRAFT_FALLBACK` (default OFF).
+- `route.mode` may be `dead-route` or `graft+full`.
 
 ## What this means for DWGLS-native-fs
 
