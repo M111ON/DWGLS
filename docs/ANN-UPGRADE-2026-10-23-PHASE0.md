@@ -354,3 +354,29 @@ assignment (anchor + anchor2, ~6 buckets), which is why bucket-only reads .798 h
 Derive P2 at regrow and append to ann_anchors.bin (format version bump); zone-order the
 pruned bucket list (zone match first, then score); gate = R@5 >= .9627 at scored <= 10.3k.
 Until that gate runs inside the C engine, no zonation code ships.
+## Zone-order policy (2026-10-23) — implemented, measured INERT at current scale
+
+Code (I:/tools/ann/src/ann_search.c, env `ANN_WALK_ORDER=zone`, OFF by default):
+- `lz_zone_build()` derives two projection axes from the centroid table by power
+  iteration + deflation (no stored state, rebuilt on table load).
+- `lz_zone_of(x,y)` = 6 wedges (3 sector dots, 0/120/240 deg) + centre.
+- The reorder happens on `rb[]` only: buckets matching the query's zone are moved
+  first, nothing is removed. `rm` becomes `anchor+zone` when the order changed.
+- Placement is right after the graft block, before the warm path, so both the
+  warm and cold walks see the new order.
+
+Why it cannot help yet (structural, not a measurement gap):
+- Bucket order only matters when the budget CUT actually happens.
+- At K=64 the walk scores ~10.3k rows against a 24k budget (43%), i.e. the cut
+  never fires; every bucket the route picked is fully walked, so order is a
+  no-op by construction. Confirmed: the earlier topb=5 run only degraded recall
+  once it pushed scored toward the cap (12.4k) — the same mechanism.
+- The zone partition itself is sound (probe: neighbours share a zone 0.6997 vs
+  0.2375 random) but its hard-filter ceiling (0.6997, 0.9463 with the core
+  circle) stays below the bucket path (0.9627), so filter use is refused.
+
+Revisit when: n grows ~2.3x (walk reaches the 24k cut at K=64) or the budget is
+lowered. Gate then: R@5 >= 0.9627 at scored <= 10.3k, against the same 300q
+oracle. Note the local box has ~1.5 GB free RAM, which blocks the Python oracle
+runs at 62.9k rows (92 MB ndarray allocation fails); run the gate on a machine
+with headroom or add a C-side oracle.
