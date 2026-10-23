@@ -311,3 +311,46 @@ Scale note (arithmetic, not measured): at 10M rows the blockers are
 vector RAM (10M x 384 x f32 = 15.4 GB) and derive cost (~5 us/row = ~50 s),
 not K. 10M / 64 = 156k rows per bucket, so placement/hierarchy is the next
 lever — not a bigger table.
+## 2026-10-23 — Wolfram danger-zone / caridoid zonation in the frustum (probe, NOT shipped)
+
+Question (owner): split zones inside the frustum with the 3-circle / caridoid figure, maybe
+as an indirect Hilbert-Peano cursor. Two probes on real data, no service change.
+
+### Probe 1 — does the zonation carry signal? (30,000 rows, real K=64 table)
+Projection = PCA-2 of the row vectors (13.4% of variance). Zone code = 3 wedges x 2
+half-planes + centre.
+- neighbour rows share zone code: **0.6997** vs random 0.2375 (**2.9x**)
+- neighbour rows share anchor bucket: 0.5600 (for reference)
+- walk-only-same-zone recall ceiling: **0.6997**; with the centre circle admitted: **0.9463**
+
+Verdict: real signal, but as a HARD filter the ceiling is below the shipped bucket path
+(K=64 gives R@5 .9627 at 10.3k rows). It cannot replace buckets.
+
+### Probe 2 — zone as bucket selector (200 queries, exact top-10 over 62,888 rows)
+Simplified harness (top-3 buckets vs all buckets whose centroid shares the query zone):
+- top3-bucket: 3,945 rows scored, R@1 .9800, R@5 .7980, R@10 .7705
+- zone-match: 10,004 rows scored, R@1 .9800, R@5 .9150, R@10 .8970
+
+CAVEAT (my bug, stated rather than hidden): the zone function collapsed to 3 sectors +
+a noise "core" because the projection was L2-normalised, so `r < 1.0` was degenerate and
+the 6-wedge split never fired (`sc.max() < 0.5` is almost never true). So probe 2 measures
+a 3-sector split, NOT the full caridoid. Also the harness omits the engine's dual
+assignment (anchor + anchor2, ~6 buckets), which is why bucket-only reads .798 here but
+.9627 in the C bench.
+
+### What that means
+1. Zonation is a coarser partition of the same distance space: it can order work, it
+   cannot beat ranking. Use it as a walk-order hint, never as a filter.
+2. The only place it composes with existing geometry for free: the 6 wedges = 6 faces,
+   i.e. the `bucket % 144` latch cell (= 4 x 6 x 6). A wrong zone then costs one extra
+   cell visit, not a lost neighbour — that is the low-risk use.
+3. Indirect Hilbert-Peano: the 6 wedge ids give a 1-D sector cursor 0..5, which is the
+   Peano order already used by the anchor perm. No new geometry needed.
+4. "Danger zone" is measurable and must be measured before use: the band where
+   |cos margin| is small is where labels flip. Query fraction in that band is the cost
+   of any zone-based decision.
+
+### Next (gated, not started)
+Derive P2 at regrow and append to ann_anchors.bin (format version bump); zone-order the
+pruned bucket list (zone match first, then score); gate = R@5 >= .9627 at scored <= 10.3k.
+Until that gate runs inside the C engine, no zonation code ships.
