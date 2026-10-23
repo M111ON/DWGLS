@@ -269,3 +269,45 @@ each, top scores .8557/.8542/.8838/.9082, `trunc=0 warm=4 scored=52835
   at K=24) but no consumer has been chosen.
 - `fog.replayed=0` on live — the note file the service reads is empty while the
   P3 log lives elsewhere; note-as-authority is still only half wired.
+
+## Phase 2b — K density (2026-10-23, measured then shipped)
+
+Rotation probe (20,000 real rows, real K=24 table, argmax dot = `anch_assign`):
+
+| transform | labels changed | max bucket | cv |
+|---|---|---|---|
+| orthogonal, applied to query AND centroid | **0 / 20,000** | 2,704 (=baseline) | .9381 (=baseline) |
+| centroid only | 18,163 | 10,198 | 2.73 |
+| query only | 19,826 | 7,113 | 2.19 |
+
+Conclusion: a rigid rotation is a coordinate change, not a partition change (inner
+product is invariant under the orthogonal group) — it moves **zero** collisions.
+Rotating one side is not a rotation of the space, it is a different table, and it
+made skew worse. Rotation is only meaningful for **storage labelling** (the
+`bucket % 144` latch cell at `ann_search.c:588`), never for bucket occupancy.
+
+K ladder (300q, budget 24000, numpy brute oracle):
+
+| config | scored (last q) | R@1 | R@5 | R@10 | trunc |
+|---|---|---|---|---|---|
+| K=8 | 24,000 | — | .9533 | .9367 | 300/300 |
+| K=24 | 16,329 | — | .9680 | .9613 | 0 |
+| K=64 | 10,264 | .9833 | .9627 | .9623 | 0 |
+| K=64 topb=5 | 12,411 | .9867 | .9307 | .9303 | 0 |
+
+- More K = cheaper walk, recall unchanged; routing cost is O(K*dim) = 0.2 MFLOP
+  at K=512, negligible beside walking a bucket. The fence was never compute.
+- topb stays 3: extra buckets spend the budget on farther rows and cost @5/@10
+  (R@1 improves instead).
+- Shipped rule: `K = round_up4(ceil(n/1000))`, clamp [8, LZ_ANCH_MAXK=64].
+  `ann_keepalive.k_for` mirrors it. At 62.8k -> 64; cap binds from 63k.
+
+Live after swap (`build/ann_search_batch.exe`, backup `_v3`):
+
+    entries=62881 k=64 routed=1 labels=derive stale=0
+    bucket skew max 26,533 (K=8) -> 10,725 (K=24) -> 5,303 (K=64)
+
+Scale note (arithmetic, not measured): at 10M rows the blockers are
+vector RAM (10M x 384 x f32 = 15.4 GB) and derive cost (~5 us/row = ~50 s),
+not K. 10M / 64 = 156k rows per bucket, so placement/hierarchy is the next
+lever — not a bigger table.
