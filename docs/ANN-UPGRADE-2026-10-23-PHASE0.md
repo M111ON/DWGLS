@@ -380,3 +380,48 @@ lowered. Gate then: R@5 >= 0.9627 at scored <= 10.3k, against the same 300q
 oracle. Note the local box has ~1.5 GB free RAM, which blocks the Python oracle
 runs at 62.9k rows (92 MB ndarray allocation fails); run the gate on a machine
 with headroom or add a C-side oracle.
+
+## Session 2 (2026-10-23) — sanitize 503 class closed; hourglass pair = 1-XOR pinned
+
+Full handoff: `I:/tools/ann/docs/HANDOFF-2026-10-23-ann-sanitizer-hourglass.md`.
+
+### A. 503 / 500 class (ann commit bd1ce04, 9 files)
+- `lz_sanitize` asked the vocab bitmap B before NFKC; B claims all 2682 NFKC-delta
+  codepoints are in vocab, so raw delta codepoints reached the tokenizer.
+- Fix: NFKC first, gate output codepoints, drop only unrepresentable — `src/ann_search.c:407`.
+- Bitmap now derived, not guessed: `scripts/probe_vocab.py` → `scripts/nfkc_vocab.json`
+  (**13,829 representable / 52,170 dropped**); `scripts/gen_nfkc_table.py` →
+  `src/nfkc_table.h` (**2808 entries**), refuses to write if printable ASCII drops.
+- Same-hour catch: U+0020 is representable only through sentencepiece's
+  U+0020 → U+2581 remap; the raw lookup stripped every space and concatenated the
+  query. Pinned by `tests/space_probe.py` (spaced vs unspaced twin must differ).
+- No-regression: `tests/ab_text_parity.py` vs `ann_search_prev.exe` = **12/12
+  identical top-5** with A/control **12/12** run first; `bench_warm_recall.py`
+  byte-identical across builds (R@1 1.0000, R@5 0.9200, 10501/9647 scored);
+  `make test` ALL PASS. Live `:8096`: entries 62913, routed=1, k=64, embed ok.
+
+### B. Hourglass / frustum-pair shift algebra — test_addr_orbit.c T12–T15, 35/35
+| oracle | result |
+|---|---|
+| T12 | `(i<<1) % 20736` → only **10,368 images** (even modulus) ⇒ arithmetic shift is not a permutation |
+| T13 | `20736 = 2^8 × 81`; rot8 on `u = i/81` bijective over the whole field, exact inverse, rot8^8 = identity |
+| T14 | `d ^ 1` involution over `[0,12)`: **6 pairs, 0 fixed points** ⇒ centre crossing = 1 XOR, composes to `d ^ (k&1)` |
+| T14 | `d ^ 6` (face+3) in range for only **8/12** — `12 = 4×3` is not a power of two |
+| T15 | k crossings collapse to one XOR — no table, no walk |
+
+Already locked in the same file (not re-derived): ladder `2^a × 3^b` (T4),
+`face = d>>1 / orient = d&1` (T6), latch pool `144 × 72 = 10368` with reserved apex
+`{0, 10367}` (T8). Geometry source: hexagon side 2, centre `G = 0`, 6 sectors =
+3 hourglasses, opposite pair = point reflection `v → −v` (A↔D, B↔E, C↔F from the
+protocol coordinates), inner hexagon r=1 = homothety ÷2, mid ring r=√3 (⌀2
+semicircles). `core/isometric_map.h:106` `IM_CROSS` is the same self-inverse pairing.
+
+### C. Still open
+- Ann latch is still flat: `src/ann_search.c:622` `int c = bucket % 144;` — relayout
+  to `(pair << 1) | end` is where the 1-XOR becomes live in the serve path.
+- Pool math decides the 3-pair question: wang6 + 3 gen = **5,440 anchors**; 6 faces
+  and anchor = **32,640 > 10,368** (unaffordable); 1 bit and anchor = **5,440**** ≤
+  10,368 (affordable) ⇒ the 1-bit fingerprint is the only one that fits at that scale.
+- G2.5 receipt still missing: prove closing `+X` does not close `−X`
+  (`tools/pattern_probe.c:163` `FACE_ID(a,d)` + 6-bit mask is the starting point).
+- `I:/tools/ann` main was 1 commit ahead of `origin/main` at handoff (bd1ce04).

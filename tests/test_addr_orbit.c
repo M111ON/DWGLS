@@ -5,6 +5,10 @@
  * Complements tests/test_wang_latch.c (which drives the latch header);
  * this file tests NO header — pure integer oracles a future header must satisfy.
  *
+ * T12-T15 pin the SHIFT algebra (hourglass figure, 2026-10-23): the reflection
+ * through the shared centre is d^1 (exact, composes); the naive arithmetic
+ * shift (i<<1)%20736 is NOT a permutation; the 2^8 lane rotation is.
+ *
  * BUILD: gcc -O2 -Wall -o build/test-addr-orbit tests/test_addr_orbit.c
  */
 #include <stdio.h>
@@ -101,6 +105,66 @@ int main(void) {
     /* T11 angle lock, integer microdegrees only (no float in the gate) */
     CHECK(60 * 4 == 240, "T11 60x4 = 240");
     CHECK(112133377 + 127866623 == 240000000, "T11 arc pair = 240.0deg in udeg");
+
+    /* T12 naive shift: (i<<1) % 20736 is NOT a permutation. 20736 is even, so
+     * every odd slot is unreachable — the image is exactly half the field. */
+    static uint8_t seen_shift[20736];
+    long shift_img = 0;
+    for (uint32_t i = 0; i < 20736; i++) {
+        uint32_t j = (i << 1) % 20736u;
+        if (!seen_shift[j]) { seen_shift[j] = 1; shift_img++; }
+    }
+    CHECK(shift_img == 10368, "T12 (i<<1)%20736 covers 10368/20736 (half lost)");
+
+    /* T13 lane split 20736 = 2^8 x 81: rotating the 8-bit lane is exact and
+     * its inverse round-trips every address (nothing to store). */
+    static uint8_t seen_lane[20736];
+    int t13 = 1;
+    for (uint32_t i = 0; i < 20736 && t13; i++) {
+        uint32_t u = i / 81u, v = i % 81u;            /* u in [0,256), v in [0,81) */
+        uint32_t r = ((u << 1) | (u >> 7)) & 0xFFu;   /* rot8 left  */
+        uint32_t j = r * 81u + v;
+        uint32_t back = (((r >> 1) | (r << 7)) & 0xFFu) * 81u + v;
+        if (j >= 20736u || seen_lane[j] || back != i) t13 = 0;
+        else seen_lane[j] = 1;
+    }
+    CHECK(t13, "T13 2^8 lane rot8 = bijection on 20736 with exact inverse");
+
+    int t13b = 1;
+    for (uint32_t u = 0; u < 256; u++) {
+        uint32_t r = u;
+        for (int k = 0; k < 8; k++) r = ((r << 1) | (r >> 7)) & 0xFFu;
+        if (r != u) { t13b = 0; break; }
+    }
+    CHECK(t13b, "T13 rot8^8 = identity (256/256 lane)");
+
+    /* T14 hourglass reflection. Point reflection through the shared centre
+     * swaps the two ends of a pair => d^1. 12 is even, so this stays in range
+     * for every digit: involution, 6 pairs, 0 fixed points (the fixed point is
+     * the centre itself, which is NOT a slot). The face rotation d^6 (face+3)
+     * is the non-uniform one: 12 = 4x3 is not a power of two, so it leaves
+     * [0,12) once face >= 4. */
+    int t14 = 1;
+    for (uint32_t d = 0; d < 12; d++) {
+        uint32_t e = d ^ 1u;
+        if (e >= 12u || (e ^ 1u) != d || e == d) t14 = 0;
+    }
+    CHECK(t14, "T14 d^1 involution in [0,12) for all 12 (6 pairs, 0 fixed)");
+
+    int t14b = 0;
+    for (uint32_t d = 0; d < 12; d++) if ((d ^ 6u) < 12u) t14b++;
+    CHECK(t14b == 8, "T14 d^6 (face+3) in range 8/12 only (f<4)");
+
+    /* T15 composition: k crossings of the centre collapse to one XOR — the
+     * jump is O(1) and needs no table, no walk (contrast: stride-37 multiply). */
+    int t15 = 1;
+    for (uint32_t d = 0; d < 12; d++)
+        for (int a = 0; a < 6; a++) {
+            uint32_t x = d;
+            for (int k = 0; k < a; k++) x ^= 1u;
+            if (x != (d ^ (uint32_t)(a & 1))) t15 = 0;
+        }
+    CHECK(t15, "T15 k flips collapse to d^(k&1)");
 
     printf(fails ? "ADDR-ORBIT: %d FAIL\n" : "ADDR-ORBIT: ALL PASS\n", fails);
     return fails != 0;
