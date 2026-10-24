@@ -250,7 +250,7 @@ CAP :=   test_cap_account   test_cap_tune_real   test_cap_tune_safetensors   tes
 GHOST :=   test_ghost_gear_adapter   test_ghost_lift   test_ghost_envelope   test_ghost_direct
 
 # KV: remap + hybrid + rail bridge
-KV :=   test_kv_remap   test_kv_remap_diamond   test_kv_geofs_bridge   test_kv_rail_geofs   test_kv_dramtile   test_hybrid_kv   test_anchor_route   test_anchor_routed   test_anchor_determinism
+KV :=   test_kv_remap   test_kv_remap_diamond   test_kv_geofs_bridge   test_kv_rail_geofs   test_kv_dramtile   test_hybrid_kv   test_anchor_route   test_anchor_routed   test_anchor_determinism   test_mdim_save_atomic   test_anchor_route_topb
 
 # 6ICO: compound field + MoE
 SIXICO :=   test_6ico_tesseract   test_18tes_field   test_moe_expert   test_6ico_integration   test_moe_jet
