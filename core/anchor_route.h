@@ -18,6 +18,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <float.h>
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
+extern int fileno(FILE *);
+#endif
 
 #define ANCHR_MAGIC   0x414E4352u /* "ANCR" */
 #define ANCHR_MAXK    512
@@ -198,8 +211,22 @@ static inline int anch_save_atomic(const char *path, const float *C, int K, int 
     char tmp[512];
     if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) return -1;
     if (anch_save(tmp, C, K, dim, ntr) != 0) { remove(tmp); return -1; }
-    remove(path);
+    /* reopen tmp and flush to disk */
+    FILE *f = fopen(tmp, "rb+");
+    if (!f) { remove(tmp); return -1; }
+    int ok = 1;
+#if defined(_WIN32)
+    ok = ok && _commit(_fileno(f)) == 0;
+#else
+    ok = ok && fsync(fileno(f)) == 0;
+#endif
+    ok = ok && (fclose(f) == 0);
+    if (!ok) { remove(tmp); return -1; }
+#if defined(_WIN32)
+    if (!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) { remove(tmp); return -1; }
+#else
     if (rename(tmp, path) != 0) { remove(tmp); return -1; }
+#endif
     return 0;
 }
 
