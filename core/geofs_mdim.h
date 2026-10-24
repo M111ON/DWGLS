@@ -89,6 +89,7 @@
 #if defined(_WIN32)
   #define WIN32_LEAN_AND_MEAN
   #include <windows.h>
+  #include <io.h>
 #else
   #include <sys/mman.h>
   #include <sys/stat.h>
@@ -742,13 +743,30 @@ static inline void mdim_volume_free(MdimVolume *v) {
 
 /* ── save / load (whole-buffer snapshot; journal travels inside) ──── */
 
+#if !defined(_WIN32)
+extern int fileno(FILE *);   /* hidden under strict -std=c11 */
+#endif
+
 static inline int mdim_volume_save(MdimVolume *v, const char *path) {
     if (!v || !path) return MDIM_ERR_ARG;
-    FILE *f = fopen(path, "wb");
+    char tmp[512];
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) return MDIM_ERR_ARG;
+    FILE *f = fopen(tmp, "wb");
     if (!f) return MDIM_ERR_IO;
-    size_t w = fwrite(v->bytes, 1, MDIM_VOL_BYTES, f);
-    fclose(f);
-    return (w == MDIM_VOL_BYTES) ? MDIM_OK : MDIM_ERR_IO;
+    int ok = fwrite(v->bytes, 1, MDIM_VOL_BYTES, f) == MDIM_VOL_BYTES && fflush(f) == 0;
+#if defined(_WIN32)
+    ok = ok && _commit(_fileno(f)) == 0;
+#else
+    ok = ok && fsync(fileno(f)) == 0;
+#endif
+    ok = (fclose(f) == 0) && ok;
+#if defined(_WIN32)
+    ok = ok && MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    ok = ok && rename(tmp, path) == 0;
+#endif
+    if (!ok) { remove(tmp); return MDIM_ERR_IO; }
+    return MDIM_OK;
 }
 
 static inline int mdim_volume_load(MdimVolume *v, const char *path) {
