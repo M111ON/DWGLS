@@ -62,13 +62,15 @@ static inline int anch_assign(const float *q, const float *C, int K, int dim) {
 }
 
 /* top-b buckets by centroid distance (partial selection; K unbounded, O(K)
- * scratch via malloc; out must hold K ints). Returns min(topb,K). */
+ * scratch via malloc). out needs only room for min(topb,K) ints.
+ * Returns min(topb,K), 0 on bad args/OOM. */
 static inline int anch_route(const float *q, const float *C, int K, int dim,
                              int topb, int *out) {
     if (!q || !C || !out || K <= 0 || dim <= 0 || topb <= 0) return 0;
     if (topb > K) topb = K;
     double *bd = (double *)malloc((size_t)K * sizeof(double));
-    if (!bd) return 0;
+    int *idx = (int *)malloc((size_t)K * sizeof(int));
+    if (!bd || !idx) { free(bd); free(idx); return 0; }
     for (int k = 0; k < K; k++) {
         double d = 0;
         const float *c = C + (size_t)k * dim;
@@ -77,13 +79,14 @@ static inline int anch_route(const float *q, const float *C, int K, int dim,
             d += e * e;
         }
         bd[k] = d;
-        out[k] = k;
+        idx[k] = k;
     }
-    /* partial selection sort on first topb */
+    /* partial selection sort on first topb (same order/ties as before) */
     for (int a = 0; a < topb; a++)
         for (int b = a + 1; b < K; b++)
-            if (bd[out[b]] < bd[out[a]]) { int t = out[a]; out[a] = out[b]; out[b] = t; }
-    free(bd);
+            if (bd[idx[b]] < bd[idx[a]]) { int t = idx[a]; idx[a] = idx[b]; idx[b] = t; }
+    memcpy(out, idx, (size_t)topb * sizeof(int));
+    free(idx); free(bd);
     return topb;
 }
 
