@@ -161,6 +161,45 @@ measured argument for the map mode — the same information with no slot spent.
   (`mode:"incremental"`, `route 3.5 ms`), against ~100 s and a failure for a full
   retrain on a fresh copy.
 
+## Phase 2: the loop closes — sid → map → a real resume
+
+`tools/kv_ann_open.py --map DIR\kv_index_map.jsonl --sid <sid> [--run]` is the
+consumer: it looks the sid up, checks the map against the log, and with `--run`
+makes the C host actually resume that frame (`seek=<turn>` mode, new: a reader that
+takes no producer claim and leaves the log byte-identical).
+
+```
+sid   00042d0613d214e25be6ed89ddca7920
+frame turn 1 (frame_sid kv:0466806def6b2c99), anchor t1 blob[0,746196) fnv 1027517907626004366, replay []
+map-vs-log PASS
+expect pos 149 from the log (anchor base_n_tokens + replay tokens)
+host  seek t1 ok: pos=149 argmax=-1 (anchor+deltas from the log, 1 anchor(s), 8 delta(s))
+pos   149 MATCH
+```
+
+Four frames, all matching the position the log implies:
+
+| turn | replay | pos | argmax |
+|---|---|---|---|
+| 1 | `[]` | 149 | −1 (frame ends inside the anchor, not comparable) |
+| 3 | `[2,3]` | 426 | 151645 |
+| 5 | `[2,3,4,5]` | 590 | 40 |
+| 8 | `[2,3,4,5,6,7,8]` | 893 | 151643 |
+
+**What this does and does not prove.** The host re-derives the resume plan from the
+log, so `pos` agreement shows the log resolves that turn to that state; it does not
+by itself prove the map's own fields are right. That is checked separately and
+before the run: `map-vs-log` compares the map's `anchor_turn`/`anchor_blob`/`replay`
+against `seek_plan()` on the log. A stale map fails there and nowhere else:
+
+```
+map with replay [2,3,4,5] replaced by [2]
+  → map-vs-log FAIL (log derives anchor t1 replay [2, 3, 4, 5])   exit 1
+```
+
+So the map is never trusted on its own: `--map-only` gates it against the blob bytes
+(FNV) and the log, and `kv_ann_open.py` gates it against the log again at read time.
+
 ## Boundaries (stated plainly)
 
 - **Nothing is wired into the live ANN index.** The scratch index lives in
@@ -174,6 +213,7 @@ measured argument for the map mode — the same information with no slot spent.
   different space.
 - **`replay[]` is a list of turns, not bytes.** Resuming still goes through
   `kv_temporal_llama` seek (anchor blob + per-turn deltas); the bridge does not
-  re-implement replay.
+  re-implement replay, and the host re-derives the plan rather than consuming the
+  map's fields — the map's fields are gated against that derivation instead.
 - **No route/tag fields.** `anchor`/`anchor2` are written by ANN's own regrow, so
   the bridge leaves them alone instead of guessing bucket ids.

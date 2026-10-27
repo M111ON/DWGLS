@@ -506,6 +506,8 @@ int main(int argc, char **argv) {
        script is fine for a smoke run; a real corpus (and the ANN bridge, which
        joins on this text) needs the corpus's own text. */
     const char *turns_file = argc > 7 ? argv[7] : NULL;
+    /* seek=<turn> is a READER: no producer claim, and never touches the log */
+    const int seek_only = (argc > 5 && strncmp(argv[5], "seek=", 5) == 0);
     const int K = KVT_WINDOW;   /* hot-window RAM budget, not cadence */
     if (NT < 1 || NT > NT_MAX) { fprintf(stderr, "NT out of range (1..%d)\n", NT_MAX); return 2; }
 
@@ -518,9 +520,9 @@ int main(int argc, char **argv) {
     /* claim the log BEFORE touching it: a fresh run deletes the files below, so
        a second producer must be refused before it can wipe a live run's log */
     LlamaHost host; host_init(&host, outdir, "kv-temporal");
-    if (host_claim_producer(&host) != 0) return 3;
+    if (!seek_only && host_claim_producer(&host) != 0) return 3;
 
-    if (!append) { remove(lp); remove(bp); }
+    if (!append && !seek_only) { remove(lp); remove(bp); }
 
     ggml_backend_load_all_from_path(backend);
     llama_log_set(NULL, NULL);
@@ -573,6 +575,29 @@ int main(int argc, char **argv) {
     int32_t turn_base = nd_log > 0 ? log_deltas[nd_log - 1].turn : 0;
     int32_t pos = 0;
     int32_t last_anchor_turn = na_log > 0 ? log_anchors[na_log - 1].turn : 0;
+
+    /* ── seek-only: resume ONE frame and report it, then stop ──
+     * This is the consumer end of the ANN bridge: a search hit names a sid, the
+     * map names a turn, and this proves that turn actually rebuilds from the log
+     * (anchor blob verified by FNV, then that round's deltas replayed). It writes
+     * nothing, so it can run against a live log without a producer claim. */
+    if (argc > 5 && strncmp(argv[5], "seek=", 5) == 0) {
+        int32_t W = (int32_t)atoi(argv[5] + 5);
+        if (W < 1) { fprintf(stderr, "seek= needs a turn >= 1\n"); return 2; }
+        llama_token am = -1;
+        if (kv_rebuild(ctx, &L, log_anchors, na_log, log_deltas, nd_log,
+                       W, &pos, &am, n_vocab) != 0) {
+            fprintf(stderr, "seek t%d failed\n", W);
+            return 1;
+        }
+        printf("seek t%d ok: pos=%d argmax=%d (anchor+deltas from the log, %d anchor(s), %d delta(s))\n",
+               W, pos, (int)am, na_log, nd_log);
+        kvl_free(log_deltas, nd_log);
+        llama_free(ctx);
+        llama_model_free(model);
+        return 0;
+    }
+
     if (turn_base > 0) {
         if (kv_rebuild(ctx, &L, log_anchors, na_log, log_deltas, nd_log,
                        turn_base, &pos, NULL, n_vocab) != 0) {
