@@ -116,6 +116,35 @@ def read_turns(path):
     return out
 
 
+def read_msgs(path):
+    """turn -> [{"sha","text"}], the messages a frame's prompt was built from.
+
+    One frame can cover several messages. With this map the bridge emits one ANN
+    row PER MESSAGE (each with that message's own stored vector) instead of one
+    per frame, and every row of the same frame carries the same seek plan — so a
+    hit on any message resumes the frame that holds it.
+    """
+    out = {}
+    if not path or not os.path.exists(path):
+        return out
+    with open(path, "rb") as f:
+        for raw in f:
+            line = raw.decode("utf-8", "replace").rstrip("\r\n ")
+            if not line.endswith("}"):
+                continue
+            try:
+                m = json.loads(line)
+            except Exception:
+                continue
+            t = m.get("turn")
+            msgs = m.get("msgs")
+            if not t or not isinstance(msgs, list) or not msgs:
+                continue
+            out[int(t)] = [g for g in msgs
+                           if isinstance(g, dict) and isinstance(g.get("text"), str)]
+    return out
+
+
 def memcore_vector(db, text):
     """Reuse the stored vector, never re-embed: exact text first, then normalized.
 
@@ -172,9 +201,17 @@ def row_sid(turn, text):
     return "kv:" + h
 
 
-def build(kvdir, memcore, blind=False):
+def vkey(vec):
+    """Exact vector identity, as bytes. Two rows with the same vector are the same
+    point in the space whatever their sid — that is how the map mode finds the base
+    sid to attach a KV frame to, and how the duplicate count is measured."""
+    return struct.pack("<%df" % len(vec), *[float(x) for x in vec])
+
+
+def build(kvdir, memcore, blind=False, msgs_path=None):
     anchors, deltas = read_kv_log(os.path.join(kvdir, "log.jsonl"))
     texts = read_turns(os.path.join(kvdir, "turns.jsonl"))
+    msgs = read_msgs(msgs_path)
     rows, sidecar, misses, unresolvable, routing = [], [], [], [], []
     for d in deltas:
         turn = int(d["turn"])
@@ -187,21 +224,34 @@ def build(kvdir, memcore, blind=False):
         routing.append((turn, plan["anchor_turn"], len(plan["replay"])))
         if blind:
             continue
-        text = texts.get(turn)
-        if text is None:
-            misses.append((turn, "no text recorded for this frame"))
-            continue
-        mv = memcore_vector(memcore, text)
-        if not mv:
-            misses.append((turn, "no stored vector for this text"))
-            continue
-        eid, dim, vec = mv
-        sid = row_sid(turn, text)
-        rows.append({"sid": sid, "file": os.path.join(kvdir, "log.jsonl"),
-                     "npast": turn, "dim": dim, "vec": vec})
-        sidecar.append({"sid": sid, "turn": turn, "parent": int(d.get("parent", 0)),
-                        "text_sha": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
-                        "memcore_id": eid, **plan})
+
+        units = []
+        if turn in msgs:
+            for g in msgs[turn]:
+                units.append((g.get("sha") or hashlib.sha256(
+                    g["text"].encode("utf-8")).hexdigest()[:16], g["text"]))
+        else:
+            text = texts.get(turn)
+            if text is None:
+                misses.append((turn, "no text recorded for this frame"))
+                continue
+            units.append((None, text))
+
+        frame_sid = row_sid(turn, texts.get(turn, units[0][1]))
+        for msha, mtext in units:
+            mv = memcore_vector(memcore, mtext)
+            if not mv:
+                misses.append((turn, "no stored vector for this message"))
+                continue
+            eid, dim, vec = mv
+            sid = row_sid(turn, mtext) if msha is None else \
+                "kv:" + hashlib.sha256(("%d:%s" % (turn, msha)).encode()).hexdigest()[:16]
+            rows.append({"sid": sid, "file": os.path.join(kvdir, "log.jsonl"),
+                         "npast": turn, "dim": dim, "vec": vec})
+            sidecar.append({"sid": sid, "turn": turn, "parent": int(d.get("parent", 0)),
+                            "text_sha": hashlib.sha256(mtext.encode("utf-8")).hexdigest()[:16],
+                            "msg_sha": msha, "frame_sid": frame_sid,
+                            "memcore_id": eid, **plan})
     return rows, sidecar, misses, unresolvable, anchors, deltas, routing
 
 
@@ -219,13 +269,19 @@ def main():
     ap.add_argument("--sidecar", default=None)
     ap.add_argument("--blind", action="store_true",
                     help="replace every text with x*len (value-blindness probe)")
+    ap.add_argument("--msgs", default=None,
+                    help="JSONL {turn,msgs:[{sha,text}]} -> one ANN row per message")
+    ap.add_argument("--collide-with", default=None,
+                    help="existing ann_index.jsonl; report rows whose vector is already there")
+    ap.add_argument("--map-only", action="store_true",
+                    help="also write kv_index_map.jsonl (base sid -> KV frame), no new ANN rows needed")
     args = ap.parse_args()
 
     out = args.out or os.path.join(args.kv, "ann_rows_kv.jsonl")
     side = args.sidecar or os.path.join(args.kv, "kv_frames.jsonl")
 
     rows, sidecar, misses, unresolvable, anchors, deltas, routing = build(
-        args.kv, args.memcore, blind=args.blind)
+        args.kv, args.memcore, blind=args.blind, msgs_path=args.msgs)
 
     bad = []
     for r in rows:
@@ -239,13 +295,13 @@ def main():
         write_jsonl(out, rows)
         write_jsonl(side, sidecar)
         # determinism: build again and compare
-        rows2, side2, _, _, _, _, _ = build(args.kv, args.memcore)
+        rows2, side2, _, _, _, _, _ = build(args.kv, args.memcore, msgs_path=args.msgs)
         det = (json.dumps(rows, sort_keys=True) == json.dumps(rows2, sort_keys=True)
                and json.dumps(sidecar, sort_keys=True) == json.dumps(side2, sort_keys=True))
         # value-blind: with every text destroyed, the routing columns must be
         # identical — proven over ALL resolvable turns, not only the ones that
         # happened to have a vector, so vector availability cannot mask a failure
-        *_, blind_routing = build(args.kv, args.memcore, blind=True)
+        *_, blind_routing = build(args.kv, args.memcore, blind=True, msgs_path=args.msgs)
         blind_ok = blind_routing == routing
     else:
         det = blind_ok = True
@@ -264,6 +320,63 @@ def main():
     print("  deterministic %s" % ("PASS" if det else "FAIL"))
     print("  value-blind   %s (routing columns unchanged with text destroyed)"
           % ("PASS" if blind_ok else "FAIL"))
+
+    # one plan per frame: every row of the same turn must carry the same seek plan,
+    # or a hit would resume a different frame than the one that holds the message
+    by_turn = {}
+    for s in sidecar:
+        by_turn.setdefault(s["turn"], set()).add(
+            (s["anchor_turn"], tuple(s["anchor_blob"]), tuple(s["replay"])))
+    split = [t for t, plans in by_turn.items() if len(plans) != 1]
+    print("  frames     %d distinct turn(s), %d row(s) per turn avg %.2f, %s"
+          % (len(by_turn), len(rows),
+             (len(rows) / len(by_turn)) if by_turn else 0.0,
+             "one plan per frame PASS" if not split else "SPLIT PLANS %s" % split[:3]))
+
+    if args.collide_with and rows:
+        # the join key is the sid itself: the live index was built from memcore and
+        # keeps the entry id as its sid (verified: best-match cosine 0.99999994 and
+        # the same 32-hex id). Matching on floats would be approximate; the id is exact.
+        have = set()
+        with open(args.collide_with, "rb") as f:
+            for raw in f:
+                try:
+                    m = json.loads(raw.decode("utf-8", "replace"))
+                except Exception:
+                    continue
+                if m.get("sid"):
+                    have.add(m["sid"])
+        dup_sids = [s["sid"] for s in sidecar if s.get("memcore_id") in have]
+        print("  already in %s by sid: %d/%d row(s)"
+              % (os.path.basename(args.collide_with), len(dup_sids), len(rows)))
+        if dup_sids:
+            print("    e.g. %s -> base row %s"
+                  % (dup_sids[0], next(s["memcore_id"] for s in sidecar
+                                       if s["sid"] == dup_sids[0])))
+
+        # The map mode is the shape the measurement argues for: ANN keeps its rows
+        # untouched and the KV frame is attached to the base sid that already
+        # exists, so nothing can be displaced out of top-k.
+        if args.map_only:
+            mrows, unmatched = [], []
+            for s in sidecar:
+                if s.get("memcore_id") not in have:
+                    unmatched.append(s["sid"])
+                    continue
+                mrows.append({"sid": s["memcore_id"],
+                              "kv": {"turn": s["turn"], "frame_sid": s["frame_sid"],
+                                     "msg_sha": s["msg_sha"],
+                                     "anchor_turn": s["anchor_turn"],
+                                     "anchor_blob": s["anchor_blob"],
+                                     "replay": s["replay"]}})
+            mpath = os.path.join(args.kv, "kv_index_map.jsonl")
+            write_jsonl(mpath, mrows)
+            print("  map        %d base sid(s) -> KV frame, %d unmatched -> %s"
+                  % (len(mrows), len(unmatched), mpath))
+            if mrows:
+                print("    e.g. %s -> turn %d anchor %d replay %s"
+                      % (mrows[0]["sid"], mrows[0]["kv"]["turn"],
+                         mrows[0]["kv"]["anchor_turn"], mrows[0]["kv"]["replay"]))
     if not args.blind:
         print("  wrote      %s (%d rows)" % (out, len(rows)))
         print("             %s (%d plans)" % (side, len(sidecar)))

@@ -80,6 +80,37 @@ does not self-train (#7775). One `POST /v1/state/regrow` switched it to
   compares routing columns `(turn, anchor_turn, len(replay))` over **all**
   resolvable turns, so vector availability cannot mask a routing leak.
 
+## Phase 2 — one row per message, and the join key is the sid
+
+**A frame can cover several messages.** The producer records the frame's text; the
+message list is supplied by whoever built the prompt, because that is who knows it
+(`--msgs FILE`, JSONL `{"turn":N,"msgs":[{"sha","text"}]}`). With it the bridge
+emits **one ANN row per message**, each carrying that message's own stored vector,
+and every row of the same frame carries the same seek plan — so a hit on any
+message resumes the frame that holds it. Verified: **8 frames → 16 rows, 2.00
+rows/frame, one plan per frame PASS, 0 miss, 0 unresolvable**.
+
+**The exact join key exists: the ANN sid is the memcore entry id.** Measured, not
+assumed — the best-match base row for a bridge vector scored cosine
+0.99999994 with max |diff| 5e-7 and the same 32-hex id, so matching floats would
+be approximate while matching ids is exact. Consequence: **16/16 of these rows are
+already in the live index by sid.**
+
+That measurement decides the shape. A KV row with a reused vector adds no
+information to the space; it can only occupy a top-k slot. So the bridge also
+writes the form that touches nothing:
+
+```
+kv_index_map.jsonl
+  {"sid": "<base sid>", "kv": {"turn", "frame_sid", "msg_sha",
+                               "anchor_turn", "anchor_blob":[off,len,fnv],
+                               "replay":[...]}}
+```
+
+16 base sids → KV frames, 0 unmatched. A search hit names a sid ANN already had;
+the map names the frame to resume. **No new index rows, no new space, nothing
+displaced by construction.**
+
 ## Boundaries (stated plainly)
 
 - **Nothing is wired into the live ANN index.** The scratch index lives in
