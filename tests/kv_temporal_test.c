@@ -10,6 +10,7 @@
  *   5. the anchor blob roundtrip reproduces the base bytes
  */
 #include "kv_temporal.h"
+#include "kv_temporal_read.h"
 #include <assert.h>
 
 /* ── fake log: two parallel arrays, one per record kind ── */
@@ -176,6 +177,60 @@ int main(void) {
     CHECK(s.first_delta == 290 && s.n_deltas == 11, "seek(300) -> replay t290..t300");
 
     kvt_print_seek(&s);
+
+    /* ── 7. the log is readable by a process that never produced it ──
+     * The replay path (a later process) has only the file: it must recover the
+     * anchor records and each frame's tokens, must IGNORE other pool records,
+     * and must not trust a truncated last line from a killed writer. */
+    {
+        const char *tmp = "build/kvt_read_test.log";
+        FILE *f = fopen(tmp, "wb");
+        CHECK(f != NULL, "reader: temp log created");
+        if (f) {
+            /* anchor, one foreign record, two deltas out of order, then a
+               truncated line with no closing brace */
+            fputs("{\"v\":3,\"app\":\"t\",\"kind\":\"kv-anchor\",\"text\":\"{\\\"turn\\\":145,"
+                  "\\\"base_n_tokens\\\":99,\\\"type_k\\\":8,\\\"type_v\\\":2,\\\"blob_off\\\":70,"
+                  "\\\"blob_len\\\":5,\\\"blob_fnv\\\":18446744073709551615}\",\"to\":\"all\","
+                  "\"prev\":\"GENESIS\",\"hash\":\"aa\"}\n", f);
+            fputs("{\"v\":3,\"app\":\"other\",\"kind\":\"note\",\"text\":\"unrelated\",\"to\":\"all\","
+                  "\"prev\":\"aa\",\"hash\":\"bb\"}\n", f);
+            fputs("{\"v\":3,\"app\":\"t\",\"kind\":\"kv-delta\",\"text\":\"{\\\"turn\\\":2,"
+                  "\\\"parent\\\":1,\\\"tokens\\\":[7,8,9]}\",\"to\":\"all\",\"prev\":\"bb\","
+                  "\"hash\":\"cc\"}\n", f);
+            fputs("{\"v\":3,\"app\":\"t\",\"kind\":\"kv-delta\",\"text\":\"{\\\"turn\\\":1,"
+                  "\\\"parent\\\":1,\\\"tokens\\\":[1,2]}\",\"to\":\"all\",\"prev\":\"cc\","
+                  "\"hash\":\"dd\"}\n", f);
+            fputs("{\"v\":3,\"app\":\"t\",\"kind\":\"kv-delta\",\"text\":\"{\\\"turn\\\":3,"
+                  "\\\"parent\\\":1,\\\"tokens\\\":[5,6", f);   /* killed mid-line */
+            fclose(f);
+        }
+
+        KVTAnchor ra[8]; KVLogDelta rd[8];
+        int na = 0, nd = 0;
+        kvl_read(tmp, ra, 8, &na, rd, 8, &nd);
+        CHECK(na == 1, "reader: one anchor recovered");
+        CHECK(nd == 2, "reader: two deltas recovered (foreign + truncated skipped)");
+        if (na == 1) {
+            CHECK(ra[0].turn == 145 && ra[0].base_n_tokens == 99 &&
+                  ra[0].blob_off == 70 && ra[0].blob_len == 5,
+                  "reader: anchor fields exact (turn, base, blob)");
+            CHECK(ra[0].base_fnv == 18446744073709551615ULL,
+                  "reader: blob_fnv above INT64_MAX survives (unsigned parse)");
+            CHECK(ra[0].kv_type_k == 8 && ra[0].kv_type_v == 2, "reader: kv types recovered");
+        }
+        if (nd == 2) {
+            CHECK(rd[0].turn == 1 && rd[1].turn == 2, "reader: deltas sorted ascending");
+            CHECK(rd[0].n == 2 && rd[0].tok[0] == 1 && rd[0].tok[1] == 2, "reader: turn1 tokens exact");
+            CHECK(rd[1].n == 3 && rd[1].tok[2] == 9 && rd[1].parent == 1, "reader: turn2 tokens + parent exact");
+        }
+        KVLogDelta *hit = kvl_find(rd, nd, 2);
+        CHECK(hit != NULL && hit->n == 3, "reader: kvl_find locates a turn");
+        CHECK(kvl_find(rd, nd, 99) == NULL, "reader: kvl_find misses a turn that is not there");
+        kvl_free(rd, nd);
+        remove(tmp);
+    }
+
     printf("=== kv_temporal: %d PASS, %d FAIL ===\n", pass, fail);
     kvt_free(&w);
     return fail ? 1 : 0;

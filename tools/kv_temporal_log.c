@@ -168,7 +168,7 @@ int main(int argc, char **argv) {
             w.since_anchor = 0;
             int idx = (w.head - 1 + w.cap) % w.cap;
             w.frames[idx].hdr.parent = t;
-            printf("  anchor cut @t%d (%zu B blob)\n", t, blen);
+            printf("  anchor cut @t%d (%" PRIu64 " B blob)\n", t, (uint64_t)blen);
         }
         if (had) { kvt_persist_delta(&L, &ev); kvt_frame_free(&ev); }
     }
@@ -195,8 +195,8 @@ int main(int argc, char **argv) {
         uint8_t *buf = (uint8_t *)malloc((size_t)a->blob_len);
         int rc = hv_blob_read(&h, a->blob_off, buf, (size_t)a->blob_len);
         uint64_t hh = rc == 0 ? fnv(buf, (size_t)a->blob_len) : 0;
-        printf("blob roundtrip last anchor t%d: %s (%llu B)\n", a->turn,
-               hh == a->base_fnv ? "OK" : "MISMATCH", (unsigned long long)a->blob_len);
+        printf("blob roundtrip last anchor t%d: %s (%" PRIu64 " B)\n", a->turn,
+               hh == a->base_fnv ? "OK" : "MISMATCH", a->blob_len);
         if (rc != 0 || hh != a->base_fnv) ok = 0;
         free(buf);
     }

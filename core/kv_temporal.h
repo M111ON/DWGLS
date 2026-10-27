@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <inttypes.h>
 
 #ifndef KVT_ANCHOR_EVERY
 #define KVT_ANCHOR_EVERY 8     /* COMPAT: the old single knob (window cap AND
@@ -55,15 +56,12 @@
 #define KVT_PATH 128
 
 /* ── record kinds written to the log ──
- *
  * A delta carries ONLY the tokens of its frame — but at a per-record width,
  * not a fixed 4096-slot array. A fixed array costs 16 KB PER FRAME whether
  * the turn had 5 tokens or 500 (measured: a 22-line log ballooned to 764 KB),
  * which defeats the whole point of a lightweight frame log. The serialised
  * form is therefore [header][tokens...] with n_tokens deciding the length.
  */
-#define KVT_MAX_TOKENS 4096    /* per-frame cap (one turn) */
-#define KVT_PATH 128
 
 typedef struct {
     int32_t  turn;          /* 1-based frame index */
@@ -236,9 +234,9 @@ static inline void kvt_seek(const KVTAnchor *anchors, int n_anchors,
 
 static inline void kvt_print_seek(const KVTSeek *s) {
     if (s->have_anchor)
-        printf("seek: anchor@t%d (%d tok, blob +%llu/%llu B) then replay %d delta(s) t%d..t%d\n",
+        printf("seek: anchor@t%d (%d tok, blob +%" PRIu64 "/%" PRIu64 " B) then replay %d delta(s) t%d..t%d\n",
                s->anchor.turn, s->anchor.base_n_tokens,
-               (unsigned long long)s->anchor.blob_off, (unsigned long long)s->anchor.blob_len,
+               s->anchor.blob_off, s->anchor.blob_len,
                s->n_deltas, s->first_delta, s->last_delta);
     else
         printf("seek: no anchor — replay %d delta(s) t%d..t%d from scratch\n",

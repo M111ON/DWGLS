@@ -17,25 +17,43 @@
  * This is the end-to-end claim: a chat turn is a seekable frame, stored
  * as a tiny token delta, reconstructed bit-exactly on demand.
  *
+ * The seek replay mirrors the producer's decode BATCHING, turn by turn: a
+ * quantized KV rounds per batch, so one big catch-up batch is not the same
+ * arithmetic as N small turns (measured: argmax flipped at one turn).
+ *
+ * Recall reads the LOG, not memory: the replay takes its resume point from a
+ * kv-anchor record and its tokens from kv-delta records (core/kv_temporal_read.h),
+ * so a process that never produced the frames can rebuild them. "append" mode
+ * therefore also resumes the live ctx FROM the log and continues the turn
+ * numbering, instead of starting a second session under the same numbers.
+ *
  * BUILD: gcc -O2 -std=c11 -I I:/llama/include -I core -o build/kv_temporal_llama
- *   tools/kv_temporal_llama.c .../llama.dll .../ggml.dll .../ggml-base.dll .../ggml-cpu-x64.dll -lm
- * RUN: ./build/kv_temporal_llama [model.gguf] [outdir] [backend_dir]
+ *   tools/kv_temporal_llama.c <backend>/llama.dll <backend>/ggml.dll
+ *   <backend>/ggml-base.dll <backend>/ggml-cpu-x64.dll -ladvapi32 -lm
+ * RUN: ./build/kv_temporal_llama [model.gguf] [outdir] [backend_dir] [NT] [append]
+ *   outdir gets the bridge's names (log.jsonl + kv_blobs.bin) so
+ *   chat-pool/kv_pool_bridge.py reads a C run unchanged; "append" continues an
+ *   existing log (turn numbering and its hash chain).
  */
 #include "llama.h"
 #include "ggml-backend.h"
 #include "kv_cold_base.h"
 #include "kv_temporal.h"
+#include "kv_temporal_read.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <wincrypt.h>
-#pragma comment(lib, "advapi32")
+/* link with -ladvapi32 (the #pragma form is MSVC-only, hence the warning) */
 #endif
 
 #define NCAP 3800
+#define NT_MAX 400
 
 /* ── the same SHA-256 the pool uses, so lines can drop in unchanged ── */
 static void sha256_hex(const void *data, size_t len, char out[65]) {
@@ -75,42 +93,70 @@ static void host_init(LlamaHost *h, const char *dir, const char *app) {
     snprintf(h->app, sizeof(h->app), "%s", app ? app : "kv-temporal");
     snprintf(h->prev, sizeof(h->prev), "GENESIS");
     snprintf(h->prev_chain, sizeof(h->prev_chain), "GENESIS");
-    h->blob_used = 0; h->n_lines = 0;
+    /* offsets are absolute positions in the side blob file: if the file already
+     * exists (append mode, shared dir) they MUST start after it, or every
+     * anchor of the second run points at the first run's bytes. */
+    h->blob_used = 0;
+    FILE *bf = fopen(h->blob_path, "rb");
+    if (bf) {
+        if (fseek(bf, 0, SEEK_END) == 0) {
+            long sz = ftell(bf);
+            if (sz > 0) h->blob_used = (uint64_t)sz;
+        }
+        fclose(bf);
+    }
+    h->n_lines = 0;
 }
 
 /* read the hash of the last line already in the shared log (so the chain is
    continuous when we append to a file someone else owns) */
+#define TAIL_SCAN 65536
 static void host_tail_hash(LlamaHost *h) {
     FILE *f = fopen(h->log_path, "rb");
     if (!f) return;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
     long sz = ftell(f);
     if (sz <= 0) { fclose(f); return; }
-    /* scan back for the last non-empty line, then find its "hash" */
-    long start = sz > 4096 ? sz - 4096 : 0;
-    if (start > 0) { fseek(f, start, SEEK_SET); while (fgetc(f) != '\n' && ftell(f) < sz) {} }
+    /* a pool line can be long (a frame delta carries its tokens), so scan back
+       far enough that the FINAL line is fully inside the window */
+    long start = sz > TAIL_SCAN ? sz - TAIL_SCAN : 0;
     fseek(f, start, SEEK_SET);
-    char buf[8192]; size_t got = fread(buf, 1, sizeof(buf) - 1, f); buf[got] = 0;
+    char *buf = (char *)malloc((size_t)(sz - start) + 1);
+    if (!buf) { fclose(f); return; }
+    size_t got = fread(buf, 1, (size_t)(sz - start), f);
     fclose(f);
-    char *last = strrchr(buf, '\n');
-    char *line = NULL;
-    if (last && last != buf) {
-        /* walk back one more newline to get the final full line */
-        *last = 0; last = strrchr(buf, '\n');
-        line = last ? last + 1 : buf;
-    } else {
-        line = buf;
+    buf[got] = 0;
+    /* trim trailing newlines/CRs, then take everything after the last '\n' */
+    while (got > 0 && (buf[got-1] == '\n' || buf[got-1] == '\r')) buf[--got] = 0;
+    char *line = buf;
+    if (got > 0) {
+        char *nl = strrchr(buf, '\n');
+        if (nl) line = nl + 1;
     }
-    if (!line || !*line) return;
+    /* if the window began mid-line the prefix is garbage but the tail after
+       the last newline is still a whole line — unless no newline was found,
+       in which case the whole buffer may be a fragment: skip it */
+    if (start > 0 && !strrchr(buf, '\n')) { free(buf); return; }
     char *hp = strstr(line, "\"hash\":\"");
-    if (!hp) return;
-    hp += 8;
-    char *end = strchr(hp, '"');
-    if (!end || end - hp != 64) return;
-    memcpy(h->prev_chain, hp, 64); h->prev_chain[64] = 0;
+    if (hp) {
+        hp += 8;
+        char *end = strchr(hp, '"');
+        if (end && end - hp == 64) { memcpy(h->prev_chain, hp, 64); h->prev_chain[64] = 0; }
+    }
+    free(buf);
 }
 
 static int host_line(LlamaHost *h, const char *kind, const char *text) {
+    /* the chain must follow the FILE, not just our own records: if another
+       writer appended after our last line, the next line's `prev` has to be
+       that writer's hash or the pool's chain check breaks at our record. */
+    {
+        char own[65];
+        memcpy(own, h->prev, sizeof(own));
+        host_tail_hash(h);
+        if (strcmp(h->prev_chain, "GENESIS") != 0 && strcmp(h->prev_chain, own) != 0)
+            memcpy(h->prev, h->prev_chain, sizeof(h->prev));
+    }
     /* escape the text for embedding inside a JSON string (it is itself JSON,
        so every " and \ must be escaped, and the pool parser must see one
        valid JSON object per line) */
@@ -131,7 +177,8 @@ static int host_line(LlamaHost *h, const char *kind, const char *text) {
     free(hb);
     FILE *f = fopen(h->log_path, "ab");
     if (!f) { free(esc); return -1; }
-    fprintf(f, "{\"v\":3,\"app\":\"%s\",\"kind\":\"%s\",\"text\":\"%s\",\"to\":\"all\",\"prev\":\"%s\",\"hash\":\"%s\"}\n",
+    fprintf(f, "{\"v\":3,\"t\":%" PRId64 ",\"app\":\"%s\",\"kind\":\"%s\",\"text\":\"%s\",\"to\":\"all\",\"prev\":\"%s\",\"hash\":\"%s\"}\n",
+            (int64_t)time(NULL),
             h->app, kind, esc, h->prev, dig);
     fclose(f);
     free(esc);
@@ -160,10 +207,9 @@ static int lh_log_append(void *ud, const char *kind, const void *rec, size_t len
         KVTAnchor a; memcpy(&a, rec, sizeof(a));
         sprintf(text,
             "{\"turn\":%d,\"base_n_tokens\":%d,\"type_k\":%u,\"type_v\":%u,"
-            "\"blob_off\":%llu,\"blob_len\":%llu,\"blob_fnv\":%llu}",
+            "\"blob_off\":%" PRIu64 ",\"blob_len\":%" PRIu64 ",\"blob_fnv\":%" PRIu64 "}",
             a.turn, a.base_n_tokens, a.kv_type_k, a.kv_type_v,
-            (unsigned long long)a.blob_off, (unsigned long long)a.blob_len,
-            (unsigned long long)a.base_fnv);
+            a.blob_off, a.blob_len, a.base_fnv);
     } else {
         snprintf(text, len * 8 + 256, "%s", "(unknown)");
     }
@@ -228,12 +274,8 @@ static int32_t tokenize(const struct llama_vocab *v, const char *s, int add_spec
     return llama_tokenize(v, s, (int32_t)strlen(s), out, cap, add_special, true);
 }
 
-/* ── FNV for prefix hashes (matches kv_temporal's expectations) ── */
-static uint64_t fnv_tokens(const int32_t *t, int n) {
-    uint64_t h = 1469598103934665603ULL;
-    for (int i = 0; i < n; i++) { h ^= (uint64_t)(uint32_t)t[i]; h *= 1099511628211ULL; }
-    return h;
-}
+/* ── FNV for blob integrity (the per-frame prefix hash is computed by
+ *    kvt_frame_make in the header, so there is exactly one implementation) ── */
 static uint64_t fnv_bytes(const void *p, size_t n) {
     uint64_t h = 0xCBF29CE484222325ULL;
     const uint8_t *b = (const uint8_t *)p;
@@ -241,16 +283,82 @@ static uint64_t fnv_bytes(const void *p, size_t n) {
     return h;
 }
 
+/* Rebuild the KV state for absolute turn W from the LOG: resume the nearest
+ * anchor blob, then decode the log's own deltas for turns anchor+1..W at their
+ * exact token positions (the positions the producer used, so quantized KV
+ * rounding is reproduced turn by turn).
+ *
+ * Returns 0 on success. *argmax receives the frame-end argmax, or -1 when W is
+ * the anchor turn itself (that frame ends inside the blob, so nothing is left
+ * to decode and the argmax is not comparable). */
+static int kv_rebuild(struct llama_context *ctx, const KVTLog *L,
+                      const KVTAnchor *anchors, int na,
+                      KVLogDelta *deltas, int nd,
+                      int32_t W, int32_t *pos_out, llama_token *argmax, int32_t n_vocab) {
+    llama_memory_clear(llama_get_memory(ctx), true);
+    KVTSeek s; kvt_seek(anchors, na, W, &s);
+    int32_t pos = 0, first = 1;
+    if (s.have_anchor) {
+        size_t blen = (size_t)s.anchor.blob_len;
+        uint8_t *blob = (uint8_t *)malloc(blen ? blen : 1);
+        if (!blob) return -1;
+        if (L->blob_read(L->ud, s.anchor.blob_off, blob, blen) != 0 ||
+            fnv_bytes(blob, blen) != s.anchor.base_fnv) {
+            fprintf(stderr, "anchor t%d: blob at +%" PRIu64 " does not verify\n",
+                    s.anchor.turn, s.anchor.blob_off);
+            free(blob);
+            return -1;
+        }
+        KVColdBase base; kvcb_init(&base);
+        base.blob = blob; base.size = blen; base.n_tokens = s.anchor.base_n_tokens; base.have = 1;
+        size_t applied = kvcb_resume(ctx, 0, &base);   /* copies; blob stays ours */
+        free(blob);
+        if (applied == 0) { fprintf(stderr, "anchor t%d: resume failed\n", s.anchor.turn); return -1; }
+        pos = s.anchor.base_n_tokens;
+        first = s.anchor.turn + 1;
+    }
+    if (argmax) *argmax = -1;
+    for (int32_t q = first; q <= W; q++) {
+        KVLogDelta *d = kvl_find(deltas, nd, q);
+        if (!d) { fprintf(stderr, "log: no delta for turn %d\n", q); return -1; }
+        if (decode_at(ctx, d->tok, d->n, pos) < 0) return -1;
+        pos += d->n;
+        if (q == W && argmax) *argmax = argmax_ith(ctx, d->n - 1, n_vocab);
+    }
+    if (pos_out) *pos_out = pos;
+    return 0;
+}
+
+/* Which turns to replay-compare? Full sweep for short runs; for long runs the
+ * first 8, the last 8 and every 16th — a rebuild from an anchor costs
+ * O(turns-since-anchor), so a full sweep of a 145-turn log is quadratic and
+ * proves nothing the sample does not. Every compared turn is still a complete
+ * rebuild from (anchor blob + log deltas), never a shortcut. */
+static int verify_turn(int32_t T, int32_t T0, int32_t T1) {
+    int32_t n = T1 - T0 + 1;
+    if (n <= 32) return 1;
+    if (T - T0 < 8) return 1;
+    if (T1 - T < 8) return 1;
+    return ((T - T0) % 16) == 0;
+}
+
 int main(int argc, char **argv) {
     const char *model_path = argc > 1 ? argv[1] : "I:\\model\\Qwen2.5-0.5B-Instruct-Q8_0.gguf";
     const char *outdir     = argc > 2 ? argv[2] : ".";
     const char *backend    = argc > 3 ? argv[3] : "build\\cpuonly";
+    const int   NT         = argc > 4 ? atoi(argv[4]) : 12;
+    const int   append     = (argc > 5 && strcmp(argv[5], "append") == 0);
+    const int   skip_seek  = (argc > 6 && strcmp(argv[6], "noseek") == 0)
+                          || (argc > 5 && strcmp(argv[5], "noseek") == 0);
     const int K = KVT_WINDOW;   /* hot-window RAM budget, not cadence */
+    if (NT < 1 || NT > NT_MAX) { fprintf(stderr, "NT out of range (1..%d)\n", NT_MAX); return 2; }
 
+    /* the host writes the bridge's names from the start: same dir, same
+       two files, so a Python reader sees exactly what a C run produced */
     char lp[KVT_PATH + 40], bp[KVT_PATH + 40];
-    snprintf(lp, sizeof(lp), "%s\\kvt_llama.log.jsonl", outdir);
-    snprintf(bp, sizeof(bp), "%s\\kvt_llama.blob", outdir);
-    remove(lp); remove(bp);
+    snprintf(lp, sizeof(lp), "%s\\log.jsonl", outdir);
+    snprintf(bp, sizeof(bp), "%s\\kv_blobs.bin", outdir);
+    if (!append) { remove(lp); remove(bp); }
 
     ggml_backend_load_all_from_path(backend);
     llama_log_set(NULL, NULL);
@@ -272,12 +380,38 @@ int main(int argc, char **argv) {
 
     KVTWindow win; kvt_init(&win, K);
     KVTAnchor anchors[64]; int n_anchors = 0;
-    /* keep every frame's tokens for the replay side */
+    /* tokens of THIS run's turns (for the live decode); replay reads the LOG,
+     * never this array — that is what makes the log the source of truth. */
     static llama_token hist[NCAP];
     int32_t n_hist = 0;
-    int32_t live_argmax[64]; memset(live_argmax, 0, sizeof(live_argmax));
+    static int32_t live_argmax[NT_MAX];
+    static char tbuf[NT_MAX][96];
+    const char *turns[NT_MAX];
+    memset(live_argmax, 0, sizeof(live_argmax));
 
-    const char *turns[] = {
+    /* ── read the log this run appends to, BEFORE recording anything ──
+     * Append mode continues a conversation: turn numbering continues where the
+     * log ends, and the live ctx is REBUILT from the log (nearest anchor blob +
+     * that round's deltas) so new turns extend the same context instead of
+     * starting a second, unrelated session under the same turn numbers. */
+    static KVTAnchor log_anchors[64];
+    static KVLogDelta log_deltas[LOG_MAX_FRAMES];
+    int na_log = 0, nd_log = 0;
+    kvl_read(host.log_path, log_anchors, 64, &na_log, log_deltas, LOG_MAX_FRAMES, &nd_log);
+    int32_t turn_base = nd_log > 0 ? log_deltas[nd_log - 1].turn : 0;
+    int32_t pos = 0;
+    int32_t last_anchor_turn = na_log > 0 ? log_anchors[na_log - 1].turn : 0;
+    if (turn_base > 0) {
+        if (kv_rebuild(ctx, &L, log_anchors, na_log, log_deltas, nd_log,
+                       turn_base, &pos, NULL, n_vocab) != 0) {
+            fprintf(stderr, "resume from log failed (turn_base=%d)\n", turn_base);
+            return 1;
+        }
+        printf("resumed from log at t%d: %d anchor(s), %d delta(s), ctx pos=%d\n",
+               turn_base, na_log, nd_log, pos);
+    }
+
+    static const char *seed_turns[] = {
         "what is a hash chain?",
         "why does it matter for a log?",
         "give one concrete risk it prevents",
@@ -291,104 +425,169 @@ int main(int argc, char **argv) {
         "what is a delta encoding?",
         "when is a full snapshot better than a delta?",
     };
-    const int NT = 12;
+    const int NSEED = (int)(sizeof(seed_turns) / sizeof(seed_turns[0]));
+    for (int t = 1; t <= NT; t++) {
+        if (t <= NSEED) {
+            turns[t-1] = seed_turns[t-1];
+        } else {
+            snprintf(tbuf[t-1], sizeof(tbuf[t-1]),
+                     "turn %d: name one more property of an append-only log", t);
+            turns[t-1] = tbuf[t-1];
+        }
+    }
 
-    printf("kv_temporal_llama: model=%s K=%d\n", model_path, K);
+    printf("kv_temporal_llama: model=%s K=%d turn_base=%d\n", model_path, K, turn_base);
 
     /* ── pass 1: run the turns, commit frames, cut anchors ── */
     for (int t = 1; t <= NT; t++) {
         char wrapped[512];
         snprintf(wrapped, sizeof(wrapped), "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n", turns[t-1]);
         int32_t prev = n_hist;
-        n_hist += tokenize(vocab, wrapped, n_hist == 0, hist + n_hist, NCAP - n_hist);
+        int32_t nt_room = NCAP - n_hist;
+        int32_t nu_add = tokenize(vocab, wrapped, n_hist == 0, hist + n_hist, nt_room);
+        if (nu_add <= 0 || nu_add > nt_room) { fprintf(stderr, "token budget exceeded at t%d (need %d, room %d)\n", t, nu_add, nt_room); return 1; }
+        n_hist += nu_add;
         int32_t nu = n_hist - prev;
+        const int32_t t_abs = turn_base + t;
 
-        if (decode_at(ctx, hist + prev, nu, prev) < 0) { fprintf(stderr, "live t%d decode failed\n", t); return 1; }
+        if (decode_at(ctx, hist + prev, nu, pos) < 0) { fprintf(stderr, "live t%d decode failed\n", t); return 1; }
+        pos += nu;
         live_argmax[t] = argmax_ith(ctx, nu - 1, n_vocab);
-        printf("[live t%d] frame-end argmax=%d tokens=%d n_hist=%d\n", t, live_argmax[t], nu, n_hist);
+        printf("[live t%d abs:%d] frame-end argmax=%d tokens=%d pos=%d\n",
+               t, t_abs, live_argmax[t], nu, pos);
 
-        KVTFrame fr = kvt_frame_make(t, 0, hist + prev, nu);
+        KVTFrame fr = kvt_frame_make(t_abs, last_anchor_turn, hist + prev, nu);
         KVTFrame ev; memset(&ev, 0, sizeof(ev));
         int had = kvt_commit_frame(&win, &fr, &ev);
-
-        /* persist THIS frame's delta immediately — chronological in the file,
-           independent of when the hot window happens to evict it */
-        kvt_persist_delta(&L, &fr);
 
         /* the evicted frame's delta was already written at its own commit */
         if (had) kvt_frame_free(&ev);
 
         if (kvt_anchor_due(&win)) {
             KVColdBase base; kvcb_init(&base);
-            if (kvcb_hold(ctx, 0, &base, n_hist) == 0) {
+            if (kvcb_hold(ctx, 0, &base, pos) == 0) {
                 KVTAnchor a;
-                if (kvt_persist_anchor(&L, t, n_hist, 8, 2, fnv_bytes(base.blob, base.size),
+                if (kvt_persist_anchor(&L, t_abs, pos, 8, 2, fnv_bytes(base.blob, base.size),
                                        base.blob, base.size, win.since_anchor, &a) == 0 && n_anchors < 64)
                     anchors[n_anchors++] = a;
-                printf("  anchor @t%d: base blob %zu B (n_tokens=%d)\n", t, base.size, n_hist);
+                printf("  anchor @t%d: base blob %" PRIu64 " B (n_tokens=%d)\n", t_abs, (uint64_t)base.size, pos);
                 kvcb_clear(&base);
             }
+            last_anchor_turn = t_abs;     /* this turn IS the anchor its round hangs off */
             win.since_anchor = 0;
-            int idx = (win.head - 1 + win.cap) % win.cap;
-            win.frames[idx].hdr.parent = t;
+        }
+
+        /* Persist THIS frame's delta at commit time (chronological in the file,
+           independent of when the hot window evicts it) — written AFTER the
+           anchor decision so `parent` names the anchor this frame hangs off,
+           which is itself when this turn is the anchor. Written from the ring
+           slot, because commit moved the frame and freed the local pointer. */
+        {
+            int just = (win.head - 1 + win.cap) % win.cap;
+            win.frames[just].hdr.parent = last_anchor_turn;   /* round this frame hangs off */
+            kvt_persist_delta(&L, &win.frames[just]);
         }
     }
     /* drain remaining hot frames — their deltas already went to the log at
        commit time; nothing to persist here. */
     (void)win;
-    printf("log lines=%d anchors=%d blob_used=%llu B\n", host.n_lines, n_anchors,
-           (unsigned long long)host.blob_used);
+    printf("log lines=%d anchors=%d blob_used=%" PRIu64 " B\n", host.n_lines, n_anchors, host.blob_used);
 
-    /* ── pass 2: SEEK back into a fresh ctx and compare argmax ── */
+    /* re-read the log FIRST: pass 1 just appended to it, and both the
+       verification and the replay below have to use what is ON DISK, not the
+       snapshot taken before the run */
+    kvl_free(log_deltas, nd_log);
+    kvl_read(host.log_path, log_anchors, 64, &na_log, log_deltas, LOG_MAX_FRAMES, &nd_log);
+    printf("log re-read: %d anchor(s), %d delta(s)\n", na_log, nd_log);
+
+    /* ── pass 1b: the log must be self-verifying ──
+     * Re-read every anchor BLOB through the same path a later process uses and
+     * check its FNV against the record — for every anchor IN THE LOG, not just
+     * the ones this run wrote (an append run that cuts no new anchor still has
+     * to prove the existing resume points are intact). */
+    int n_verify = nd_log ? na_log : n_anchors;
+    const KVTAnchor *va = nd_log ? log_anchors : anchors;
+    int bad_anchor = 0;
+    for (int i = 0; i < n_verify; i++) {
+        size_t len = (size_t)va[i].blob_len;
+        uint8_t *buf = (uint8_t *)malloc(len ? len : 1);
+        if (!buf) { bad_anchor++; continue; }
+        if (lh_blob_read(&host, va[i].blob_off, buf, len) != 0 ||
+            fnv_bytes(buf, len) != va[i].base_fnv) {
+            fprintf(stderr, "anchor @t%d: blob at +%" PRIu64 "/%" PRIu64 " does not match its FNV\n",
+                    va[i].turn, va[i].blob_off, (uint64_t)len);
+            bad_anchor++;
+        }
+        free(buf);
+    }
+    printf("anchor blobs self-verified: %d/%d\n", n_verify - bad_anchor, n_verify);
+    if (bad_anchor) { kvt_free(&win); llama_free(ctx); llama_model_free(model); return 1; }
+
+    /* ── pass 2: SEEK back into a fresh ctx and compare argmax ──
+     *
+     * Everything the replay needs comes from the log and the side blob file:
+     * the anchor record names the resume point, the delta records carry the
+     * tokens. Nothing is taken from the producer's memory, which is the whole
+     * point — a later process must be able to recall a frame it never saw.
+     *
+     * The replay mirrors the LIVE decode schedule turn by turn, deliberately.
+     * A quantized KV (K=Q8_0, V=Q4_0) rounds per batch, so replaying 125 tokens
+     * in ONE batch is not the same arithmetic as decoding 16 straight turns of
+     * 14-20 tokens — measured at t9 of the 12-turn run: argmax flipped
+     * (785 -> 40) with identical bytes in, purely from batch shape
+     * (same class as memory #7032). Seeking must reproduce the producer's
+     * batching, not just its tokens. */
+    if (skip_seek) {
+        /* Producer-only run: a long log is expensive to sweep (each rebuild is
+           O(turns-since-anchor)), so a caller that only wants the log and the
+           anchor blob asks for pass 1 alone; a later append run then proves the
+           resume point it produced. */
+        printf("=== kv_temporal_llama: pass 1 only (noseek) — %d delta(s), %d anchor(s) ===\n",
+               nd_log, na_log);
+        kvl_free(log_deltas, nd_log);
+        kvt_free(&win);
+        llama_free(ctx);
+        llama_model_free(model);
+        return 0;
+    }
     struct llama_context *c2 = mk_ctx(model);
-    int match = 0;
-    for (int T = 1; T <= NT; T++) {
-        llama_memory_clear(llama_get_memory(c2), true);
-        KVTSeek s; kvt_seek(anchors, n_anchors, T, &s);
-        if (s.have_anchor) {
-            KVColdBase base; kvcb_init(&base);
-            base.blob = (uint8_t *)malloc((size_t)s.anchor.blob_len);
-            base.size = (size_t)s.anchor.blob_len;
-            base.n_tokens = s.anchor.base_n_tokens; base.have = 1;
-            if (lh_blob_read(&host, s.anchor.blob_off, base.blob, base.size) != 0) {
-                fprintf(stderr, "blob read failed\n"); return 1;
-            }
-            if (kvcb_resume(c2, 0, &base) == 0) { fprintf(stderr, "resume failed\n"); return 1; }
-            kvcb_clear(&base);
-        }
-        /* teacher-decode the deltas anchor+1 .. T, taking each delta's exact
-           token slice from hist (turn boundaries recomputed deterministically,
-           mirroring pass 1) */
-        int32_t from = s.have_anchor ? s.anchor.base_n_tokens : 0;
-        int32_t endT = 0;
-        {
-            int32_t np = 0;
-            for (int q = 1; q <= T; q++) {
-                char w[512];
-                snprintf(w, sizeof(w), "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n", turns[q-1]);
-                llama_token tmp[NCAP];
-                int32_t nt = tokenize(vocab, w, np == 0, tmp, NCAP - np);
-                np += nt;
-            }
-            endT = np;
-        }
-        if (decode_at(c2, hist + from, endT - from, from) < 0) {
-            fprintf(stderr, "[seek t%d] decode failed\n", T);
+    int match = 0, compared = 0, skipped = 0;
+    llama_token got = -1;
+    int32_t pos2 = 0;
+    KVTSeek s; memset(&s, 0, sizeof(s));
+    const int32_t T_first = turn_base + 1, T_last = turn_base + NT;
+    for (int32_t T = T_first; T <= T_last; T++) {
+        if (!verify_turn(T, T_first, T_last)) continue;
+        if (kv_rebuild(c2, &L, log_anchors, na_log, log_deltas, nd_log, T, &pos2, &got, n_vocab) != 0) {
+            fprintf(stderr, "[seek t%d] rebuild failed\n", T);
             llama_free(c2);
             kvt_free(&win);
             return 1;
         }
-        llama_token got = argmax_ith(c2, (endT - from) - 1, n_vocab);
-        int ok = (got == live_argmax[T]);
+        kvt_seek(log_anchors, na_log, T, &s);
+        if (s.have_anchor && T == s.anchor.turn) {
+            /* the anchor blob ends exactly at this frame's last token, so there
+               is nothing left to decode: argmax is not comparable here. Saying
+               so is the honest result — not a MATCH and not a DIFF. */
+            skipped++;
+            printf("[seek t%d] anchor=yes replay=0 tok  argmax=n/a (frame ends inside the anchor)\n", T);
+            continue;
+        }
+        const int32_t live = live_argmax[T - turn_base];
+        const int32_t replay = pos2 - (s.have_anchor ? s.anchor.base_n_tokens : 0);
+        int ok = (got == live);
+        compared++;
         printf("[seek t%d] anchor=%s replay=%d tok  argmax=%d live=%d %s\n",
-               T, s.have_anchor ? "yes" : "no", endT - from, got, live_argmax[T], ok ? "MATCH" : "DIFF");
+               T, s.have_anchor ? "yes" : "no", replay, got, live, ok ? "MATCH" : "DIFF");
         if (ok) match++;
     }
-    printf("=== kv_temporal_llama: %d/%d MATCH ===\n", match, NT);
+    printf("=== kv_temporal_llama: %d/%d MATCH (%d skipped: anchor-turn frame) ===\n",
+           match, compared, skipped);
 
+    kvl_free(log_deltas, nd_log);
     llama_free(c2);
     kvt_free(&win);
     llama_free(ctx);
     llama_model_free(model);
-    return match == NT ? 0 : 1;
+    return match == compared ? 0 : 1;
 }
