@@ -58,13 +58,28 @@ static inline char *kvl_slurp(const char *path, size_t *len_out) {
     return buf;
 }
 
-/* value of \"key\":<int> inside one log line; dflt when absent */
-static inline long long kvl_num(const char *line, const char *key, long long dflt) {
+/* Move past `"key"` → value, tolerating what a JSON writer actually emits.
+ * Two writers produce this file: our host (compact: `"hash":"abc"`) and
+ * pool.py (`json.dumps` default: `"hash": "abc"`). A parser that only accepts
+ * one shape silently ignores the other writer's lines — measured: the chain
+ * forked because the tail scan could not read a pool line's hash. */
+static inline const char *kvl_after_key(const char *line, const char *key) {
     char pat[64];
-    snprintf(pat, sizeof(pat), "\\\"%s\\\":", key);
+    snprintf(pat, sizeof(pat), "\\\"%s\\\"", key);      /* "key" inside text */
     const char *p = strstr(line, pat);
-    if (!p) return dflt;
+    if (!p) return NULL;
     p += strlen(pat);
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != ':') return NULL;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    return p;
+}
+
+/* value of "key":<int> inside one log line; dflt when absent */
+static inline long long kvl_num(const char *line, const char *key, long long dflt) {
+    const char *p = kvl_after_key(line, key);
+    if (!p) return dflt;
     char *end = NULL;
     long long v = strtoll(p, &end, 10);
     return end == p ? dflt : v;
@@ -73,11 +88,8 @@ static inline long long kvl_num(const char *line, const char *key, long long dfl
 /* unsigned variant: blob_fnv can exceed INT64_MAX (e.g. 16007757002510808865) */
 static inline unsigned long long kvl_unum(const char *line, const char *key,
                                           unsigned long long dflt) {
-    char pat[64];
-    snprintf(pat, sizeof(pat), "\\\"%s\\\":", key);
-    const char *p = strstr(line, pat);
+    const char *p = kvl_after_key(line, key);
     if (!p) return dflt;
-    p += strlen(pat);
     char *end = NULL;
     unsigned long long v = strtoull(p, &end, 10);
     return end == p ? dflt : v;
@@ -86,9 +98,10 @@ static inline unsigned long long kvl_unum(const char *line, const char *key,
 /* token array of one delta line; caller frees *out. -1 when empty/absent. */
 static inline int kvl_tokens(const char *line, int32_t **out, int32_t *n_out) {
     *out = NULL; *n_out = 0;
-    const char *p = strstr(line, "\\\"tokens\\\":[");
-    if (!p) return -1;
-    p += strlen("\\\"tokens\\\":[");
+    const char *p = kvl_after_key(line, "tokens");
+    if (!p || *p != '[') return -1;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
     int cap = 32, n = 0;
     int32_t *v = (int32_t *)malloc((size_t)cap * sizeof(int32_t));
     if (!v) return -1;
@@ -131,6 +144,20 @@ static inline void kvl_anchor_sort(KVTAnchor *a, int n) {
     }
 }
 
+/* the record's kind lives at the TOP level of the line (unescaped, and
+ * pool.py writes it with a space): match the value, not the punctuation */
+static inline int kvl_kind_is(const char *line, const char *want) {
+    const char *p = strstr(line, "\"kind\"");
+    if (!p) return 0;
+    p += 6;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != ':') return 0;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    size_t n = strlen(want);
+    return strncmp(p, "\"", 1) == 0 && strncmp(p + 1, want, n) == 0 && p[1 + n] == '"';
+}
+
 /* anchors (resume points) + deltas (tokens to replay), both ascending.
  * Missing file = zero records, not an error. */
 static inline void kvl_read(const char *path, KVTAnchor *anchors, int cap_a, int *na_out,
@@ -148,7 +175,7 @@ static inline void kvl_read(const char *path, KVTAnchor *anchors, int cap_a, int
             line = nl ? nl + 1 : NULL;
             continue;
         }
-        if (strstr(line, "\"kind\":\"kv-anchor\"") && *na_out < cap_a) {
+        if (kvl_kind_is(line, "kv-anchor") && *na_out < cap_a) {
             KVTAnchor a; memset(&a, 0, sizeof(a));
             a.turn          = (int32_t)kvl_num(line, "turn", 0);
             a.base_n_tokens = (int32_t)kvl_num(line, "base_n_tokens", 0);
@@ -158,7 +185,7 @@ static inline void kvl_read(const char *path, KVTAnchor *anchors, int cap_a, int
             a.blob_len      = kvl_unum(line, "blob_len", 0);
             a.base_fnv      = kvl_unum(line, "blob_fnv", 0);
             if (a.turn > 0) anchors[(*na_out)++] = a;
-        } else if (strstr(line, "\"kind\":\"kv-delta\"") && *nd_out < cap_d) {
+        } else if (kvl_kind_is(line, "kv-delta") && *nd_out < cap_d) {
             KVLogDelta d; memset(&d, 0, sizeof(d));
             d.turn   = (int32_t)kvl_num(line, "turn", 0);
             d.parent = (int32_t)kvl_num(line, "parent", 0);

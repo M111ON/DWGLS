@@ -231,6 +231,36 @@ int main(void) {
         remove(tmp);
     }
 
+    /* ── 8. the OTHER writer's punctuation ──
+     * pool.py emits json.dumps defaults — `"kind": "kv-delta"` and
+     * `\"turn\": 7` with spaces — while our host writes compact JSON. A reader
+     * that matches only one shape silently ignores half the log (measured: the
+     * chain forked because the tail hash of a pool line could not be read). */
+    {
+        const char *tmp = "build/kvt_read_spaced.log";
+        FILE *f = fopen(tmp, "wb");
+        CHECK(f != NULL, "spaced log: created");
+        if (f) {
+            fputs("{ \"v\": 3, \"t\": 1, \"app\": \"kv-temporal\", \"kind\": \"kv-anchor\", "
+                  "\"text\": \"{\\\"turn\\\": 145, \\\"base_n_tokens\\\": 99, \\\"type_k\\\": 8, "
+                  "\\\"type_v\\\": 2, \\\"blob_off\\\": 5, \\\"blob_len\\\": 6, \\\"blob_fnv\\\": 7}\", "
+                  "\"to\": \"all\", \"prev\": \"GENESIS\", \"hash\": \"aa\"}\n", f);
+            fputs("{ \"v\": 3, \"t\": 2, \"app\": \"kv-temporal\", \"kind\": \"kv-delta\", "
+                  "\"text\": \"{\\\"turn\\\": 7, \\\"parent\\\": 1, \\\"tokens\\\": [11, 12, 13]}\", "
+                  "\"to\": \"all\", \"prev\": \"aa\", \"hash\": \"bb\"}\n", f);
+            fclose(f);
+        }
+        KVTAnchor sa[4]; KVLogDelta sd[4];
+        int na = 0, nd = 0;
+        kvl_read(tmp, sa, 4, &na, sd, 4, &nd);
+        CHECK(na == 1 && sa[0].turn == 145 && sa[0].blob_off == 5 && sa[0].base_fnv == 7,
+              "spaced log: anchor parsed through json.dumps spacing");
+        CHECK(nd == 1 && sd[0].turn == 7 && sd[0].n == 3 && sd[0].tok[2] == 13,
+              "spaced log: delta tokens parsed through json.dumps spacing");
+        kvl_free(sd, nd);
+        remove(tmp);
+    }
+
     printf("=== kv_temporal: %d PASS, %d FAIL ===\n", pass, fail);
     kvt_free(&w);
     return fail ? 1 : 0;

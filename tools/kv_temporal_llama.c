@@ -49,7 +49,15 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <wincrypt.h>
+#include <io.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/locking.h>
 /* link with -ladvapi32 (the #pragma form is MSVC-only, hence the warning) */
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/file.h>
 #endif
 
 #define NCAP 3800
@@ -80,19 +88,91 @@ static void sha256_hex(const void *data, size_t len, char out[65]) {
 typedef struct {
     char log_path[KVT_PATH + 40];
     char blob_path[KVT_PATH + 40];
+    char lock_path[KVT_PATH + 40];   /* same <log>.lock pool.append() uses */
+    char claim_path[KVT_PATH + 40];  /* one producer per log, held for the run */
     char app[32];
     char prev[65];
     char prev_chain[65];   /* hash of the line before ours in the shared file */
+    int  tail_found;       /* 1 when prev_chain came from a real line */
     uint64_t blob_used;
     int n_lines;
+    int lock_fd;
+    int claim_fd;
 } LlamaHost;
+
+/* One producer per log, claimed for the whole run.
+ *
+ * The per-line lock keeps the FILE valid, but two producers that both append
+ * turn numbers would still be wrong: both would extend the same log with their
+ * own t1..tN and every "turn" in it would become ambiguous. Sequential appends
+ * (run 1 finishes, run 2 continues) are the supported pattern, so the claim is
+ * non-blocking: a second live producer is refused instead of interleaved. */
+static int host_claim_producer(LlamaHost *h) {
+#ifdef _WIN32
+    h->claim_fd = _open(h->claim_path, _O_CREAT | _O_RDWR, _S_IREAD | _S_IWRITE);
+    if (h->claim_fd < 0) return -1;
+    _lseek(h->claim_fd, 0, SEEK_SET);
+    if (_locking(h->claim_fd, _LK_NBLCK, 1) != 0) {
+        fprintf(stderr, "another producer already owns this log (%s)\n", h->claim_path);
+        return -1;
+    }
+#else
+    h->claim_fd = open(h->claim_path, O_CREAT | O_RDWR, 0644);
+    if (h->claim_fd < 0) return -1;
+    if (flock(h->claim_fd, LOCK_EX | LOCK_NB) != 0) {
+        fprintf(stderr, "another producer already owns this log (%s)\n", h->claim_path);
+        return -1;
+    }
+#endif
+    return 0;
+}
+
+/* ── the pool's writer lock, taken by this host too ──
+ * pool.append() serialises {read prev, compute hash, append line} under
+ * <log>.lock (msvcrt.locking / flock). Two writers that both append to one log
+ * MUST use the same lock file, or the chain forks: both read the same prev,
+ * both write a line claiming it, and the log stops being one chain. The blob
+ * file needs the same treatment for a different reason: an offset is decided by
+ * "size now", so two writers can reserve the same bytes.
+ *
+ * Scope is deliberately tiny (one line, or one blob reservation) — the lock is
+ * held for microseconds, never across a decode. */
+static int host_lock(LlamaHost *h) {
+    if (h->lock_fd < 0) return -1;
+#ifdef _WIN32
+    _lseek(h->lock_fd, 0, SEEK_SET);
+    return _locking(h->lock_fd, _LK_LOCK, 1) == 0 ? 0 : -1;   /* waits, retries ~10 s */
+#else
+    return flock(h->lock_fd, LOCK_EX) == 0 ? 0 : -1;
+#endif
+}
+
+static void host_unlock(LlamaHost *h) {
+    if (h->lock_fd < 0) return;
+#ifdef _WIN32
+    _lseek(h->lock_fd, 0, SEEK_SET);
+    _locking(h->lock_fd, _LK_UNLCK, 1);
+#else
+    flock(h->lock_fd, LOCK_UN);
+#endif
+}
 
 static void host_init(LlamaHost *h, const char *dir, const char *app) {
     snprintf(h->log_path, sizeof(h->log_path), "%s\\log.jsonl", dir);
     snprintf(h->blob_path, sizeof(h->blob_path), "%s\\kv_blobs.bin", dir);
+    snprintf(h->lock_path, sizeof(h->lock_path), "%s\\log.jsonl.lock", dir);
+    snprintf(h->claim_path, sizeof(h->claim_path), "%s\\kv_producer.lock", dir);
     snprintf(h->app, sizeof(h->app), "%s", app ? app : "kv-temporal");
     snprintf(h->prev, sizeof(h->prev), "GENESIS");
     snprintf(h->prev_chain, sizeof(h->prev_chain), "GENESIS");
+    h->tail_found = 0;
+    h->lock_fd = -1;
+    h->claim_fd = -1;
+#ifdef _WIN32
+    h->lock_fd = _open(h->lock_path, _O_CREAT | _O_RDWR, _S_IREAD | _S_IWRITE);
+#else
+    h->lock_fd = open(h->lock_path, O_CREAT | O_RDWR, 0644);
+#endif
     /* offsets are absolute positions in the side blob file: if the file already
      * exists (append mode, shared dir) they MUST start after it, or every
      * anchor of the second run points at the first run's bytes. */
@@ -137,24 +217,44 @@ static void host_tail_hash(LlamaHost *h) {
        the last newline is still a whole line — unless no newline was found,
        in which case the whole buffer may be a fragment: skip it */
     if (start > 0 && !strrchr(buf, '\n')) { free(buf); return; }
-    char *hp = strstr(line, "\"hash\":\"");
+    /* the hash of the last line. Both writers use this key but pool.py emits
+       `"hash": "…"` (space after the colon) while our host emits `"hash":"…"`,
+       so skip punctuation explicitly — matching one shape silently ignored the
+       other writer's line and forked the chain. */
+    char *hp = strstr(line, "\"hash\"");
     if (hp) {
-        hp += 8;
-        char *end = strchr(hp, '"');
-        if (end && end - hp == 64) { memcpy(h->prev_chain, hp, 64); h->prev_chain[64] = 0; }
+        hp += 6;
+        while (*hp == ' ' || *hp == '\t') hp++;
+        if (*hp == ':') {
+            hp++;
+            while (*hp == ' ' || *hp == '\t') hp++;
+            if (*hp == '"') hp++;
+            char *end = strchr(hp, '"');
+            if (end && end - hp == 64) {
+                memcpy(h->prev_chain, hp, 64); h->prev_chain[64] = 0;
+                h->tail_found = 1;
+            }
+        }
     }
     free(buf);
 }
 
 static int host_line(LlamaHost *h, const char *kind, const char *text) {
+    if (host_lock(h) != 0) { fprintf(stderr, "log: writer lock busy (<log>.lock)\n"); return -1; }
     /* the chain must follow the FILE, not just our own records: if another
        writer appended after our last line, the next line's `prev` has to be
-       that writer's hash or the pool's chain check breaks at our record. */
+       that writer's hash or the pool's chain check breaks at our record.
+       This read is inside the lock on purpose — reading the tail outside it is
+       the classic fork: both writers see the same prev and both claim it. */
     {
         char own[65];
         memcpy(own, h->prev, sizeof(own));
         host_tail_hash(h);
-        if (strcmp(h->prev_chain, "GENESIS") != 0 && strcmp(h->prev_chain, own) != 0)
+        /* tail_found, not a "GENESIS" compare: the sentinel means OUR chain has
+           no line yet, which is exactly the state when someone else already
+           wrote to the file (measured: a raced run kept prev=GENESIS and forked
+           the chain at line 301) */
+        if (h->tail_found && strcmp(h->prev_chain, own) != 0)
             memcpy(h->prev, h->prev_chain, sizeof(h->prev));
     }
     /* escape the text for embedding inside a JSON string (it is itself JSON,
@@ -162,7 +262,7 @@ static int host_line(LlamaHost *h, const char *kind, const char *text) {
        valid JSON object per line) */
     size_t need = strlen(text) * 2 + 8;
     char *esc = (char *)malloc(need);
-    if (!esc) return -1;
+    if (!esc) { host_unlock(h); return -1; }
     char *o = esc;
     for (const char *i = text; *i; i++) {
         if (*i == '"' || *i == '\\') *o++ = '\\';
@@ -176,7 +276,7 @@ static int host_line(LlamaHost *h, const char *kind, const char *text) {
     char dig[65]; sha256_hex(hb, strlen(hb), dig);
     free(hb);
     FILE *f = fopen(h->log_path, "ab");
-    if (!f) { free(esc); return -1; }
+    if (!f) { free(esc); host_unlock(h); return -1; }
     fprintf(f, "{\"v\":3,\"t\":%" PRId64 ",\"app\":\"%s\",\"kind\":\"%s\",\"text\":\"%s\",\"to\":\"all\",\"prev\":\"%s\",\"hash\":\"%s\"}\n",
             (int64_t)time(NULL),
             h->app, kind, esc, h->prev, dig);
@@ -184,6 +284,7 @@ static int host_line(LlamaHost *h, const char *kind, const char *text) {
     free(esc);
     memcpy(h->prev, dig, 65);
     h->n_lines++;
+    host_unlock(h);
     return 0;
 }
 
@@ -219,11 +320,21 @@ static int lh_log_append(void *ud, const char *kind, const void *rec, size_t len
 }
 static long long lh_blob_append(void *ud, const void *buf, size_t len) {
     LlamaHost *h = (LlamaHost *)ud;
-    long long off = (long long)h->blob_used;
+    /* reserve under the lock: the offset is "size now", so two writers that
+       each compute it outside the lock can reserve the same bytes */
+    if (host_lock(h) != 0) { fprintf(stderr, "blob: writer lock busy\n"); return -1; }
+    long long off = -1;
     FILE *f = fopen(h->blob_path, "ab");
-    if (!f) return -1;
-    fwrite(buf, 1, len, f); fclose(f);
-    h->blob_used += len;
+    if (f) {
+        if (fseek(f, 0, SEEK_END) == 0) {
+            long sz = ftell(f);
+            if (sz >= 0) off = (long long)sz;
+        }
+        if (off >= 0 && fwrite(buf, 1, len, f) != len) off = -1;
+        fclose(f);
+        if (off >= 0) h->blob_used = (uint64_t)off + len;
+    }
+    host_unlock(h);
     return off;
 }
 static int lh_blob_read(void *ud, unsigned long long off, void *buf, size_t len) {
@@ -358,6 +469,12 @@ int main(int argc, char **argv) {
     char lp[KVT_PATH + 40], bp[KVT_PATH + 40];
     snprintf(lp, sizeof(lp), "%s\\log.jsonl", outdir);
     snprintf(bp, sizeof(bp), "%s\\kv_blobs.bin", outdir);
+
+    /* claim the log BEFORE touching it: a fresh run deletes the files below, so
+       a second producer must be refused before it can wipe a live run's log */
+    LlamaHost host; host_init(&host, outdir, "kv-temporal");
+    if (host_claim_producer(&host) != 0) return 3;
+
     if (!append) { remove(lp); remove(bp); }
 
     ggml_backend_load_all_from_path(backend);
@@ -373,7 +490,6 @@ int main(int argc, char **argv) {
     struct llama_context *ctx = mk_ctx(model);
     if (!ctx) { fprintf(stderr, "ctx failed\n"); return 1; }
 
-    LlamaHost host; host_init(&host, outdir, "kv-temporal");
     host_tail_hash(&host);   /* continue the chain if the file already exists */
     KVTLog L; L.ud = &host; L.log_append = lh_log_append;
     L.blob_append = lh_blob_append; L.blob_read = lh_blob_read;

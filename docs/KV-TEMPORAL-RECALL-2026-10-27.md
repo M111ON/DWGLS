@@ -94,6 +94,39 @@ seek 158 -> anchor@145 replay 13
 chain ok True lines 160
 ```
 
+### Concurrency: a second writer on the same log
+
+`tools/kv_log_check.py check <dir>` verifies the whole log as a reader would:
+every line's hash covers its own fields, every `prev` is the previous line's
+hash, anchors sit on round boundaries and their `[off,off+len)` regions are
+unique and inside the blob file with a matching fnv.
+
+```
+# C host producing 10 turns while pool.append() writes 800 lines into the same log
+python tools/kv_log_check.py check I:\Temp\kv9
+  lines 811  delta turns 1..10 (unique 10)  anchors 1 [1]  blob 70656 B
+  CHAIN OK — every line hashes to itself, prev links contiguous,
+              anchor regions unique and fnv-verified
+  (the C run itself: 9/9 MATCH, 1 skipped)
+
+# second producer on the same live log, refused before it can touch anything
+build\kv_temporal_llama.exe <model> I:\Temp\kv10 <backend> 5
+  another producer already owns this log (I:\Temp\kv10\kv_producer.lock)
+  exit 3     (the first producer's 10 turns stay intact: check = CHAIN OK)
+```
+
+Two defects the race itself found, both invisible to single-writer testing:
+
+- the tail scan treated the string `"GENESIS"` as "no tail found", so a run that
+  started on an empty file never adopted a line another writer added later —
+  chain forked at line 301 with `prev=GENESIS` mid-file. Now a `tail_found` flag
+  records what the scan saw; the sentinel is no longer overloaded.
+- `pool.py` writes `json.dumps` defaults (`"hash": "…"`, `\"turn\": 2`) while the
+  C host writes compact JSON. Every scanner that matched `"hash":"` silently
+  skipped pool-written lines. The reader now skips punctuation instead of
+  matching it (`kvl_after_key`, `kvl_kind_is`), with a spaced-log fixture in
+  `tests/kv_temporal_test.c` so it cannot come back.
+
 Cross-language read of a C-written log (Python, `kv_pool_bridge`, no C in the
 loop), 24-turn log:
 
@@ -114,7 +147,16 @@ KB range for dozens of turns while the bases live outside it.
 
 ## Rules the code now enforces
 
-1. **Anchor cadence is the round rule** — `((turn-1) % KVT_ROUND)==0`, checked by
+1. **Two locks, two scopes.**
+   `log.jsonl.lock` is the **same** lock file `pool.append()` uses
+   (`pool.py:193`), held only for the microsecond-critical section:
+   read the tail hash → compute → append one line, and separately
+   reserve → write one blob. Without it, two writers read the same `prev` and
+   both claim it, and two writers compute the same blob offset.
+   `kv_producer.lock` is claimed **non-blocking for the whole run**: a second
+   live producer is refused (`exit 3`) instead of interleaving two turn
+   sequences into one log. Sequential appends stay the supported pattern.
+2. **Anchor cadence is the round rule** — `((turn-1) % KVT_ROUND)==0`, checked by
    `kvt_anchor_due()`; never "every K frames".
 2. **Replay reproduces batching**, not just tokens (per-turn decode).
 3. **The anchor-turn frame is not comparable** — reported, never scored.
@@ -135,10 +177,15 @@ KB range for dozens of turns while the bases live outside it.
 
 ## Boundaries (not done, stated plainly)
 
-- **Single writer assumed.** Two processes appending to one log can interleave
-  the tail-read and the append. The chain follows the file per write, but there
-  is no lock. Before the pool dir is used, a writer lock (or one writer) is
-  required.
+- **One producer per log, by design.** Concurrent producers are refused, not
+  merged: two runs would both write `t1..tN`. Any number of *pool* writers is
+  fine (the per-line lock covers them), and the C host itself is safe next to
+  them — proven above, not assumed. If a second producer is ever needed, the
+  turn numbering has to be allocated first; that is a format change, not a lock.
+- **The break between runs is not crash-atomic.** A run that dies between the
+  blob write and the record write leaves orphan blob bytes (wasted space, never
+  a wrong address); a run that dies mid-line leaves a partial line the reader
+  skips. Neither corrupts a chain.
 - **Reader slurps the file** (guarded at 512 MB). A production log needs a
   streaming reader; today's logs are small.
 - **Demo-sized ctx** (`NCAP 3800`, `KVT_WINDOW 8` frames). The hot window policy
@@ -152,7 +199,10 @@ KB range for dozens of turns while the bases live outside it.
 
 ## Next
 
-1. Point a run at a scratch copy of the pool dir, with the writer question
-   settled first (lock or single writer).
+1. Point a run at a scratch copy of the pool dir (concurrency is covered now;
+   what is left there is the scratch-vs-live decision and the `rkey`/`enc` gap:
+   KV records carry no address key, so they stay out of the pool's plane index —
+   correct while they are machine records the embedder skips, but it must be
+   stated before they live in the live log).
 2. Streaming reader (`kv_temporal_read.h` keeps the same API).
 3. KV→ANN handoff via the index section — separate chain, separate card.
