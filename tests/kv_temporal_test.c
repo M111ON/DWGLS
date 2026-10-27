@@ -261,6 +261,64 @@ int main(void) {
         remove(tmp);
     }
 
+    /* ── 9. a record from another branch must be refused, not stitched ──
+     * Replay resumes the nearest anchor at/behind a delta's turn. If the delta
+     * was written under a different branch its `parent` names another anchor, so
+     * replaying it on this path yields a plausible WRONG state — an error is the
+     * only safe outcome. */
+    {
+        KVTAnchor A[2]; KVLogDelta D[3];
+        int32_t tok[2] = {1, 2};
+        memset(A, 0, sizeof A); memset(D, 0, sizeof D);
+        A[0].turn = 1; A[1].turn = 145;
+        D[0].turn = 2,   D[0].parent = 1,   D[0].n = 2, D[0].tok = tok;
+        D[1].turn = 146, D[1].parent = 145, D[1].n = 2, D[1].tok = tok;
+        CHECK(kvl_check_parents(A, 2, D, 2, NULL, NULL) == 0,
+              "parents: one path stitches (delta -> nearest anchor)");
+        D[2].turn = 147, D[2].parent = 1,   D[2].n = 2, D[2].tok = tok;
+        int32_t bt = -1, bp = -1;
+        CHECK(kvl_check_parents(A, 2, D, 3, &bt, &bp) != 0 && bt == 147 && bp == 1,
+              "parents: a record hanging off another branch is refused (t147 parent 1)");
+        D[2].parent = 99;   /* parent that is not an anchor at all */
+        CHECK(kvl_check_parents(A, 2, D, 3, &bt, &bp) != 0 && bp == 99,
+              "parents: a parent that is not in the log is refused");
+        KVLogDelta pre = {0}; pre.turn = 0; pre.parent = 0;
+        CHECK(kvl_check_parents(A, 2, &pre, 1, NULL, NULL) != 0,
+              "parents: a delta before any anchor is refused");
+    }
+
+    /* ── 10. CRLF is still a log ──
+     * Any tool that re-serializes this file on Windows writes CRLF; the reader
+     * judged a line by its final '}' and so rejected EVERY CRLF line, seeing an
+     * almost-empty log while the chain was perfectly fine (measured: 158 real
+     * records read as 1 anchor + 1 delta). */
+    {
+        const char *tmp = "build/kvt_read_crlf.log";
+        FILE *f = fopen(tmp, "wb");
+        CHECK(f != NULL, "crlf log: created");
+        if (f) {
+            fputs("{\"v\":3,\"app\":\"kv-temporal\",\"kind\":\"kv-anchor\",\"text\":"
+                  "\"{\\\"turn\\\":1,\\\"base_n_tokens\\\":14,\\\"type_k\\\":8,\\\"type_v\\\":2,"
+                  "\\\"blob_off\\\":0,\\\"blob_len\\\":32,\\\"blob_fnv\\\":9}\","
+                  "\"to\":\"all\",\"prev\":\"GENESIS\",\"hash\":\"aa\"}\r\n", f);
+            fputs("{\"v\":3,\"app\":\"kv-temporal\",\"kind\":\"kv-delta\",\"text\":"
+                  "\"{\\\"turn\\\":2,\\\"parent\\\":1,\\\"tokens\\\":[5,6]}\","
+                  "\"to\":\"all\",\"prev\":\"aa\",\"hash\":\"bb\"}\r\n", f);
+            fclose(f);
+        }
+        KVTAnchor ca[4]; KVLogDelta cd[4];
+        int na = 0, nd = 0;
+        kvl_read(tmp, ca, 4, &na, cd, 4, &nd);
+        CHECK(na == 1 && ca[0].turn == 1 && ca[0].blob_len == 32,
+              "crlf log: anchor parsed (trailing \\r is not a corrupt line)");
+        CHECK(nd == 1 && cd[0].turn == 2 && cd[0].n == 2 && cd[0].tok[1] == 6,
+              "crlf log: delta parsed");
+        CHECK(kvl_check_parents(ca, na, cd, nd, NULL, NULL) == 0,
+              "crlf log: parent check runs on it too");
+        kvl_free(cd, nd);
+        remove(tmp);
+    }
+
     printf("=== kv_temporal: %d PASS, %d FAIL ===\n", pass, fail);
     kvt_free(&w);
     return fail ? 1 : 0;

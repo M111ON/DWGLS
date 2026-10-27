@@ -48,10 +48,12 @@ def check(directory: str) -> int:
         return 1
     blob_size = os.path.getsize(blob) if os.path.exists(blob) else 0
     bad = []
-    prev = "GENESIS"
+    prev = None          # nothing to compare the first line against
+    first_prev = None
     lines = 0
     turns = []           # delta turns
     anchor_turns = []    # anchor turns (an anchor names a turn that also has a delta)
+    deltas = []          # (turn, parent) for the branch check
     regions = []
     with open(log, "r", encoding="utf-8") as f:
         for i, raw in enumerate(f, 1):
@@ -69,13 +71,22 @@ def check(directory: str) -> int:
                  + m.get("to", "") + m.get("text", "")).encode("utf-8")).hexdigest()
             if m.get("hash") != want:
                 bad.append("line %d: hash does not cover its own fields" % i)
-            if m.get("prev") != prev:
+            if prev is None:
+                # the first line of a real pool log says prev="" (not "GENESIS"):
+                # it is the origin of the chain, so there is nothing to match. Any
+                # later line MUST point at its predecessor.
+                first_prev = m.get("prev")
+                if first_prev not in ("", "GENESIS"):
+                    bad.append("line %d: first line claims a prev (%r) but nothing precedes it"
+                               % (i, first_prev))
+            elif m.get("prev") != prev:
                 bad.append("line %d: prev %s.. is not the previous hash %s.."
                            % (i, str(m.get("prev"))[:8], prev[:8]))
             prev = m.get("hash") or prev
             if m.get("kind") == "kv-delta":
                 d = json.loads(m["text"])
                 turns.append(d["turn"])
+                deltas.append((d["turn"], d.get("parent")))
             elif m.get("kind") == "kv-anchor":
                 a = json.loads(m["text"])
                 anchor_turns.append(a["turn"])
@@ -110,8 +121,17 @@ def check(directory: str) -> int:
         if (t - 1) % ROUND != 0:
             bad.append("anchor t%d is not on a round boundary" % t)
 
-    print("lines %d  delta turns %d..%d (unique %d)  anchors %d %s  blob %d B"
-          % (lines, min(turns) if turns else 0, max(turns) if turns else 0,
+    # every delta must hang off the nearest anchor at or behind its turn: a
+    # record written under another branch names a different parent and would
+    # replay on the wrong base instead of failing
+    for turn, parent in deltas:
+        best = max([a for a in anchor_turns if a <= turn], default=None)
+        if best is None or parent != best:
+            bad.append("delta t%d hangs off parent %s, nearest anchor is %s"
+                       % (turn, parent, best))
+
+    print("lines %d  (first prev %r)  delta turns %d..%d (unique %d)  anchors %d %s  blob %d B"
+          % (lines, first_prev, min(turns) if turns else 0, max(turns) if turns else 0,
              len(set(turns)), len(regions), sorted(anchor_turns), blob_size))
     if bad:
         print("FAIL %d:" % len(bad))

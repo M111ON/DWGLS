@@ -158,6 +158,36 @@ static inline int kvl_kind_is(const char *line, const char *want) {
     return strncmp(p, "\"", 1) == 0 && strncmp(p + 1, want, n) == 0 && p[1 + n] == '"';
 }
 
+/* ── every delta must be stitchable onto THIS log's path ──
+ *
+ * `parent` is the anchor turn a delta hangs off (the nearest anchor at or before
+ * its turn; an anchor turn hangs off itself). Replay picks that anchor, resumes
+ * its blob, then walks deltas forward — so a delta whose parent is NOT the
+ * nearest anchor on this path was written under another branch. Replaying it
+ * anyway produces a plausible wrong state instead of an error, which is worse
+ * than refusing: measured with a deliberately mis-parented record, the replay
+ * succeeds and only the argmax comparison notices.
+ *
+ * Returns 0 when every delta stitches; -1 on the first bad one (turn/parent out).
+ */
+static inline int kvl_check_parents(const KVTAnchor *a, int na,
+                                    const KVLogDelta *d, int nd,
+                                    int32_t *bad_turn, int32_t *bad_parent) {
+    for (int i = 0; i < nd; i++) {
+        int32_t best = -1;
+        for (int j = 0; j < na; j++)
+            if (a[j].turn <= d[i].turn && a[j].turn > best) best = a[j].turn;
+        int found = 0;
+        for (int j = 0; j < na; j++) if (a[j].turn == d[i].parent) { found = 1; break; }
+        if (best < 0 || !found || d[i].parent != best) {
+            if (bad_turn) *bad_turn = d[i].turn;
+            if (bad_parent) *bad_parent = d[i].parent;
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* anchors (resume points) + deltas (tokens to replay), both ascending.
  * Missing file = zero records, not an error. */
 static inline void kvl_read(const char *path, KVTAnchor *anchors, int cap_a, int *na_out,
@@ -171,6 +201,11 @@ static inline void kvl_read(const char *path, KVTAnchor *anchors, int cap_a, int
         char *nl = strchr(line, '\n');
         if (nl) *nl = 0;
         size_t ll = strlen(line);
+        /* a line can end CRLF (any tool that re-serializes this file on Windows
+           writes CRLF; our own host writes LF), so trim before judging it: the
+           `}` test rejected every CRLF line and the reader silently saw an
+           almost-empty log while the chain itself was fine */
+        while (ll > 0 && (line[ll-1] == '\r' || line[ll-1] == ' ')) line[--ll] = 0;
         if (ll < 64 || line[ll-1] != '}') {          /* partial line: skip */
             line = nl ? nl + 1 : NULL;
             continue;

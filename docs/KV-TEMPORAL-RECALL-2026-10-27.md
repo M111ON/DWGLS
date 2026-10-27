@@ -115,7 +115,60 @@ build\kv_temporal_llama.exe <model> I:\Temp\kv10 <backend> 5
   exit 3     (the first producer's 10 turns stay intact: check = CHAIN OK)
 ```
 
-Two defects the race itself found, both invisible to single-writer testing:
+### Scratch copy of the real pool log (the wiring the owner asked for)
+
+`I:\tools\chat-pool\log.jsonl` copied to `I:\Temp\poolscratch`, then the C host
+appended 12 turns into the copy (`append` mode, one producer claim). Source dir
+was only read: its sha256 was identical before and after
+(`11eafcb0…04bfa`, 32,978 lines).
+
+```
+baseline  32978 lines, 34,864,904 B, sha256 11eafcb0…04bfa
+run       exit 0, 11/11 MATCH (1 skipped: anchor-turn frame), blobs 1/1 verified
+after     32991 lines (+13 = 12 deltas + 1 anchor)
+append    first record's prev == the baseline last hash (1caced73…aa78)
+proof     per-line sha256 of all 32,978 baseline lines recomputed after the run:
+          0 mismatches, 0 missing
+check     lines 32991 (first prev '') … anchors 1 [1] blob 70656 B
+          CHAIN OK — every line hashes to itself, prev links contiguous,
+                      anchor regions unique and fnv-verified      exit 0
+```
+
+Two defects the scratch run exposed, both fixed:
+
+- `kv_log_check.py` assumed the first line says `prev:"GENESIS"`; a real pool log
+  starts with `prev:""`, so the checker failed a perfectly good 32,978-line log
+  (it failed the *pristine* control copy too — the checker was wrong, not the
+  log). Now only lines 2..N are required to point at their predecessor.
+- The reader rejected every CRLF line (`line[ll-1] != '}'`): a log re-serialized
+  on Windows read as 1 anchor + 1 delta instead of 158 records, silently. Fixed
+  by trimming `\r` before the completeness test, with a CRLF fixture in
+  `tests/kv_temporal_test.c`.
+
+### A record from another branch is refused, not stitched
+
+Doctored copy of the 158-turn log (`tools/mkbranch.py`): one delta re-parented
+from 145 to 1, **with every hash recomputed** so the chain is perfectly valid.
+Only the parent rule can see it:
+
+```
+python tools/kv_log_check.py check I:\Temp\kv11
+  lines 160 … CHAIN-level checks all pass
+  FAIL 1: delta t150 hangs off parent 1, nearest anchor is 145    exit 1
+
+build\kv_temporal_llama.exe <model> I:\Temp\kv11 <backend> 1 append
+  log: turn 150 hangs off parent 1, which is not its nearest anchor —
+       refusing to resume from a branched log
+  exit 1,  log unchanged at 160 lines
+```
+
+This is the honest form of the "merge conflict" test: with one append-only chain
+there is no merge to get wrong, but there IS a way to splice a foreign branch into
+a path, and replay would have produced a plausible wrong state instead of an
+error.
+
+The two defects that earlier race found (single-writer testing cannot see
+either) stay fixed here:
 
 - the tail scan treated the string `"GENESIS"` as "no tail found", so a run that
   started on an empty file never adopted a line another writer added later —
@@ -186,6 +239,16 @@ KB range for dozens of turns while the bases live outside it.
   blob write and the record write leaves orphan blob bytes (wasted space, never
   a wrong address); a run that dies mid-line leaves a partial line the reader
   skips. Neither corrupts a chain.
+- **KV records carry no `rkey`/`enc`, and that is a visible edge in pool today.**
+  Measured on the scratch copy: `derived()["cells"]` skips them (guarded by
+  `if rk is not None`) so the plane map is unpolluted, but `timeline()` returns
+  13 rows with address `None`, and feeding that `None` to the plane helpers
+  raises `TypeError` in `_block_of` / `_coarse_map` (`pool.py`). Not reachable
+  through `pool_server.py` today (it only calls `explore_cell`, which tolerates
+  `None`), so it is a latent trap, not a live bug. Two ways out, not both:
+  give KV records a real address (port `rkey`/`app_phase` to C bit-exactly), or
+  make the pool helpers refuse `None` explicitly. Filed for the pool
+  workstream rather than patched here, because `pool.py` is not this chain.
 - **Reader slurps the file** (guarded at 512 MB). A production log needs a
   streaming reader; today's logs are small.
 - **Demo-sized ctx** (`NCAP 3800`, `KVT_WINDOW 8` frames). The hot window policy

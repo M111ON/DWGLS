@@ -514,6 +514,20 @@ int main(int argc, char **argv) {
     static KVLogDelta log_deltas[LOG_MAX_FRAMES];
     int na_log = 0, nd_log = 0;
     kvl_read(host.log_path, log_anchors, 64, &na_log, log_deltas, LOG_MAX_FRAMES, &nd_log);
+    /* refuse a log that is not one path BEFORE resuming from it: a delta from
+       another branch would resume on the wrong base and continue numbering as if
+       nothing happened */
+    {
+        int32_t bt = 0, bp = 0;
+        if (kvl_check_parents(log_anchors, na_log, log_deltas, nd_log, &bt, &bp) != 0) {
+            fprintf(stderr, "log: turn %d hangs off parent %d, which is not its nearest "
+                            "anchor — refusing to resume from a branched log\n", bt, bp);
+            kvl_free(log_deltas, nd_log);
+            llama_free(ctx);
+            llama_model_free(model);
+            return 1;
+        }
+    }
     int32_t turn_base = nd_log > 0 ? log_deltas[nd_log - 1].turn : 0;
     int32_t pos = 0;
     int32_t last_anchor_turn = na_log > 0 ? log_anchors[na_log - 1].turn : 0;
@@ -615,6 +629,23 @@ int main(int argc, char **argv) {
     kvl_free(log_deltas, nd_log);
     kvl_read(host.log_path, log_anchors, 64, &na_log, log_deltas, LOG_MAX_FRAMES, &nd_log);
     printf("log re-read: %d anchor(s), %d delta(s)\n", na_log, nd_log);
+
+    /* the log must hang together before anything is replayed through it: every
+       delta's parent has to be the nearest anchor on this path. A record from
+       another branch would otherwise replay on the wrong base and produce a
+       plausible wrong state. */
+    {
+        int32_t bt = 0, bp = 0;
+        if (kvl_check_parents(log_anchors, na_log, log_deltas, nd_log, &bt, &bp) != 0) {
+            fprintf(stderr, "log: turn %d hangs off parent %d, which is not its nearest "
+                            "anchor — this log is not one path\n", bt, bp);
+            kvl_free(log_deltas, nd_log);
+            kvt_free(&win);
+            llama_free(ctx);
+            llama_model_free(model);
+            return 1;
+        }
+    }
 
     /* ── pass 1b: the log must be self-verifying ──
      * Re-read every anchor BLOB through the same path a later process uses and
