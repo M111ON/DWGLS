@@ -285,6 +285,18 @@ int main(void) {
         KVLogDelta pre = {0}; pre.turn = 0; pre.parent = 0;
         CHECK(kvl_check_parents(A, 2, &pre, 1, NULL, NULL) != 0,
               "parents: a delta before any anchor is refused");
+
+        /* two branches numbering the same turn: chain-valid, shape-broken */
+        KVLogDelta dup[3];
+        memset(dup, 0, sizeof dup);
+        for (int i = 0; i < 3; i++) { dup[i].tok = tok; dup[i].n = 2; }
+        dup[0].turn = 5;  dup[0].parent = 1;
+        dup[1].turn = 6;  dup[1].parent = 1;
+        int32_t dt = 0;
+        CHECK(kvl_check_unique(dup, 2, &dt) == 0, "unique: distinct turns pass");
+        dup[2].turn = 6;  dup[2].parent = 1;
+        CHECK(kvl_check_unique(dup, 3, &dt) != 0 && dt == 6,
+              "unique: a duplicated turn is refused (t6 twice)");
     }
 
     /* ── 10. CRLF is still a log ──

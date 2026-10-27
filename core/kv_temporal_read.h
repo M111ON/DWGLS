@@ -188,6 +188,20 @@ static inline int kvl_check_parents(const KVTAnchor *a, int na,
     return 0;
 }
 
+/* Two branches that both number their next turn the same way are the one way a
+ * second writer can corrupt a path without breaking the chain: the hash chain is
+ * still valid, the turns just appear twice and replay silently picks one. Since
+ * deltas are sorted, a duplicate is adjacent. */
+static inline int kvl_check_unique(const KVLogDelta *d, int nd, int32_t *dup_turn) {
+    for (int i = 1; i < nd; i++) {
+        if (d[i].turn == d[i-1].turn) {
+            if (dup_turn) *dup_turn = d[i].turn;
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* anchors (resume points) + deltas (tokens to replay), both ascending.
  * Missing file = zero records, not an error. */
 static inline void kvl_read(const char *path, KVTAnchor *anchors, int cap_a, int *na_out,

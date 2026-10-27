@@ -110,6 +110,8 @@ def check(directory: str) -> int:
     if turns != sorted(turns):
         bad.append("turn numbers are not ascending")
     if len(set(turns)) != len(turns):
+        # two branches that number the same turn each write a chain-valid line, so
+        # only uniqueness sees it; replay would silently pick one of the two
         dup = sorted({t for t in turns if turns.count(t) > 1})[:5]
         bad.append("duplicate delta turn numbers: %s" % dup)
     if len(set(anchor_turns)) != len(anchor_turns):

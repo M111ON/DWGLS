@@ -211,22 +211,35 @@ KB range for dozens of turns while the bases live outside it.
    sequences into one log. Sequential appends stay the supported pattern.
 2. **Anchor cadence is the round rule** — `((turn-1) % KVT_ROUND)==0`, checked by
    `kvt_anchor_due()`; never "every K frames".
-2. **Replay reproduces batching**, not just tokens (per-turn decode).
-3. **The anchor-turn frame is not comparable** — reported, never scored.
-4. **Bytes are addressed, never inlined** — the log carries `{off,len,fnv}`.
-5. **Every read verifies** — blob FNV is checked before resume, so a stale or
+3. **Replay reproduces batching**, not just tokens (per-turn decode).
+4. **The anchor-turn frame is not comparable** — reported, never scored.
+5. **Bytes are addressed, never inlined** — the log carries `{off,len,fnv}`.
+6. **Every read verifies** — blob FNV is checked before resume, so a stale or
    truncated side file fails loudly instead of resuming wrong KV.
-6. **The log is the source of truth** — recall and append-mode resume both go
+7. **The log is the source of truth** — recall and append-mode resume both go
    through `core/kv_temporal_read.h`; the producer's arrays are not consulted.
-7. **Kill-safety** — a partial last line (no closing `}`) is skipped, not parsed
+8. **Kill-safety** — a partial last line (no closing `}`) is skipped, not parsed
    into a shortened token array; foreign pool kinds are ignored; `blob_fnv`
    above `INT64_MAX` survives (unsigned parse).
-8. **Records carry event time** — lines now include `"t"`, because pool's indexer
+9. **Records carry event time** — lines now include `"t"`, because pool's indexer
    defaults a missing `t` to 0 and an undated record then looks ancient (#7795).
    A log can therefore mix records written before this change (no `t`) with
    later ones (with `t`); nothing reads `t` for replay, so mixed logs are valid.
-9. **KV kinds stay out of the embedder** — already in `INDEX_SKIP_KINDS`
-   (`pool.py:272`), verified, so wiring into the live pool adds no embed cost.
+10. **KV kinds stay out of the embedder** — already in `INDEX_SKIP_KINDS`
+    (`pool.py:272`), verified, so wiring into the live pool adds no embed cost.
+11. **The log must be ONE path** — `kvl_check_parents()`: every delta's `parent`
+    must be the nearest anchor at or before its turn. A record written under
+    another branch is refused (exit 1) instead of replayed on the wrong base.
+    Verified with a doctored log whose hashes were all recomputed: the chain is
+    valid and only this rule sees the foreign record.
+12. **No turn twice** — `kvl_check_unique()`: two branches that number the same
+    turn both produce chain-valid lines, so replay would silently pick one. Also
+    enforced in `tools/kv_log_check.py`.
+13. **Both JSON shapes and both line endings parse** — `pool.py` writes spaced
+    `json.dumps` output while the host writes compact JSON, and any re-serialize
+    on Windows writes CRLF; the reader skips punctuation and trims `\r` instead
+    of matching a fixed byte pattern (both were measured to silently drop whole
+    logs).
 
 ## Boundaries (not done, stated plainly)
 

@@ -453,6 +453,24 @@ static int verify_turn(int32_t T, int32_t T0, int32_t T1) {
     return ((T - T0) % 16) == 0;
 }
 
+/* A log is one path, or it is not. Both rules are invisible to the hash chain:
+ * the chain verifies each line, not the shape of the whole file. */
+static int log_validate(const KVTAnchor *a, int na, const KVLogDelta *d, int nd,
+                        const char *when) {
+    int32_t bt = 0, bp = 0, dup = 0;
+    if (kvl_check_parents(a, na, d, nd, &bt, &bp) != 0) {
+        fprintf(stderr, "log %s: turn %d hangs off parent %d, which is not its nearest "
+                        "anchor — this log is not one path\n", when, bt, bp);
+        return -1;
+    }
+    if (kvl_check_unique(d, nd, &dup) != 0) {
+        fprintf(stderr, "log %s: turn %d appears twice — two branches numbered the same turn\n",
+                when, dup);
+        return -1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *model_path = argc > 1 ? argv[1] : "I:\\model\\Qwen2.5-0.5B-Instruct-Q8_0.gguf";
     const char *outdir     = argc > 2 ? argv[2] : ".";
@@ -518,10 +536,7 @@ int main(int argc, char **argv) {
        another branch would resume on the wrong base and continue numbering as if
        nothing happened */
     {
-        int32_t bt = 0, bp = 0;
-        if (kvl_check_parents(log_anchors, na_log, log_deltas, nd_log, &bt, &bp) != 0) {
-            fprintf(stderr, "log: turn %d hangs off parent %d, which is not its nearest "
-                            "anchor — refusing to resume from a branched log\n", bt, bp);
+        if (log_validate(log_anchors, na_log, log_deltas, nd_log, "on resume") != 0) {
             kvl_free(log_deltas, nd_log);
             llama_free(ctx);
             llama_model_free(model);
@@ -631,14 +646,11 @@ int main(int argc, char **argv) {
     printf("log re-read: %d anchor(s), %d delta(s)\n", na_log, nd_log);
 
     /* the log must hang together before anything is replayed through it: every
-       delta's parent has to be the nearest anchor on this path. A record from
+       delta hangs off its nearest anchor and no turn appears twice. A record from
        another branch would otherwise replay on the wrong base and produce a
        plausible wrong state. */
     {
-        int32_t bt = 0, bp = 0;
-        if (kvl_check_parents(log_anchors, na_log, log_deltas, nd_log, &bt, &bp) != 0) {
-            fprintf(stderr, "log: turn %d hangs off parent %d, which is not its nearest "
-                            "anchor — this log is not one path\n", bt, bp);
+        if (log_validate(log_anchors, na_log, log_deltas, nd_log, "after append") != 0) {
             kvl_free(log_deltas, nd_log);
             kvt_free(&win);
             llama_free(ctx);

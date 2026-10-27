@@ -227,7 +227,58 @@ corrupt a recall.
 
 ---
 
-## 5. Numbers: user-supplied vs measured
+## 5. What was adopted, and the gates it now passes (measured 2026-10-28)
+
+Shipped as `core/kv_lease.h` + `tests/test_kv_lease.c` (KV tier, `make test-kv`
+14/14), plus two shape rules wired into the live reader.
+
+| proposal item | verdict | measured |
+|---|---|---|
+| RCU for reader-vs-pruner | **rejected** | nothing is deleted; readers hold no bytes a pruner wants |
+| git-style merge | **rejected** | one append-only chain; the lock is the order |
+| tesseract-sized reserve | **rejected** | one tesseract = 1152 slots = 5.6% > the 3% ceiling (`core/iso_fold.h`) |
+| percentage-only waste gate | **rejected** | replaced by lease age (same run, below) |
+| generation counter + stale refusal | **adopted** | stale handle refused naming gen 1 vs current 2, zero bytes written |
+| lease/reap as CLOSE, not free | **adopted** | reaped exactly at lease expiry (+5000 ms), not at +4999 ms; slots returned, `written_slots` untouched |
+| age-based waste gate | **adopted** | only the never-written reservation is reaped; the written one keeps its 256 slots |
+| adaptive quota with hysteresis | **adopted** | 256-slot quota converging on 200 / 800 / 3200 in 1 / 2 / 2 rounds, 3 steps, 2 borrows |
+| burst borrow, main protected | **adopted** | 900-slot borrow allowed; 1000 refused (would leave 916 < floor 1024); main's 1024 untouched |
+| O(1) quota update | **adopted** | 1.62 ns/op over 1,000,000 updates; reserve+write+close 4.22 ns/cycle |
+| deterministic under repetition | **adopted** | same scripted profile twice → same trace `a65281efc07bf7ed`, same numbers |
+
+Details worth knowing, because they contradict the obvious implementation:
+
+- **Half-deficit growth does not converge.** Measured first: a 12.5x jump needed
+  12 rounds to reach 97% of the demand. Growth now jumps to the observed demand
+  once it has persisted two rounds (safe direction: nothing in main moves);
+  shrink stays at 1/8 per step so a quiet round cannot collapse the quota.
+- **The quota must not apply to main.** Applying it to `owner == 0` made main's
+  own floor reservation fail with `EQUOTA` while it was holding the floor.
+- **A borrow request larger than the free pool fails as `EFULL`, not `EFLOOR`.**
+  The floor check only means anything for a request that fits the free pool
+  (measured: 2500 slots → `EFULL`; 1000 slots → `EFLOOR` at floor 1024).
+- **Reaping measures age from the last heartbeat**, not from reservation, so a
+  live subagent that keeps beating is never reaped no matter how old its block.
+
+Wired into the live path (both refuse, both leave the log untouched):
+
+```
+python tools/kv_log_check.py check I:\Temp\kv12   → FAIL "duplicate delta turn numbers: [158]"
+build\kv_temporal_llama.exe … I:\Temp\kv12 1 append
+  log on resume: turn 158 appears twice — two branches numbered the same turn
+  exit 1, 161 lines before and after
+```
+
+The lease module has no live consumer yet: reserved blocks for sideways
+subagents do not exist in the KV path. Its insertion point is named in
+`core/kv_lease.h` (reserve → write with generation → beat → reap) and the
+producer claim is already crash-safe without it, because `_locking` /
+`flock` are released by the OS when the producer dies (measured: a producer
+killed with `Stop-Process -Force` mid-run did not block the next run).
+
+---
+
+## 6. Numbers: user-supplied vs measured
 
 Marked † above and repeated here, because they are candidates to try, not
 settled parameters (#7129):
