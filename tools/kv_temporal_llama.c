@@ -453,6 +453,29 @@ static int verify_turn(int32_t T, int32_t T0, int32_t T1) {
     return ((T - T0) % 16) == 0;
 }
 
+/* Record a frame's TEXT next to the log. The token ids in the log replay KV but
+ * nothing downstream can search or join on them; the ANN bridge joins on exactly
+ * this text. Appended one line per committed frame, so a crash leaves a prefix. */
+static void append_turn_text(const char *outdir, int32_t turn, const char *text, int32_t tok) {
+    char tp[KVT_PATH + 40];
+    snprintf(tp, sizeof(tp), "%s\\turns.jsonl", outdir);
+    FILE *f = fopen(tp, "ab");
+    if (!f) return;
+    size_t need = strlen(text) * 2 + 128;
+    char *esc = (char *)malloc(need);
+    if (esc) {
+        char *o = esc;
+        for (const char *i = text; *i; i++) {
+            if (*i == '"' || *i == '\\') *o++ = '\\';
+            *o++ = *i;
+        }
+        *o = 0;
+        fprintf(f, "{\"turn\":%d,\"text\":\"%s\",\"tok\":%d}\n", turn, esc, tok);
+        free(esc);
+    }
+    fclose(f);
+}
+
 /* A log is one path, or it is not. Both rules are invisible to the hash chain:
  * the chain verifies each line, not the shape of the whole file. */
 static int log_validate(const KVTAnchor *a, int na, const KVLogDelta *d, int nd,
@@ -479,6 +502,10 @@ int main(int argc, char **argv) {
     const int   append     = (argc > 5 && strcmp(argv[5], "append") == 0);
     const int   skip_seek  = (argc > 6 && strcmp(argv[6], "noseek") == 0)
                           || (argc > 5 && strcmp(argv[5], "noseek") == 0);
+    /* optional: prompt text from a file, one prompt per line. The built-in seed
+       script is fine for a smoke run; a real corpus (and the ANN bridge, which
+       joins on this text) needs the corpus's own text. */
+    const char *turns_file = argc > 7 ? argv[7] : NULL;
     const int K = KVT_WINDOW;   /* hot-window RAM budget, not cadence */
     if (NT < 1 || NT > NT_MAX) { fprintf(stderr, "NT out of range (1..%d)\n", NT_MAX); return 2; }
 
@@ -571,8 +598,33 @@ int main(int argc, char **argv) {
         "when is a full snapshot better than a delta?",
     };
     const int NSEED = (int)(sizeof(seed_turns) / sizeof(seed_turns[0]));
+    char *file_turns[NT_MAX];
+    int n_file_turns = 0;
+    if (turns_file) {
+        FILE *tf = fopen(turns_file, "rb");
+        if (!tf) { fprintf(stderr, "turns file not readable: %s\n", turns_file); return 2; }
+        char line[2048];
+        while (n_file_turns < NT_MAX && fgets(line, sizeof line, tf)) {
+            size_t L = strlen(line);
+            while (L && (line[L-1] == '\n' || line[L-1] == '\r' || line[L-1] == ' ')) line[--L] = 0;
+            if (!L) continue;
+            file_turns[n_file_turns++] = _strdup(line);
+        }
+        fclose(tf);
+        if (n_file_turns < NT) {
+            fprintf(stderr, "turns file holds %d prompt(s), need %d\n", n_file_turns, NT);
+            return 2;
+        }
+    }
+    if (!append && turn_base == 0) {
+        char tp[KVT_PATH + 40];
+        snprintf(tp, sizeof(tp), "%s\\turns.jsonl", outdir);
+        remove(tp);                     /* fresh log -> fresh text file */
+    }
     for (int t = 1; t <= NT; t++) {
-        if (t <= NSEED) {
+        if (t <= n_file_turns) {
+            turns[t-1] = file_turns[t-1];
+        } else if (t <= NSEED) {
             turns[t-1] = seed_turns[t-1];
         } else {
             snprintf(tbuf[t-1], sizeof(tbuf[t-1]),
@@ -604,6 +656,7 @@ int main(int argc, char **argv) {
         KVTFrame fr = kvt_frame_make(t_abs, last_anchor_turn, hist + prev, nu);
         KVTFrame ev; memset(&ev, 0, sizeof(ev));
         int had = kvt_commit_frame(&win, &fr, &ev);
+        append_turn_text(outdir, t_abs, turns[t-1], nu);
 
         /* the evicted frame's delta was already written at its own commit */
         if (had) kvt_frame_free(&ev);

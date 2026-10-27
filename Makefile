@@ -1414,6 +1414,11 @@ kv-delta-map: | $(BUILD)
 	    I:/llama/llama.cpp/build_zc2/bin/Release/ggml-cpu-x64.dll -lpsapi -lm
 	@echo "✅ kv_delta_map ready → ./$(BUILD)/kv_delta_map"
 
+kv-lease-cli: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -I . -I core \
+	    -o $(BUILD)/kv_lease_cli tools/kv_lease_cli.c -lm
+	@echo "✅ kv_lease_cli ready → ./$(BUILD)/kv_lease_cli"
+
 kv-quant-3level: | $(BUILD)
 	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \

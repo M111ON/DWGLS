@@ -240,6 +240,11 @@ KB range for dozens of turns while the bases live outside it.
     on Windows writes CRLF; the reader skips punctuation and trims `\r` instead
     of matching a fixed byte pattern (both were measured to silently drop whole
     logs).
+14. **Every frame records its text** — `turns.jsonl` next to the log, one line per
+    committed frame `{turn, text, tok}`, appended inside the commit loop. The
+    token ids replay KV but nothing can search or join on them; the ANN bridge
+    joins on exactly this text. A run starting at turn 1 replaces the file, an
+    appending run continues it.
 
 ## Boundaries (not done, stated plainly)
 
