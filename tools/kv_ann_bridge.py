@@ -196,6 +196,54 @@ def seek_plan(anchors, deltas, turn):
     }
 
 
+def fnv1a64(data):
+    h = 0xCBF29CE484222325
+    for b in data:
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
+def verify_map(mrows, anchors, deltas, blob_path):
+    """A map row is only actionable if its plan still resolves.
+
+    Two things can rot while the map sits on disk, and both are silent: the anchor
+    blob could be truncated/moved (append-only says no, verification says so), and
+    the frames it names could be gone. Check the bytes, not the promise.
+    """
+    ok, bad = 0, []
+    turns = {int(d["turn"]) for d in deltas}
+    anchor_turns = {int(a["turn"]) for a in anchors}
+    blob = b""
+    if os.path.exists(blob_path):
+        with open(blob_path, "rb") as f:
+            blob = f.read()
+    for m in mrows:
+        kv = m["kv"]
+        why = None
+        if kv["anchor_turn"] not in anchor_turns:
+            why = "anchor turn %d is not in the log" % kv["anchor_turn"]
+        elif kv["turn"] not in turns:
+            why = "frame turn %d is not in the log" % kv["turn"]
+        else:
+            for t in kv["replay"]:
+                if t not in turns:
+                    why = "replay turn %d is not in the log" % t
+                    break
+        if why is None:
+            off, ln, want = kv["anchor_blob"]
+            if off < 0 or ln <= 0 or off + ln > len(blob):
+                why = "anchor blob [%d,%d) is outside the blob file (%d B)" % (off, ln, len(blob))
+            else:
+                got = fnv1a64(blob[off:off + ln])
+                if got != want:
+                    why = "anchor blob fnv %d != recorded %d" % (got, want)
+        if why:
+            bad.append((m["sid"], why))
+        else:
+            ok += 1
+    return ok, bad
+
+
 def row_sid(turn, text):
     h = hashlib.sha256(("%d:%s" % (turn, text)).encode("utf-8")).hexdigest()[:16]
     return "kv:" + h
@@ -377,6 +425,11 @@ def main():
                 print("    e.g. %s -> turn %d anchor %d replay %s"
                       % (mrows[0]["sid"], mrows[0]["kv"]["turn"],
                          mrows[0]["kv"]["anchor_turn"], mrows[0]["kv"]["replay"]))
+            vok, vbad = verify_map(mrows, anchors, deltas,
+                                   os.path.join(args.kv, "kv_blobs.bin"))
+            print("  map verifies %d/%d actionable (anchor blob fnv recomputed, "
+                  "replay turns present)%s"
+                  % (vok, len(mrows), "" if not vbad else " FAIL %s" % vbad[:2]))
     if not args.blind:
         print("  wrote      %s (%d rows)" % (out, len(rows)))
         print("             %s (%d plans)" % (side, len(sidecar)))

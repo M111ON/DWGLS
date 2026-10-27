@@ -111,13 +111,63 @@ kv_index_map.jsonl
 the map names the frame to resume. **No new index rows, no new space, nothing
 displaced by construction.**
 
+**The map is gated, not trusted.** `--map-only` verifies every row before calling
+it actionable: the anchor blob's FNV is recomputed from `kv_blobs.bin` at the
+recorded `[off,len)` and the frame's replay turns must exist in the log. 16/16
+pass. Three negative controls fail loud, each naming the row and the reason:
+
+```
+flipped fnv bit      15/16  anchor blob fnv 1027517907626004366 != recorded ...367
+offset past end      15/16  anchor blob [1000000000,746196) is outside the blob file (746196 B)
+replay turn missing  15/16  replay turn 999 is not in the log
+```
+
+## Phase 2 measurement: what adding rows actually costs (300 queries)
+
+Done on copies of the live 63,915-row index (`I:\Temp\annbase`, `I:\Temp\annkv`);
+the live directory was only read and is byte-identical afterwards. Mode for every
+number below is **routed** (`route.mode:"anchor"`, `K:64`, 300/300 queries) — not
+brute. Oracle = numpy cosine over the base rows, top-10, query row dropped.
+
+| | recall@5 | recall@10 |
+|---|---|---|
+| base (N=63,915) | **0.982667** | **0.981000** |
+| base + 8 kv rows (N=63,923) | **0.982667** | **0.980667** |
+| Δ | **0.000000** | **−0.000333** |
+
+- `kv:` rows in top-5: **0/300**. In top-10: **1/300**.
+- Base rows pushed out of top-5: **0/300**. Out of top-10: **1/300**.
+- The single top-10 case was decided by cosine **5e-8** — the float32 gap between a
+  copy and its twin, not a semantic win; the displaced base row was still rank 11
+  at 0.93082 against 0.93103.
+- Cost: `items_scored` 24,253.6 → 24,257.0 per query, `examined` 62,027.7 →
+  62,035.4.
+
+So the duplicated-row path is *cheap but pointless*: it cannot win, it can only
+tie its own twin and occasionally cost a rank through float rounding. That is the
+measured argument for the map mode — the same information with no slot spent.
+
+## Operational facts that cost a run to find
+
+- The live index is `I:\tools\ann\data\memcore\ann_index.jsonl` (63,915 rows,
+  263,336,994 B), not `data\ann_index.jsonl`.
+- **A fresh copy does not come up routed by copying the index alone.** `regrow`
+  failed twice (`{"mode":"error"}` after ~100 s stuck in `train`,
+  `heal_fail` 2→3). Routed needs `ANN_ROSTER=1` + `ANN_ROSTER_PATH=<ann_anchors-roster.bin>`,
+  and the tag/state sidecars (`tag_lut.json`, `ann_tags.tsv`,
+  `ann_index.jsonl.stamp`, `ann_anchors-state.json`) — without them
+  `tags.kinds:0` and training fails.
+- **Incremental regrow is cheap**: adding 8 rows to a routed copy took **170 ms**
+  (`mode:"incremental"`, `route 3.5 ms`), against ~100 s and a failure for a full
+  retrain on a fresh copy.
+
 ## Boundaries (stated plainly)
 
 - **Nothing is wired into the live ANN index.** The scratch index lives in
-  `I:\Temp\kv14`; `I:\tools\ann\data` was not touched.
-- **One row per KV frame, not per message.** A frame can cover several chat
-  messages; correlating them needs the producer to record the message ids, which
-  it does not do yet. Today the join is turn ↔ text.
+  `I:\Temp\kv14` / `I:\Temp\kv15`; `I:\tools\ann\data` was only read (verified
+  byte-identical, 63,915 lines, after every run).
+- **One row per KV frame, not per message** — *fixed in Phase 2*: with `--msgs` the
+  bridge emits one row per message and every row of a frame carries the same plan.
 - **The vector is memcore's, keyed by text.** A frame whose text nobody embedded
   does not become a row (reported as `no stored vector for this text`) — by
   design, rather than embedding with a different model and quietly entering a
