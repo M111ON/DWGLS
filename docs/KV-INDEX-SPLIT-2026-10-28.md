@@ -65,7 +65,7 @@ the plan gate (map-vs-log, anchor FNV) stays where it was, in the sidecar.
 |---|---|---|
 | entries | 2,032 | 63,915 / 63,947 |
 | boot | **2.1 s** | 31.3–31.8 s |
-| regrow | full 259.8 ms (K=8, derive anchors) / incremental 23.6 ms for +32 | 82 s full at 63.9k |
+| regrow | full 259.8 ms (K=8, derive anchors) / incremental 23.6 ms for +32 | 4–13 ms unchanged, 115 ms for +32 (see `docs/ANN-REGROW-MEASURED-2026-10-28.md`; the 82 s figure earlier was a full re-derive on a copy that broke the state contract) |
 | process | one more `ann_search.exe` | — |
 
 Two operational facts that matter more than the timings:

@@ -134,7 +134,10 @@ themselves via `{"vec": …}` (no embedder needed).
 | top-1 is a KV row | — | 0/8 |
 
 Loader and router receipts: `entries 63915 → 63947` (+32, no duplicates),
-`routed 1`, regrow `mode anchor / nent 63947`, full regrow 82 s at 63,915 rows.
+`routed 1`, regrow `mode anchor / nent 63947`. (The 82 s quoted in an earlier
+draft was a **full re-derive** caused by a scratch copy whose state sidecar did
+not match — see `docs/ANN-REGROW-MEASURED-2026-10-28.md`; the real steady-state
+cost is 4–13 ms unchanged and 115 ms for +32 rows.)
 
 **What this says:** the rows themselves are correct — each one scores 1.0000
 against its own vector, so load, dim, and routing are right. But 32 rows are
