@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <errno.h>
 #include <time.h>
 #ifdef _WIN32
 #include <windows.h>
@@ -88,6 +89,15 @@ static double rss_mb(void) {
     fclose(f);
     return (double)pages * 4096.0 / (1024.0 * 1024.0);
 #endif
+}
+
+static unsigned long long file_size_path(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
+    long n = ftell(f);
+    fclose(f);
+    return n > 0 ? (unsigned long long)n : 0;
 }
 
 /* ── scatter-decode from pack (mmap-only) ── */
@@ -198,12 +208,15 @@ static int run_inference(struct llama_model *model, struct llama_context *ctx,
     llama_sampler_chain_add(smpl, llama_sampler_init_dist(42));
 
     const struct llama_vocab *vocab = llama_model_get_vocab(model);
-    llama_token tokens[4096];
+    size_t token_cap = strlen(prompt) + 256;
+    llama_token *tokens = (llama_token *)malloc(token_cap * sizeof(*tokens));
+    if (!tokens) return -1;
     int n_tokens = 0;
 
     n_tokens = llama_tokenize(vocab, prompt, (int32_t)strlen(prompt),
-                              tokens, sizeof(tokens)/sizeof(tokens[0]), true, true);
-    if (n_tokens <= 0) return -1;
+                               tokens, (int32_t)token_cap, true, true);
+    if (n_tokens <= 0) { free(tokens); return -1; }
+    fprintf(stderr, "TOKENIZE: n_prompt_tokens=%d\n", n_tokens);
 
     float t0 = (float)now_ms();
     struct llama_batch batch = llama_batch_init(n_tokens, 0, 1);
@@ -216,7 +229,7 @@ static int run_inference(struct llama_model *model, struct llama_context *ctx,
         batch.n_tokens++;
     }
     if (llama_decode(ctx, batch) != 0) {
-        llama_batch_free(batch); return -2;
+        llama_batch_free(batch); free(tokens); return -2;
     }
     float prompt_end = (float)now_ms();
     res->prompt_ms = prompt_end - t0;
@@ -258,18 +271,30 @@ static int run_inference(struct llama_model *model, struct llama_context *ctx,
 
     llama_sampler_free(smpl);
     llama_batch_free(batch);
+    free(tokens);
     return 0;
 }
 
 /* ── minimal HTTP server ── */
 static int http_recv_full(sock_t fd, char *buf, int cap) {
     int total = 0;
+    int want = -1;
+    int header_end = -1;
     while (total < cap - 1) {
         int n = recv(fd, buf + total, cap - total - 1, 0);
         if (n <= 0) break;
         total += n;
         buf[total] = '\0';
-        if (strstr(buf, "\r\n\r\n")) break;
+        if (header_end < 0) {
+            char *sep = strstr(buf, "\r\n\r\n");
+            if (sep) {
+                header_end = (int)(sep - buf) + 4;
+                char *cl = strstr(buf, "Content-Length:");
+                if (cl) want = atoi(cl + 15);
+                if (want < 0) want = 0;
+            }
+        }
+        if (header_end >= 0 && total >= header_end + want) break;
     }
     return total;
 }
@@ -403,7 +428,7 @@ int main(int argc, char **argv) {
     struct gguf_context *meta = gguf_init_from_file(tmp_gguf, gip);
     if (!meta) {
         fprintf(stderr, "FAIL: gguf_init_from_file on header\n");
-        remove(tmp_gguf); tess_pack_close(&pi); return 1;
+        if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
     }
     uint32_t n_tensors = gguf_get_n_tensors(meta);
     fprintf(stderr, "Tensors from header: %u\n", n_tensors);
@@ -444,10 +469,19 @@ int main(int argc, char **argv) {
             uint64_t end = gguf_get_tensor_offset(meta, i) + gguf_get_tensor_size(meta, i);
             if (end > max_end) max_end = end;
         }
+        uint64_t data_off = gguf_get_data_offset(meta);
         size_t body_sz = (size_t)max_end;
+        fprintf(stderr, "GGUF layout: header=%llu data_offset=%llu max_tensor_end=%llu body=%llu file_end=%llu\n",
+                (unsigned long long)hdr_sz, (unsigned long long)data_off,
+                (unsigned long long)max_end, (unsigned long long)body_sz,
+                (unsigned long long)hdr_sz + (unsigned long long)body_sz);
+        if (data_off != hdr_sz) {
+            fprintf(stderr, "FAIL: embedded header size/data offset mismatch\n");
+            gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
+        }
         uint8_t *body = (uint8_t *)calloc(1, body_sz);
         if (!body) { fprintf(stderr, "FAIL: OOM assemble\n");
-            gguf_free(meta); remove(tmp_gguf); tess_pack_close(&pi); return 1; }
+            gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1; }
 
         TensorHook hook;
         memset(&hook, 0, sizeof(hook));
@@ -457,6 +491,11 @@ int main(int argc, char **argv) {
         for (uint32_t i = 0; i < n_tensors; i++) {
             const char *name = gguf_get_tensor_name(meta, i);
             uint64_t off = gguf_get_tensor_offset(meta, i);
+            if (off > body_sz) {
+                fprintf(stderr, "FAIL: tensor %s offset out of body bounds\n", name);
+                free(body); gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
+            }
+            uint64_t body_off = off;
             uint32_t tsz = (uint32_t)gguf_get_tensor_size(meta, i);
             int ttype = gguf_get_tensor_type(meta, i);
             uint32_t csz = cell_size_of((enum ggml_type)ttype);
@@ -465,7 +504,7 @@ int main(int argc, char **argv) {
             uint64_t total_cells = (csz == 0) ? 0 : (uint64_t)tsz / csz;
             if (csz != 0 && total_cells * csz == tsz && total_cells > 0) {
                 int rc = load_pack_tensor(&hook, name, csz, total_cells,
-                                          body + off);
+                                          body + body_off);
                 if (rc > 0) { n_from_pack++; continue; }
             }
             /* fallback: copy from source GGUF if available */
@@ -476,7 +515,11 @@ int main(int argc, char **argv) {
                     if (strcmp(gguf_get_tensor_name(src_meta, si), name) == 0) {
                         uint64_t src_off = gguf_get_data_offset(src_meta) + gguf_get_tensor_offset(src_meta, si);
                         if (src_off + tsz <= src_sz) {
-                            memcpy(body + off, src_base + src_off, tsz);
+                            if (body_off + tsz > body_sz) {
+                                fprintf(stderr, "FAIL: tensor %s exceeds body bounds\n", name);
+                                free(body); gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
+                            }
+                            memcpy(body + body_off, src_base + src_off, tsz);
                             n_from_source++;
                         }
                         found_src = 1;
@@ -486,7 +529,11 @@ int main(int argc, char **argv) {
                 if (found_src) continue;
             }
             /* last resort: zero-fill (scale/input_scale/bias/rope_freqs) */
-            memset(body + off, 0, tsz);
+            if (body_off + tsz > body_sz) {
+                fprintf(stderr, "FAIL: tensor %s exceeds body bounds\n", name);
+                free(body); gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
+            }
+            memset(body + body_off, 0, tsz);
             n_from_zero++;
         }
         double assemble_ms = now_ms() - t0;
@@ -498,24 +545,41 @@ int main(int argc, char **argv) {
         FILE *wf = fopen(tmp_gguf, "wb");
         if (!wf) { fprintf(stderr, "FAIL: tmp rewrite\n");
             free(body); gguf_free(meta); tess_pack_close(&pi); return 1; }
-        fwrite(hdr_bytes, 1, (size_t)hdr_sz, wf);
-        fwrite(body, 1, body_sz, wf);
-        fclose(wf);
+        size_t wh = fwrite(hdr_bytes, 1, (size_t)hdr_sz, wf);
+        size_t wb = fwrite(body, 1, body_sz, wf);
+        int we = ferror(wf);
+        int wc = fclose(wf);
+        fprintf(stderr, "Write receipt: header=%llu/%llu body=%llu/%llu ferror=%d fclose=%d errno=%d\n",
+                (unsigned long long)wh, (unsigned long long)hdr_sz,
+                (unsigned long long)wb, (unsigned long long)body_sz,
+                we, wc, errno);
+        if (wh != (size_t)hdr_sz || wb != body_sz || we || wc != 0) {
+            fprintf(stderr, "FAIL: incomplete temp GGUF write\n");
+            free(body); gguf_free(meta);
+            if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf);
+            tess_pack_close(&pi); return 1;
+        }
         free(body);
         fprintf(stderr, "Write: %.0f ms\n", now_ms() - t1);
         fprintf(stderr, "Temp GGUF: %s (%llu bytes)\n",
                 tmp_gguf, (unsigned long long)(hdr_sz + body_sz));
+        fprintf(stderr, "Temp size after write: %llu bytes\n",
+                file_size_path(tmp_gguf));
     }
 
     /* ── load model from assembled temp GGUF ── */
     t0 = now_ms();
     struct llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = n_gpu; /* TESS_NGPU env (default 0=CPU, set 40-50 for GTX 1050 Ti 4GB) */
+    fprintf(stderr, "Temp size before model load: %llu bytes\n",
+            file_size_path(tmp_gguf));
     struct llama_model *model = llama_model_load_from_file(tmp_gguf, mp);
+    fprintf(stderr, "Temp size after model load: %llu bytes\n",
+            file_size_path(tmp_gguf));
     double load_ms = now_ms() - t0;
     if (!model) {
         fprintf(stderr, "FAIL: llama_model_load_from_file\n");
-        gguf_free(meta); remove(tmp_gguf); tess_pack_close(&pi); return 1;
+        gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
     }
     fprintf(stderr, "Model loaded in %.0f ms from temp GGUF\n", load_ms);
     fprintf(stderr, "RSS: %.1f MB\n", rss_mb());
@@ -525,11 +589,25 @@ int main(int argc, char **argv) {
     struct llama_context_params cparams = llama_context_default_params();
     cparams.n_batch = 128;
     cparams.n_ctx   = 256;
+    {
+        const char *ec = getenv("TESS_CTX");
+        if (ec && *ec) {
+            long v = strtol(ec, NULL, 10);
+            if (v >= 256 && v <= 131072) cparams.n_ctx = (uint32_t)v;
+        }
+        const char *eb = getenv("TESS_BATCH");
+        if (eb && *eb) {
+            long v = strtol(eb, NULL, 10);
+            if (v >= 1 && v <= 131072) cparams.n_batch = (uint32_t)v;
+        }
+    }
+    fprintf(stderr, "Context config: n_ctx=%u n_batch=%u\n",
+            cparams.n_ctx, cparams.n_batch);
     struct llama_context *ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
         fprintf(stderr, "FAIL: llama_init_from_model\n");
         llama_model_free(model);
-        remove(tmp_gguf); tess_pack_close(&pi); return 1;
+        if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
     }
 
     /* ── start HTTP server ── */
@@ -555,9 +633,11 @@ int main(int argc, char **argv) {
         sock_t client = accept(server_fd, NULL, NULL);
         if (client == SOCK_INVALID) continue;
 
-        char req_buf[65536];
-        int nread = http_recv_full(client, req_buf, sizeof(req_buf));
-        if (nread <= 0) { sock_close(client); continue; }
+        const int req_cap = 8 * 1024 * 1024;
+        char *req_buf = (char *)malloc((size_t)req_cap);
+        if (!req_buf) { sock_close(client); continue; }
+        int nread = http_recv_full(client, req_buf, req_cap);
+        if (nread <= 0) { free(req_buf); sock_close(client); continue; }
         req_buf[nread] = '\0';
 
         /* parse method + path */
@@ -568,14 +648,14 @@ int main(int argc, char **argv) {
         if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0) {
             http_send(client, "200 OK", "application/json",
                       "{\"status\":\"ok\"}", 14);
-            sock_close(client); continue;
+            free(req_buf); sock_close(client); continue;
         }
 
         /* CORS preflight */
         if (strcmp(method, "OPTIONS") == 0) {
             http_send(client, "204 No Content",
                       "text/plain", "", 0);
-            sock_close(client); continue;
+            free(req_buf); sock_close(client); continue;
         }
 
         /* completion endpoints */
@@ -584,7 +664,7 @@ int main(int argc, char **argv) {
         if (strcmp(method, "POST") != 0 || (!is_chat && !is_comp)) {
             http_send(client, "404 Not Found", "application/json",
                       "{\"error\":\"not found\"}", 22);
-            sock_close(client); continue;
+            free(req_buf); sock_close(client); continue;
         }
 
         /* find body (after \r\n\r\n) */
@@ -593,8 +673,10 @@ int main(int argc, char **argv) {
         body += 4;
 
         /* extract prompt */
-        char prompt[4096] = "";
-        if (!extract_messages_content(body, prompt, sizeof(prompt))) {
+        size_t prompt_cap = (size_t)nread + 1;
+        char *prompt = (char *)malloc(prompt_cap);
+        if (!prompt || !extract_messages_content(body, prompt, (int)prompt_cap)) {
+            free(prompt);
             http_send(client, "400 Bad Request", "application/json",
                       "{\"error\":\"no prompt/content\"}", 28);
             sock_close(client); continue;
@@ -616,6 +698,7 @@ int main(int argc, char **argv) {
             snprintf(err, sizeof(err), "{\"error\":\"inference failed rc=%d\"}", rc);
             http_send(client, "500 Internal Server Error", "application/json",
                       err, (int)strlen(err));
+            free(prompt);
             sock_close(client); continue;
         }
         fprintf(stderr, "  prompt eval %.0f ms | gen %d tok in %.0f ms\n",
@@ -655,12 +738,14 @@ int main(int argc, char **argv) {
         http_send(client, "200 OK", "application/json", resp, rlen);
 
         free(ires.text);
+        free(prompt);
+        free(req_buf);
         sock_close(client);
     }
 
     llama_free(ctx);
     llama_model_free(model);
-    remove(tmp_gguf);
+    if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf);
     if (src_meta) gguf_free(src_meta);
     if (src_base) {
 #ifdef _WIN32
