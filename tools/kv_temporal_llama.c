@@ -626,6 +626,17 @@ int main(int argc, char **argv) {
     char *file_turns[NT_MAX];
     int n_file_turns = 0;
     if (turns_file) {
+        /* The prompts file is NOT the record file. `turns.jsonl` next to the log
+           holds one JSON object per committed frame; feeding that back as prompts
+           would train the model on its own bookkeeping (and the log would then
+           claim a turn's text is a JSON blob). Refuse the self-reference instead
+           of silently producing it. */
+        char rec[KVT_PATH + 40];
+        snprintf(rec, sizeof(rec), "%s\\turns.jsonl", outdir);
+        if (_stricmp(turns_file, rec) == 0) {
+            fprintf(stderr, "refusing to read the record file as prompts: %s\n", turns_file);
+            return 2;
+        }
         FILE *tf = fopen(turns_file, "rb");
         if (!tf) { fprintf(stderr, "turns file not readable: %s\n", turns_file); return 2; }
         char line[2048];
@@ -633,7 +644,24 @@ int main(int argc, char **argv) {
             size_t L = strlen(line);
             while (L && (line[L-1] == '\n' || line[L-1] == '\r' || line[L-1] == ' ')) line[--L] = 0;
             if (!L) continue;
-            file_turns[n_file_turns++] = _strdup(line);
+            /* one prompt per line, but tolerate a record line: {"turn":N,"text":"…"} */
+            const char *txt = line;
+            char tmp[2048];
+            if (line[0] == '{') {
+                const char *p = strstr(line, "\"text\":\"");
+                if (p) {
+                    p += 8;
+                    char *o = tmp;
+                    const char *s = p;
+                    while (*s && *s != '"' && (size_t)(o - tmp) < sizeof(tmp) - 1) {
+                        if (*s == '\\' && (s[1] == '"' || s[1] == '\\')) s++;
+                        *o++ = *s++;
+                    }
+                    *o = 0;
+                    if (o != tmp) txt = tmp;
+                }
+            }
+            file_turns[n_file_turns++] = _strdup(txt);
         }
         fclose(tf);
         if (n_file_turns < NT) {
@@ -659,6 +687,10 @@ int main(int argc, char **argv) {
     }
 
     printf("kv_temporal_llama: model=%s K=%d turn_base=%d\n", model_path, K, turn_base);
+    printf("prompts: %s\n", turns_file ? turns_file
+                        : (append ? "built-in seed script (no prompts file given)" : "built-in seed script"));
+    if (append && !turns_file)
+        fprintf(stderr, "note: appending the seed script's prompts, not new corpus text\n");
 
     /* ── pass 1: run the turns, commit frames, cut anchors ── */
     for (int t = 1; t <= NT; t++) {

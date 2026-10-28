@@ -1419,6 +1419,21 @@ kv-lease-cli: | $(BUILD)
 	    -o $(BUILD)/kv_lease_cli tools/kv_lease_cli.c -lm
 	@echo "✅ kv_lease_cli ready → ./$(BUILD)/kv_lease_cli"
 
+# temporal KV host: the writer/reader of the frame log (kv-blobs + log.jsonl).
+# Links the prebuilt Vulkan set directly (no import libs ship with it).
+kv-temporal-llama: | $(BUILD)
+	@test -f $(LLAMA_DLL)/llama.dll || { echo "  (skip: $(LLAMA_DLL)/llama.dll not found)"; exit 0; }
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare \
+	    -I . -I core -I $(LLAMA_INC) \
+	    -o $(BUILD)/kv_temporal_llama tools/kv_temporal_llama.c \
+	    $(LLAMA_DLL)/llama.dll $(LLAMA_DLL)/ggml.dll $(LLAMA_DLL)/ggml-base.dll -lm -lws2_32
+	@echo "✅ kv_temporal_llama ready → ./$(BUILD)/kv_temporal_llama <model.gguf> <dir> <backend> <turns> [run|append|seek=N]"
+
+kv-temporal-test: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -I core \
+	    -o $(BUILD)/kv_temporal_test tests/kv_temporal_test.c -lm
+	@./$(BUILD)/kv_temporal_test
+
 kv-quant-3level: | $(BUILD)
 	@test -f I:/llama/llama.cpp/build_zc2/bin/Release/llama.dll || { echo "  (skip: patched build_zc2 DLLs not found)"; exit 0; }
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-macro-redefined -Wno-format \

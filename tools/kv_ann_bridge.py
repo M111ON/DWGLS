@@ -43,10 +43,81 @@ import sys
 import unicodedata
 
 DEFAULT_MEMCORE = r"I:\tools\cloud_ws\memcore\fact_store.v2.sqlite3"
+MEMCORE_DIR = r"I:\tools\cloud_ws\memcore"
 MAX_SID = 63
 MAX_DIM = 1024
 
 _NORM_INDEX = {}          # normalized content -> entry id, built once
+_EMB = None               # local e5-small ONNX session, loaded once
+
+
+def local_vectors(texts):
+    """Vectors for text the corpus never held (real pool traffic).
+
+    Not a second embedder: this is the same multilingual-e5-small (int8 ONNX,
+    dim 384, "passage: " prefix) that produced memcore's stored vectors, loaded
+    through memcore's own module so there is one code path and one model.
+    """
+    global _EMB
+    if not texts:
+        return []
+    if _EMB is None:
+        if MEMCORE_DIR not in sys.path:
+            sys.path.insert(0, MEMCORE_DIR)
+        import v2 as _v2
+        _EMB = _v2._emb()
+    out = _EMB.run(["passage: " + t for t in texts])
+    return [[float(x) for x in v] for v in out]
+
+
+def read_turns_src(paths):
+    """turn -> {hash,line,app} from kv_turns_from_pool.py's provenance sidecars.
+
+    The join is the pool's own record hash, not the sentence: a prompt longer
+    than the producer's per-turn budget is truncated, so text is a prefix at
+    best (measured 9/16 exact, 7/16 prefix on real traffic).
+    """
+    out = {}
+    if not paths:
+        return out
+    if isinstance(paths, str):
+        paths = [paths]
+    for path in paths:
+        if not path or not os.path.exists(path):
+            continue
+        with open(path, "rb") as f:
+            for raw in f:
+                line = raw.decode("utf-8", "replace").rstrip("\r\n ")
+                if not line.endswith("}"):
+                    continue
+                try:
+                    m = json.loads(line)
+                except Exception:
+                    continue
+                if m.get("turn") and m.get("hash"):
+                    out[int(m["turn"])] = {"hash": m["hash"], "line": m.get("line"),
+                                           "app": m.get("app")}
+    return out
+
+
+def read_pool_index(path):
+    """pool record hash -> text (normalized). Read-only; the log is append-only."""
+    out = {}
+    if not path or not os.path.exists(path):
+        return out
+    with open(path, "rb") as f:
+        for raw in f:
+            line = raw.decode("utf-8", "replace").rstrip("\r\n ")
+            if not line.endswith("}"):
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            h = d.get("hash")
+            if h and isinstance(d.get("text"), str):
+                out[h] = normalize(d["text"])
+    return out
 
 
 def normalize(t):
@@ -256,11 +327,28 @@ def vkey(vec):
     return struct.pack("<%df" % len(vec), *[float(x) for x in vec])
 
 
-def build(kvdir, memcore, blind=False, msgs_path=None):
+def build(kvdir, memcore, blind=False, msgs_path=None, pool_path=None, turns_src=None):
     anchors, deltas = read_kv_log(os.path.join(kvdir, "log.jsonl"))
     texts = read_turns(os.path.join(kvdir, "turns.jsonl"))
     msgs = read_msgs(msgs_path)
+    src = read_turns_src(turns_src)
+    pool = read_pool_index(pool_path) if pool_path else {}
+    # real traffic is text the corpus never held: embed once, batched, through
+    # memcore's own e5-small (same model, same 384 dims) instead of pretending
+    # a stored vector exists for it
+    emb_cache = {}
+    if pool_path:
+        want = []
+        for d in deltas:
+            t = int(d["turn"])
+            if t in msgs:
+                want += [g["text"] for g in msgs[t] if isinstance(g.get("text"), str)]
+            elif t in texts:
+                want.append(texts[t])
+        uniq = sorted(set(want))
+        emb_cache = dict(zip(uniq, local_vectors(uniq)))
     rows, sidecar, misses, unresolvable, routing = [], [], [], [], []
+    sid_pool = {}       # truncated sid -> full pool hash (collision gate)
     for d in deltas:
         turn = int(d["turn"])
         plan = seek_plan(anchors, deltas, turn)
@@ -286,20 +374,49 @@ def build(kvdir, memcore, blind=False, msgs_path=None):
             units.append((None, text))
 
         frame_sid = row_sid(turn, texts.get(turn, units[0][1]))
+        meta = src.get(turn) or {}
         for msha, mtext in units:
-            mv = memcore_vector(memcore, mtext)
-            if not mv:
-                misses.append((turn, "no stored vector for this message"))
-                continue
-            eid, dim, vec = mv
-            sid = row_sid(turn, mtext) if msha is None else \
-                "kv:" + hashlib.sha256(("%d:%s" % (turn, msha)).encode()).hexdigest()[:16]
+            if pool_path:
+                phash = meta.get("hash")
+                if not phash:
+                    misses.append((turn, "no pool provenance for this frame"))
+                    continue
+                if phash not in pool:
+                    misses.append((turn, "pool hash %s is not in the log" % phash[:16]))
+                    continue
+                vec = emb_cache.get(mtext)
+                if not vec:
+                    misses.append((turn, "no local vector for this message"))
+                    continue
+                dim = len(vec)
+                # a pool record hash is 64 hex chars; the ANN loader accepts 63
+                # (MAX_SID), so the row carries the first 252 bits and the sidecar
+                # keeps the whole hash. Truncation must stay injective: two pool
+                # records sharing a sid would silently become one row.
+                sid = phash[:MAX_SID]
+                prev = sid_pool.setdefault(sid, phash)
+                if prev != phash:
+                    raise RuntimeError("sid collision on %s: %s vs %s"
+                                       % (sid, prev[:16], phash[:16]))
+            else:
+                mv = memcore_vector(memcore, mtext)
+                if not mv:
+                    misses.append((turn, "no stored vector for this message"))
+                    continue
+                eid, dim, vec = mv
+                sid = row_sid(turn, mtext) if msha is None else \
+                    "kv:" + hashlib.sha256(("%d:%s" % (turn, msha)).encode()).hexdigest()[:16]
             rows.append({"sid": sid, "file": os.path.join(kvdir, "log.jsonl"),
                          "npast": turn, "dim": dim, "vec": vec})
-            sidecar.append({"sid": sid, "turn": turn, "parent": int(d.get("parent", 0)),
-                            "text_sha": hashlib.sha256(mtext.encode("utf-8")).hexdigest()[:16],
-                            "msg_sha": msha, "frame_sid": frame_sid,
-                            "memcore_id": eid, **plan})
+            sc = {"sid": sid, "turn": turn, "parent": int(d.get("parent", 0)),
+                  "text_sha": hashlib.sha256(mtext.encode("utf-8")).hexdigest()[:16],
+                  "msg_sha": msha, "frame_sid": frame_sid, **plan}
+            if pool_path:
+                sc.update({"pool_hash": meta.get("hash"), "pool_line": meta.get("line"),
+                           "app": meta.get("app")})
+            else:
+                sc["memcore_id"] = eid
+            sidecar.append(sc)
     return rows, sidecar, misses, unresolvable, anchors, deltas, routing
 
 
@@ -323,13 +440,20 @@ def main():
                     help="existing ann_index.jsonl; report rows whose vector is already there")
     ap.add_argument("--map-only", action="store_true",
                     help="also write kv_index_map.jsonl (base sid -> KV frame), no new ANN rows needed")
+    ap.add_argument("--pool", default=None,
+                    help="pool log the frames came from: sid becomes the pool record hash, "
+                         "and text the corpus never held is embedded locally (same e5 model)")
+    ap.add_argument("--turns-src", action="append", default=None,
+                    help="kv_turns_from_pool.py provenance sidecar (turn -> pool hash); "
+                         "repeat for each append batch")
     args = ap.parse_args()
 
     out = args.out or os.path.join(args.kv, "ann_rows_kv.jsonl")
     side = args.sidecar or os.path.join(args.kv, "kv_frames.jsonl")
 
     rows, sidecar, misses, unresolvable, anchors, deltas, routing = build(
-        args.kv, args.memcore, blind=args.blind, msgs_path=args.msgs)
+        args.kv, args.memcore, blind=args.blind, msgs_path=args.msgs,
+        pool_path=args.pool, turns_src=args.turns_src)
 
     bad = []
     for r in rows:
@@ -339,17 +463,30 @@ def main():
         elif r["dim"] > MAX_DIM: bad.append("dim %d > %d" % (r["dim"], MAX_DIM))
         if not isinstance(r.get("npast"), int): bad.append("npast not an int on %s" % r["sid"])
 
+    if args.pool:
+        # a pool-mode sid is the pool's own record hash (truncated to MAX_SID), so
+        # two frames can never share one and a hit traces back to a log line
+        dup = len(rows) - len({r["sid"] for r in rows})
+        pool_ids = read_pool_index(args.pool)
+        orphan = [s["sid"] for s in sidecar if s.get("pool_hash") not in pool_ids]
+        print("  pool join  %d row(s), %d unique sid(s), %d not in the log, %d duplicate(s)"
+              % (len(rows), len({r["sid"] for r in rows}), len(orphan), dup))
+        if orphan:
+            bad.append("row sid has no pool record: %s" % orphan[:2])
+
     if not args.blind:
         write_jsonl(out, rows)
         write_jsonl(side, sidecar)
         # determinism: build again and compare
-        rows2, side2, _, _, _, _, _ = build(args.kv, args.memcore, msgs_path=args.msgs)
+        rows2, side2, _, _, _, _, _ = build(args.kv, args.memcore, msgs_path=args.msgs,
+                                            pool_path=args.pool, turns_src=args.turns_src)
         det = (json.dumps(rows, sort_keys=True) == json.dumps(rows2, sort_keys=True)
                and json.dumps(sidecar, sort_keys=True) == json.dumps(side2, sort_keys=True))
         # value-blind: with every text destroyed, the routing columns must be
         # identical — proven over ALL resolvable turns, not only the ones that
         # happened to have a vector, so vector availability cannot mask a failure
-        *_, blind_routing = build(args.kv, args.memcore, blind=True, msgs_path=args.msgs)
+        *_, blind_routing = build(args.kv, args.memcore, blind=True, msgs_path=args.msgs,
+                                  pool_path=args.pool, turns_src=args.turns_src)
         blind_ok = blind_routing == routing
     else:
         det = blind_ok = True
