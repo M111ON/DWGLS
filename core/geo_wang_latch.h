@@ -67,6 +67,32 @@ static inline int wl_clear(wl_latch_t *L, uint32_t id) {
     return 1;
 }
 
+/* ──── cell geometry: (pair << 1) | end  (phase-2, 2026-10-23) ─────────
+ * Spec: the 144-cell axis is a 4 x 6 x 6 lattice whose LOW BIT is the
+ * HOURGLASS END — the point reflection through the shared centre (pin:
+ * tests/test_addr_orbit.c T14; core/isometric_map.h IM_CROSS pairs a face with
+ * its opposite ring) swaps the two ends of a pair. Reading the flat cell as
+ *     cell = (pair << 1) | end,   pair = cell >> 1 in [0,72), end = cell & 1
+ * makes that crossing EXACTLY one XOR: no table, no walk (T15).
+ *   - self-inverse, 72 pairs, 0 fixed points (T14 d^1 over the doubled digit);
+ *   - the two ends stay INDEPENDENT — shutting end 0 must NOT shut end 1
+ *     (G2.5: +X closed, -X still open);
+ *   - it is a bijection, so it moves NO route: only the integer naming a cell.
+ * The pair is a LABEL of the bucket ids, not a spatial fact: bucket b pairs
+ * with b^1, so the crossing is live for any even K. Which bucket ids form a
+ * pair is the one choice left open (owner decision, ANN-UPGRADE-EXT doc). */
+static inline uint32_t wl_cell_pair(uint32_t cell)  { return cell >> 1; }
+static inline uint32_t wl_cell_end(uint32_t cell)   { return cell & 1u; }
+static inline uint32_t wl_cell_cross(uint32_t cell) { return cell ^ 1u; }
+/* flat -> cell. The flat cell already IS the (pair<<1)|end encoding, so this is
+ * the negative-safe normalisation of `bucket % 144`, named so the contract
+ * lives in one place instead of at every call site. */
+static inline uint32_t wl_cell_of(int flat) {
+    int c = flat % 144;
+    if (c < 0) c += 144;
+    return (uint32_t)c;
+}
+
 /* ──── P3 append sink (the FINGERPRINT) ───────────────────────────────
  * The bitset above is a DERIVED cache: it dies with the process. To make a
  * tombstone survive restart, every traverse must ALSO append its fingerprint

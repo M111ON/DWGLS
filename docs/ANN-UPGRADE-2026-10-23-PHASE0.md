@@ -425,3 +425,200 @@ semicircles). `core/isometric_map.h:106` `IM_CROSS` is the same self-inverse pai
 - G2.5 receipt still missing: prove closing `+X` does not close `−X`
   (`tools/pattern_probe.c:163` `FACE_ID(a,d)` + 6-bit mask is the starting point).
 - `I:/tools/ann` main was 1 commit ahead of `origin/main` at handoff (bd1ce04).
+
+### D. Session 3 (2026-10-23) — latch cell geometry landed; G2.5 receipt PASS
+
+**Item 1 — latch relayout (done).** `geo_wang_latch.h` now carries the cell
+geometry `cell = (pair << 1) | end`:
+`wl_cell_pair` `cell>>1`, `wl_cell_end` `cell&1`, `wl_cell_of(flat)` (negative-safe
+`flat % 144`), and `wl_cell_cross(cell) = cell ^ 1` — self-inverse, `T14`'s 6-pair /
+0-fixed involution. `src/ann_search.c:621` `lz_fog_id` now reads
+`wl_id(wl_cell_of(bucket), 0u)`. Because `wl_cell_of` is the flat cell itself, the
+map is the **identity at K ≤ 144**, so the gate ("300q recall unchanged + occupancy
+unchanged") is satisfied **by construction — the same bucket lands on the same id**,
+not merely measured; the 144-cell axis was never the thing that moved. The 1-XOR is
+what the relayout buys: the centre crossing is now one XOR (`wl_cell_cross`) instead
+of a table. Both `geo_wang_latch.h` copies were kept byte-identical (ann `include/`,
+DWGLS `core/`).
+
+**Item 3 — G2.5 receipt (done).** `tests/test_wang_latch.c` (both copies):
+- **T7** — `wl_cell_of` is a bijection on `[0,144)` (144/144, wraps `144→0`), and
+  `wl_cell_cross` is an involution with **72 pairs / 0 fixed points / no self-pair**.
+- **T8** — closing one end of a pair leaves the other **open** (ends independent),
+  closed `+X` ⇒ `−X` open and the mirror; `wl_cell_cross` reaches exactly the partner.
+
+**Finding (T8, structural).** The reserved major-input id `0` is `wl_id(0,0)` = the
+`+X` end of pair 0 ⇒ **1 of 144 ends is major-only** (not minor-latchable); 143/144
+ends are minor. The G2.5 independence holds at the **cell** level. **Scale caveat:**
+the pool math (5,440 anchors) gives 1 latch id per anchor; `2 ends × 5,440 = 10,880 >
+10,368` ⇒ at full frustum scale the two ends cannot have separate latch ids and the
+collapse becomes real. That anchor-level trade is the remaining decision, not a cell
+problem.
+
+**Item 2 — 3-pair decision: decided by arithmetic.** 6 faces/anchor = 32,640 >
+10,368 (unaffordable); 1 bit/anchor = 5,440 ≤ 10,368 (affordable) ⇒ 1-bit fingerprint.
+
+**Item 4 — push:** `origin/main == main` (bd1ce04 already pushed).
+
+**Receipts:** DWGLS `test_wang_latch` **ALL PASS (T1–T8)**; ann `test_wang_latch`
+**ALL PASS (T1–T8)**; `test_addr_orbit` **ALL PASS (T12–T15)**; ann server rebuilt
+clean.
+
+**Item 5 — warm-skip wiring (done).** `ann/src/ann_search.c` now computes
+`shut = own || cross` in one helper (`lz_fog_shut`), so coverage and row ordering
+use the same hourglass-aware predicate. The walk/P3 log still closes only the
+bucket actually traversed; the partner is a read-side warm hint, not a fabricated
+fingerprint. The live binary was rebuilt and swapped as `build/ann_search_batch.exe`;
+the old binary was retained as a timestamped backup and the duplicate unbound
+process from the restart race was stopped.
+
+**Item 5 gate receipt.** `tests/ab_door_live.py --queries 300` ran against the
+rebuilt binary and a 62,934-row live-index copy: R@5 **1.0000 → 1.0000**, R@10
+**1.0000 → 1.0000**, paired better/same/worse **0/300/0**. ON mode was `door` for
+300/300 queries. `items_scored` was 62,934 in both arms and p50 was 35.61 ms OFF
+vs 39.39 ms ON, so this receipt proves recall neutrality, not a speedup.
+Unit regression remains green: ann `test_wang_latch` **ALL PASS (T1–T8)**.
+
+**Still open:** the pairing choice — identity (shipped; pair = adjacent cells,
+live at K=64, log-compatible) vs swap-half (`(c%72)<<1 | (c/72)&1`; pair = opposite
+halves, unreachable at K ≤ 72, and would
+require re-deriving `lz_route.log`).
+
+### Pairing choice — resolved for the live epoch (2026-10-24)
+
+The fork closes here; no new derivation was needed, only the mapping functions
+already recorded above were re-checked against the live configuration (K = 64).
+
+- **identity (shipped)** — bucket `c` → cell `(pair = c>>1, end = c&1)`. For
+  `c < 144` both ends of every pair are addressable, so the centre crossing
+  (end flip = pair flip, one XOR via `wl_cell_cross = cell^1`) is expressible;
+  the phase-2 gate held BY CONSTRUCTION at K ≤ 144, the live run is at K = 64,
+  and the log is compatible. Shipped.
+- **swap-half** — bucket `c` → cell `(pair = c%72, end = (c/72)&1)`. For
+  `c < 72` every bucket lands on `end = 0`, so at the live K = 64 (all live
+  buckets `< 72`) the end axis is degenerate and the crossing is UNREACHABLE.
+  It could only engage at K > 72, and then it would require re-deriving
+  `lz_route.log` anyway.
+
+**Resolution (live epoch): identity stands.** Swap-half is parked — unreachable
+at the live K and log-incompatible by construction; it stays a candidate only
+for a K > 72 regime with a re-derived log. Full-frustum caveat unchanged and
+still open: 2 ends × 5,440 anchors = 10,880 > 10,368 pool at full frustum scale
+⇒ ends must share an id (anchor-level collapse = remaining decision).
+
+## E. Session 4 (2026-10-25) — budget-limited A/B, reserved id, partner policy
+
+Card `task-tcce8f5f2`. The previous A/B reported `items_scored 62,934` on BOTH
+arms. That was not "the latch did nothing" — it was the FULL-SCAN fallback: a
+scratch copy taken while the live index was appending pairs the index of one
+moment with the anchors/order of another (`antr != nent`), the route layer
+refuses the pair, and every query scores every row. Both arms were brute force,
+so no gate was ever exercised. Three defects follow from that, all fixed here.
+
+### E.1 Snapshot must be a coherent prefix, or refuse
+
+`ann/bench_latch_ab.py::snapshot()` now reads `ntr` from the anchor header —
+the number of rows the table actually covers — copies **only that prefix** of
+the index, re-checks that the anchor header did not move during the copy, and
+drops the `.order` sidecar unless it covers exactly that many rows (labels are
+`derive` mode live, so the sidecar is not on the path). Verified live while the
+index was growing: first attempt refused with
+`anchors ntr=62967 != index rows=62969`, then pinned `rows=62969 K=64 dim=384
+anchors_ntr=62969` and used it for all 5 runs.
+
+The harness also carries a **VALID gate** that fails the run when the walk
+degenerates into a full scan (`scored >= 0.9·N` or fallback on the majority),
+so this class of silent nothing-measurement cannot be reported as a result
+again.
+
+### E.2 Reserved id 0 (the review's bucket-0 question)
+
+`wl_id(cell,0)` for cell 0 IS `WL_RESERVED_LO` = 0, and `wl_traverse` refuses
+reserved ids ⇒ **bucket 0 could never shut** (already observed 2026-10-20 via
+`ANN_DOOR_TRACE`, which is why the door walk skipped it). Now
+`wl_bucket_id(b) = wl_id(wl_cell_of(b), 1)` — choice 1 instead of 0: the cell
+geometry (face/u/v) is untouched, every bucket is minor-latchable, and the
+reserved apex is never addressed. Cell 143 → 10297 < `WL_RESERVED_HI` 10367.
+A new id space is a new epoch, so the latch log tag moved `"wanglatc"` →
+`"wanglatd"` (`WL_NAME_HASH`, mirrored in `scripts/p3_compact.py`): records of
+the old epoch are ignored as foreign (no-op) instead of silently lighting bits
+the new build never reads. Nothing is deleted, nothing is re-interpreted; a
+deployment starts all-OPEN and re-learns. Receipts: `test_wang_latch` T9 (ids
+in range, no reserved id, 144 distinct cells, bucket 0 latchable, 143 never the
+major-output id) and T10 (G2.5 independence under the PRODUCTION ids) — ALL PASS.
+
+### E.3 Partner policy — measured, not argued (G2.6)
+
+The old skip test paired buckets by integer parity (`cell ^ 1`), which is a
+property of k-means ids and carries no spatial meaning. `lz_pair_build()` now
+derives the partner from the **centroid table** (highest cosine centroid, once
+per table load, deterministic, ties → lowest id) and `ANN_PAIR` selects
+`centroid` (default) | `parity` | `own`, so the choice is an arm in the A/B.
+`/health` and every search response now report `fog.pair` (= K when built).
+
+### E.4 Measurement (5 runs × 40+40 queries, pinned snapshot, budget 24,000)
+
+Query sets: **A** = between-rows (mean of two index rows + 0.05σ noise, i.e. an
+ambiguous route, not a self-query — the old set saturated at 1.0000), **B** =
+near an A row (0.06σ) so it routes over A's buckets. Order matters and is the
+same for every arm: the latch is process-global and engages from query 2, so
+`OFF` (same sequence, warm path disabled) is the only valid baseline.
+
+```
+arm           A: scored  R@1 / R@5 / R@10   trunc   B: scored  R@1 / R@5 / R@10   warm-q   p50 B
+OFF             10293     .625 / .670 / .703   0       10226    .825 / .755 / .725   0/40    13.8 ms
+ON own           8882     .575 / .600 / .637  21        9810    .825 / .750 / .723   6/40    14.3 ms
+ON parity        9053     .600 / .625 / .652  12       10226    .825 / .755 / .725   0/40    13.4 ms
+ON centroid      9460     .600 / .645 / .665  10       10226    .825 / .755 / .725   0/40    12.9 ms
+```
+
+Identical in all 5 runs (deterministic seeding + one frozen snapshot).
+
+**What the numbers say**
+
+- **G2.2 (warm scores fewer): only `own` moves, by −4.1%** on block B
+  (10,226 → 9,810) and −13.7% on block A — at the price of **truncating 21/40
+  novel queries** and losing **R@1 −.050, R@5 −.070, R@10 −.066** on them.
+  That is over-skip, measured, on ordinary traffic.
+- **Pairing disables the warm path instead of widening it.** With a partner,
+  every routed bucket ends up shut, `nshut == rnb`, and the branch's guard
+  (skip only when *some* are shut) bails out: `warm-q 0/40`, scored identical
+  to OFF. This is why G2.6 "passed" vacuously (both arms identical) and why
+  the parity-vs-centroid question cannot be settled by this shape of test.
+  The guard is correct (skipping all walked buckets would score nothing); it is
+  simply incompatible with a partner-widened shut set.
+- **Latency: no win.** 0.936×–1.039× of OFF on block B — inside noise, and the
+  reason is visible in the counters: the path pays the fog/pair lookup on every
+  query and then usually bails.
+- **Recall loss is on the NOVEL block, not the repeat block.** Block B passes
+  every tolerance; block A does not. The card's G2.3 ("novel recall unchanged")
+  therefore **FAILS** as written — measured on the block the old gate never
+  looked at.
+
+### E.5 Verdict and defaults
+
+- `lz_fog_shut` / `ANN_TOMBSTONE_WARM` stays **OFF by default** — it already is
+  (env-gated, `g_warm_on = 0` unless `ANN_TOMBSTONE_WARM=1`), so the measured
+  regression cannot reach live traffic. The review's proposal is adopted on
+  evidence, not on caution.
+- `ANN_PAIR` default = `centroid`: it is the only pairing with a defensible
+  meaning, and with the warm path off it changes no behaviour at all.
+- The pair table is **not** wired into the door path; the door keeps selecting
+  the first routed bucket whose OWN tombstone is shut.
+- To move past this, the skip rule has to become **budget-aware per bucket**
+  (skip a shut bucket only while the open buckets can still fill the top-k)
+  instead of the all-or-nothing `nshut < rnb` branch — that is the next
+  experiment, not this one. G2.4 (isometric view receipt) remains an owner
+  decision.
+- Older review items still untouched: `lz_http_recv` short-read handling and
+  the `strstr`-based JSON key lookup (a key match is not token-aware — a value
+  containing `"vec"` or `"force"` matches too).
+
+### E.6 Reproduction
+
+```
+cd I:/tools/ann
+make latch-ab                      # 5 runs, 40 queries, refuses an inconsistent snapshot
+python bench_latch_ab.py --runs 1 --queries 12 --verbose
+make test                          # incl. test_wang_latch T1-T10
+```
