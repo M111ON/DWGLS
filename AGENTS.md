@@ -1,8 +1,9 @@
 # AGENTS.md — DWGLS (4Dimension Geometry + KIS Timeline) · router (L0)
 
 ## Step 0 — self-detect (do this FIRST, before anything else)
-1. Estimate your usable context. If you are a **small/local model** (roughly ≤ 32k, or you were told to run light): load ONLY `.agents/chatmode.md` next, then stop loading and follow it.
-2. Otherwise (normal cloud model): continue below.
+1. Estimate your usable context. If you are a **small/local model** (roughly ≤ 20k, or you were told to run light): load ONLY `.agents/chatmode.md` next, then stop loading and follow it.
+2. ถ้า detect ว่าให้ pickup handoff, ทำงานต่อจากที่ค้างไว้ให้รัน full mode ได้เลย
+3. Otherwise (normal cloud model): continue below.
 
 ## Mandatory (all apps, all sizes — no exceptions)
 - Read `.agents/rules.md` IN FULL before doing any work. Prohibitions there override everything else.
@@ -33,5 +34,5 @@
 
 ## User Requested answered Pattern
 - User specialize on pattern matching and comparing structure, alway explain the result in 2 version contains:
- - technical universal terms (honestly, ไม่เดามีหลักฐานรองรับถ้าไม่มีให้แจ้ง, ตรงไปตรงมา)
- - casual less technical summarizes (comparison if possible)
+ - technical universal terms (honestly, ไม่เดา, มีหลักฐานรองรับ, ถ้าไม่มีให้แจ้ง, ตรงไปตรงมา)
+ - casual less technical summarizes (comparison if possible) ขอคำอธิบายแบบบ้านง่ายๆ

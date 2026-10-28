@@ -100,3 +100,6 @@ session-ses_*.md
 
 # Bench run logs — regenerable by tools/ann_pipe_bench (never source of truth)
 /runs/
+
+# 652 MB of ANN datasets (sift/siftsmall tarballs) - not source
+zip/

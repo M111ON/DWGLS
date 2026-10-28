@@ -1,5 +1,12 @@
 # project.md — DWGLS project detail (L2, load on demand)
 
+## Design DNA — 3 inspirations (owner, read before designing anything new)
+Designs should carry their flavor. Full record + verified mapping: `docs/DESIGN-DNA-3-INSPIRATIONS-2026-10-22.md` (companion: memory #7540, #7535).
+1. **Shadow Clone (Naruto)** — many small unique-but-shared-home instances; state merge = Δ at dissolve (∝ events, route log 5 B/route); coordination-free addressing from seed+method; count stays honest: bounded 2–3, because Kurama = entropy wall (~1.08× ceiling on whitened Q8, measured).
+2. **Venom (symbiote)** — transfer = inherit a function/rule (seed+method; a laid tombstone IS venom working), never copy payloads; receiver must satisfy a compatibility precondition (coprime / same method) or the gate rejects cleanly.
+3. **Infinity Castle (Demon Slayer)** — unit space bounded (20736) while timeline is unbounded (t×20736); controlled entry (admit / deflect / reject); integrity self-known (wang + CRC): corruption loud, never silent; displacement is a lift (residual_space), not a delete.
+Synthesis (owner): "container ที่ shuffles infinity ผ่าน tesseract dimension แล้วส่งต่อความรู้เรียนรู้ได้เรื่อยๆ".
+
 ## Core Architecture
 
 ### Parameterized Geometry Layer (`core/geo_param_grid.h`)
