@@ -58,10 +58,39 @@ That is the operational rule this experiment produces:
   retrieval measurements are unaffected (routing was derived before querying), but
   no regrow timing from those two tools should be quoted.
 
-## Candidate fix in `I:\tools\ann` (not applied)
+## The fix, applied and verified (2026-10-28, `I:\tools\ann` 86c93af)
 
-Accept `index_size + K + anchors_cksum` as sufficient for `unchanged` when the
-mtime differs but the content fingerprint matches; the checksum already proves the
-anchors are the ones this index produced. Cost of the change: one comparison.
-Benefit: a restored or copied index stops paying a 59 s kmeans re-derive for a
-timestamp. Left unimplemented because it changes another repo's contract.
+The gate keyed on the mtime, and mtime is not content. The state sidecar now
+carries `index_fp` = FNV1a-64 over `(size, n_prev, anchors_cksum, first 4 KB,
+last 4 KB)`; when the mtime differs the unchanged path compares that
+fingerprint instead of falling through to a full re-derive. A state written
+before the change gets one in place, but only while the mtime still proves the
+file is the one it describes.
+
+`tools/ann_regrow_upgrade_probe.py` runs each case on its own copy of the live
+63,915-row index, booted and queried:
+
+| case | mode | ms | verdict |
+|---|---|---|---|
+| A copy, mtime dropped | unchanged | 4.7 | PASS (the fix) |
+| D copy, mtime kept | unchanged | 3.9 | PASS (old contract) |
+| B copy, mtime dropped, +32 rows | incremental | 177.5 | PASS |
+| C copy, last sid edited | full | 56,291.9 | PASS (refused) |
+| U old state upgraded in place | unchanged | 5.6 | PASS (`index_fp` written) |
+| E copy, **first** sid edited | full | 57,196.8 | PASS (refused) |
+
+`make test` ALL PASS. Live `:8096` restarted on this build: `/v1/state/regrow`
+→ `mode unchanged, ms 3.6`, the state file now carries
+`index_fp:2569272408841868000`, and a self-query returns top-1 at 1.000000 with
+real neighbours at 0.9982/0.9981.
+
+**What the fingerprint does not cover**: an edit in the middle of the 263 MB
+index. Only a full-file hash would see that (~0.1-0.2 s at NVMe speed, still
+inside the 1 s budget if it is ever needed). The two windows cover
+append/truncate (size), a retrain (anchors_cksum), and edits to the first or
+last row.
+
+**Why a tail-line check alone was not enough** (the first version of this fix):
+it proved the last row only, so a first-row edit passed as unchanged and the
+server would route by stamps that no longer describe the row. Case E is that
+test; it fails the tail-only version and passes the fingerprint.
