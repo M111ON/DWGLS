@@ -117,7 +117,7 @@ int main(void)
     {
         int ok = init_ok &&
                  dc.props.verts == 20 && dc.props.faces == 12 &&   /* dodeca */
-                 ic.props.verts == 20 && ic.props.faces == 20 &&   /* icosa  */
+                 ic.props.verts == 12 && ic.props.faces == 20 &&   /* icosa  */
                  c144.props.verts == 144 && c144.props.faces == 576 && /* compound */
                  g192.props.verts == 192 && g192.props.faces == 92;    /* goldberg */
         CHECK("T6: props ต่างกัน (12/20/144/192 faces) แต่ payload เดียวกัน", ok);
@@ -126,10 +126,10 @@ int main(void)
     /* T7: capacity clamp ต่างกัน แต่ decode lossless — geometry ไม่แตะข้อมูล */
     {
         uint64_t cap_d = (uint64_t)dc.props.verts * dc.props.slot_cap;   /* 5120 */
-        uint64_t cap_i = (uint64_t)ic.props.verts * ic.props.slot_cap;   /* 5120 */
+        uint64_t cap_i = (uint64_t)ic.props.verts * ic.props.slot_cap;   /* 3072 */
         uint64_t cap_144 = (uint64_t)c144.props.verts * c144.props.slot_cap; /* 36864 */
         uint64_t cap_192 = (uint64_t)g192.props.verts * g192.props.slot_cap; /* 49152 */
-        int ok = init_ok && cap_d == cap_i && cap_144 > cap_d && cap_192 > cap_d &&
+        int ok = init_ok && cap_d > cap_i && cap_144 > cap_d && cap_192 > cap_d &&
                  dc.n_uniq == ic.n_uniq && c144.n_used_verts >= dc.n_used_verts &&
                  decode_matches(&dc, &c144);
         CHECK("T7: capacity clamp ต่างกัน (geometry) แต่ decode ยัง lossless — template เท่านั้น",
@@ -146,7 +146,7 @@ int main(void)
                  dc.idx_len == ic.idx_len &&
                  dc.codebook_len == c144.codebook_len &&
                  dc.idx_len == c144.idx_len;
-        CHECK("T8: mask_len ตาม verts (2/2/18/24) แต่ codebook/idx len เดียวกันทุก view",
+        CHECK("T8: mask_len ตาม verts (3/2/18/24) แต่ codebook/idx len เดียวกันทุก view",
               ok);
     }
 

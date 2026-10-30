@@ -82,10 +82,11 @@ static inline double w_from_time(double t) {
    gen 0: 6 faces × 1 slot  = 6 total
    gen 1: 6 faces × 2 slots = 12 total
    gen 2: 6 faces × 3 slots = 18 total
-   gen 3: 6 faces × 5 slots = 30 total
+   gen 3: 6 faces × 4 slots = 24 total
    ...
    
-   Fibonacci-like: slots_per_face(n) = round(φⁿ)
+   slots_per_face(n) = round(φⁿ) → 1,2,3,4,7,11,18,29
+   NOT Fibonacci (1,2,3,5) — they diverge at gen 3.
    ═══════════════════════════════════════════════════════════════ */
 
 static inline uint16_t slots_per_face(uint32_t n) {

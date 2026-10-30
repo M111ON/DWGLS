@@ -61,7 +61,7 @@ static inline GeoProps geo_props(GeoType t)
     p.type = t; p.slot_cap = 256;
     switch (t) {
     case GEO_DODEC_BASE:      p.verts=20; p.edges=30; p.faces=12; p.cells=1; break;
-    case GEO_ICO_BASE:        p.verts=20; p.edges=30; p.faces=20; p.cells=1; break;
+    case GEO_ICO_BASE:        p.verts=12; p.edges=30; p.faces=20; p.cells=1; break;
     case GEO_COMPOUND_24:     p.verts=24; p.edges=48; p.faces=24; p.cells=6; break;
     case GEO_DODEC_EDGES:     p.verts=30; p.edges=60; p.faces=32; p.cells=1; break;
     case GEO_COMPOUND_60:     p.verts=60; p.edges=90; p.faces=32; p.cells=1; break;
