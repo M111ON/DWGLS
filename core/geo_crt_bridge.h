@@ -18,11 +18,11 @@
  *   addr = (81×b + 256×t) mod 20736
  *
  * Chinese Remainder inverse:
- *   b = addr × 81⁻¹ mod 256   where 81⁻¹ mod 256 = 33
- *   t = addr × 256⁻¹ mod 81   where 256⁻¹ mod 81  = 64
+ *   b = addr × 81⁻¹ mod 256   where 81⁻¹ mod 256 = 177
+ *   t = addr × 256⁻¹ mod 81   where 256⁻¹ mod 81  = 25
  *
  * Verification:
- *   81 × 33 = 2673 = 10 × 256 + 113   → 81×33 mod 256 = 1  ✓
+ *   81 × 177 = 14337 = 56 × 256 + 1  → 81×177 mod 256 = 1  ✓
  *   256 × 64 = 16384 = 202 × 81 + 22  → wait, check:
  *   16384 / 81 = 202.27...  → 202 × 81 = 16362  → 16384 - 16362 = 22 ≠ 1
  *   Need: 256⁻¹ mod 81.  256 mod 81 = 256 - 3×81 = 256-243 = 13
@@ -31,7 +31,7 @@
  *   So 256⁻¹ mod 81 = 25 (since 256 ≡ 13 mod 81)
  *
  *   addr = (81×b + 256×t) mod 20736
- *   b = addr × 81⁻¹ mod 256 = (addr × 33) mod 256   [81×33 = 2673 ≡ 1 mod 256]
+ *   b = addr × 81⁻¹ mod 256 = (addr × 177) mod 256  [81×177 = 14337 ≡ 1 mod 256]
  *   t = addr × 256⁻¹ mod 81 = (addr × 25) mod 81    [256≡13 mod 81, 13×25≡1 mod 81]
  *
  * DEPENDS: none (pure arithmetic)

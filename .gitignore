@@ -87,6 +87,10 @@ experiments/Tri_semi_circle_scle
 # octfold experiment: pixel crops from the source image — regenerable, not committed
 experiments/octfold-8fold-2026-10-14/evidence/
 
+# apex-hidden experiment: tensor dumps — regenerable by dump_tensor.py / bf16_fetch.py
+experiments/apex-hidden-2026-09-29/*.f32
+experiments/apex-hidden-2026-09-29/*.npy
+
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
 .mcp.json
@@ -103,3 +107,6 @@ session-ses_*.md
 
 # 652 MB of ANN datasets (sift/siftsmall tarballs) - not source
 zip/
+
+# GloVe / WordNet fixture (822 MB zip + 171 MB text, regenerable via experiments/multiview-glove-wordnet-2026-10-30)
+data/

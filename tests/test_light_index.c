@@ -26,11 +26,21 @@
 #include "core/geo_light_index.h"
 #include "core/anchor_route.h"
 
+#ifndef NENTRY
 #define NENTRY   600
+#endif
+#ifndef DIM
 #define DIM      4
+#endif
+#ifndef KANCH
 #define KANCH    8
+#endif
+#ifndef TOPB
 #define TOPB     2
+#endif
+#ifndef NQUERY
 #define NQUERY   200
+#endif
 #define PAYLOAD  64
 
 static int g_pass = 0, g_fail = 0;
@@ -102,6 +112,10 @@ int main(void) {
 
     /* wire-size receipt: NENTRY * 40 B */
     check_ok(sizeof(log) == (size_t)NENTRY * LIX_REC_WIRE, "wire size = NENTRY*40B");
+    printf("    capacity: NENTRY=%u  index=%zu B (%.1f KB)  log=%zu B  payload=%zu B  "
+           "slots_filled=%u/%u\n",
+           (unsigned)NENTRY, sizeof(entries), sizeof(entries) / 1024.0,
+           sizeof(log), sizeof(payload), (unsigned)NENTRY, (unsigned)LIX_TOTAL_SLOTS);
 
     /* ── feature matrix + anchors ── */
     static float X[NENTRY * DIM];
