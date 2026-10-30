@@ -22,7 +22,7 @@ Two different questions, because the two classes need two different metrics:
                    survive into the scanned candidates. That is the ceiling any
                    graph-aware reranker could reach.
 
-    python multiview_real.py [--K 64] [--maxb 6]
+    python multiview_real.py [--K 64] [--maxb 6] [--npz data/glove_wordnet.npz]
 """
 import argparse
 import os
@@ -74,10 +74,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--K", type=int, default=64)
     ap.add_argument("--maxb", type=int, default=6)
+    ap.add_argument("--npz", default=NPZ, help="fixture to score (default: the 50d one)")
     args = ap.parse_args()
     k = 10
 
-    d = np.load(NPZ, allow_pickle=True)
+    d = np.load(args.npz, allow_pickle=True)
     X = d["X"].astype(np.float32)
     edges = d["edges"]
     nbr = [[] for _ in range(len(X))]

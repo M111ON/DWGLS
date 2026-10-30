@@ -15,17 +15,31 @@ Ground truth for each class is objective and independent of the routing:
 Writes data/glove_wordnet.npz and prints the overlap between the two answer sets —
 if that overlap is high the corpus cannot separate the classes and the test is vacuous.
 
-    python build_fixture.py [--max-words 20000]
+    python build_fixture.py [--max-words 20000] [--dim 50]
 """
 import argparse
 import os
+import zipfile
 
 import numpy as np
 from nltk.corpus import wordnet as wn
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-GLOVE = os.path.join(ROOT, "data", "glove.6B.50d.txt")
-OUT = os.path.join(ROOT, "data", "glove_wordnet.npz")
+DATA = os.path.join(ROOT, "data")
+ZIP = os.path.join(DATA, "glove.6B.zip")
+
+
+def glove_path(dim):
+    """data/glove.6B.{dim}d.txt, unzipped from the 6B archive on first use."""
+    p = os.path.join(DATA, "glove.6B.%dd.txt" % dim)
+    if not os.path.exists(p):
+        zipfile.ZipFile(ZIP).extract("glove.6B.%dd.txt" % dim, DATA)
+    return p
+
+
+def out_path(dim):
+    """50d keeps its original filename so existing runs stay valid."""
+    return os.path.join(DATA, "glove_wordnet.npz" if dim == 50 else "glove_wordnet_%dd.npz" % dim)
 
 REL_POINTERS = {"@": "hypernym", "~": "hyponym", "&": "similar_to", "%": "part_of"}
 
@@ -66,13 +80,17 @@ def wordnet_edges(vocab):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--max-words", type=int, default=20000)
+    ap.add_argument("--dim", type=int, default=50, help="GloVe dimension: 50/100/200/300")
     ap.add_argument("--nq", type=int, default=500, help="queries per class")
     ap.add_argument("--k", type=int, default=10)
     args = ap.parse_args()
 
+    glove = glove_path(args.dim)
+    out = out_path(args.dim)
+
     # 1. candidate vocabulary: alphabetic GloVe words that WordNet knows
     keep = set()
-    with open(GLOVE, encoding="utf-8") as f:
+    with open(glove, encoding="utf-8") as f:
         for line in f:
             w = line.split(" ", 1)[0]
             if w.isalpha() and w.islower():
@@ -83,7 +101,7 @@ def main():
 
     # 2. load vectors for a deterministic slice of that vocabulary
     ordered = sorted(keep)[: args.max_words]
-    X, words = load_glove(GLOVE, set(ordered))
+    X, words = load_glove(glove, set(ordered))
     idx = {w: i for i, w in enumerate(words)}
     print("items with vectors: %d  dim=%d" % (len(words), X.shape[1]))
 
@@ -114,7 +132,7 @@ def main():
     print("overlap(cosine top-%d, wordnet neighbours) mean = %.3f" % (args.k, float(np.mean(ov))))
 
     np.savez_compressed(
-        OUT,
+        out,
         X=X.astype(np.float32),
         words=np.array(words),
         edges=np.array(edges, dtype=np.int32),
@@ -123,7 +141,7 @@ def main():
         relation_queries=rel_q.astype(np.int32),
         k=np.int32(args.k),
     )
-    print("wrote", OUT)
+    print("wrote", out)
 
 
 if __name__ == "__main__":

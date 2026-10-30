@@ -10,8 +10,9 @@ So the relation view is not a partition question. This tests the other mechanism
 Candidates = {q} ∪ anchors ∪ neighbours(anchors). Scan cost is tiny (~m*degree items)
 and does not grow with corpus size, unlike a partition scan.
 
-    python expansion.py
+    python expansion.py [--npz data/glove_wordnet.npz]
 """
+import argparse
 import os
 
 import numpy as np
@@ -22,7 +23,10 @@ K = 10
 
 
 def main():
-    d = np.load(NPZ, allow_pickle=True)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--npz", default=NPZ, help="fixture to score (default: the 50d one)")
+    args = ap.parse_args()
+    d = np.load(args.npz, allow_pickle=True)
     X = d["X"].astype(np.float32)
     edges = d["edges"]
     n = len(X)
