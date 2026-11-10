@@ -53,6 +53,35 @@ typedef struct {
     double   ms_pack;
 } TensorHook;
 
+static int parse_layer_name(const char *name) {
+    const char *p = strstr(name, "blk.");
+    if (!p) return -1;
+    return atoi(p + 4);
+}
+static int is_expert_tensor_name(const char *name) {
+    return name && (strstr(name, "_exps.") != NULL || strstr(name, "_exps.weight") != NULL);
+}
+
+/* ── tesspack callback hook (per-tensor buffers, no full-body calloc) ── */
+typedef struct { uint8_t **bufs; char **names; uint32_t n; uint32_t matched, missing; } TessHook;
+static void provide_tess_tensor(struct ggml_tensor *t, void *ud) {
+    TessHook *h = (TessHook *)ud;
+    const char *name = ggml_get_name(t);
+    size_t nb = ggml_nbytes(t);
+    for (uint32_t i = 0; i < h->n; i++) {
+        if (strcmp(h->names[i], name) != 0) continue;
+        if (h->bufs[i]) { t->data = h->bufs[i]; h->matched++; return; }
+    }
+    size_t fbsz = nb ? nb : 1;
+#ifdef _WIN32
+    uint8_t *fb = (uint8_t *)VirtualAlloc(NULL, fbsz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+    uint8_t *fb = (uint8_t *)calloc(fbsz, 1);
+#endif
+    if (fb) { memset(fb, 0, fbsz); t->data = fb; }
+    h->missing++;
+}
+
 static uint32_t cell_size_of(enum ggml_type type) {
     static const uint32_t C[16] = {
         4, 2, 18, 20, 0, 0, 22, 24, 34, 36, 84, 110, 144, 176, 210, 292,
@@ -152,7 +181,7 @@ static int load_pack_tensor(TensorHook *h, const char *name, uint32_t cell_size,
 }
 
 /* ── llama CPU backend loader ── */
-static void register_cpu_backend(const char *dir) {
+static void register_cpu_backend(const char *dir, int n_gpu) {
     char dll_path[1024];
     fprintf(stderr, "Loading backends from: %s\n", dir);
 
@@ -164,10 +193,14 @@ static void register_cpu_backend(const char *dir) {
         fprintf(stderr, "  load %s: %s\n", cpu_names[i], b ? "OK" : "FAIL");
     }
 
-    /* Try Vulkan */
-    snprintf(dll_path, sizeof(dll_path), "%s\\ggml-vulkan.dll", dir);
-    ggml_backend_reg_t b = ggml_backend_load(dll_path);
-    fprintf(stderr, "  load ggml-vulkan.dll: %s\n", b ? "OK" : "FAIL");
+    /* Try Vulkan only if GPU offload requested (callback path needs host buffers) */
+    if (n_gpu > 0) {
+        snprintf(dll_path, sizeof(dll_path), "%s\\ggml-vulkan.dll", dir);
+        ggml_backend_reg_t b = ggml_backend_load(dll_path);
+        fprintf(stderr, "  load ggml-vulkan.dll: %s\n", b ? "OK" : "FAIL");
+    } else {
+        fprintf(stderr, "  skipping Vulkan (n_gpu=0, callback path)\n");
+    }
 
     int nvulkan = 0, ncpu = 0;
     for (size_t i = 0; i < ggml_backend_reg_count(); i++) {
@@ -389,7 +422,7 @@ int main(int argc, char **argv) {
 #endif
 
     llama_backend_init();
-    register_cpu_backend(dll_dir);
+    register_cpu_backend(dll_dir, n_gpu);
 
     /* ── open tesspack ── */
     TESS_PackIndex pi;
@@ -432,7 +465,7 @@ int main(int argc, char **argv) {
     }
     uint32_t n_tensors = gguf_get_n_tensors(meta);
     fprintf(stderr, "Tensors from header: %u\n", n_tensors);
-
+    gguf_free(meta); meta = NULL;
     /* ── mmap source GGUF for fallback ── */
     struct gguf_context *src_meta = NULL;
     uint8_t *src_base = NULL;
@@ -460,130 +493,200 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* ── assemble: load all tensors from pack → write full GGUF ── */
+    /* ── parse embedded header into gguf_context (with ggml ctx) for callback model ── */
+    struct ggml_context *meta_ctx = NULL;
+    struct gguf_init_params gip2 = { .no_alloc = true, .ctx = &meta_ctx };
+    struct gguf_context *gctx = gguf_init_from_file(tmp_gguf, gip2);
+    if (!gctx) {
+        fprintf(stderr, "FAIL: gguf_init_from_file on header\n");
+        if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
+    }
+    n_tensors = gguf_get_n_tensors(gctx);
+    fprintf(stderr, "Tensors from header: %u\n", n_tensors);
+
+    /* ── per-tensor buffers: scatter-decode from pack / src / zero (no full-body calloc) ── */
     double t0 = now_ms();
-    {
-        /* compute total body size */
-        uint64_t max_end = 0;
-        for (uint32_t i = 0; i < n_tensors; i++) {
-            uint64_t end = gguf_get_tensor_offset(meta, i) + gguf_get_tensor_size(meta, i);
-            if (end > max_end) max_end = end;
+    uint8_t **tensor_bufs = (uint8_t **)calloc(n_tensors, sizeof(uint8_t *));
+    char **tensor_names = (char **)calloc(n_tensors, sizeof(char *));
+    if (!tensor_bufs || !tensor_names) {
+        fprintf(stderr, "FAIL: OOM tensor arrays\n");
+        gguf_free(gctx); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
+    }
+    uint32_t n_from_pack = 0, n_from_source = 0, n_from_zero = 0;
+    for (uint32_t i = 0; i < n_tensors; i++) {
+        const char *name = gguf_get_tensor_name(gctx, i);
+        uint64_t tsz = gguf_get_tensor_size(gctx, i);
+        int ttype = gguf_get_tensor_type(gctx, i);
+        uint32_t csz = cell_size_of((enum ggml_type)ttype);
+        if (csz == 0) csz = 1;
+        uint64_t total_cells = (csz == 0) ? 0 : tsz / csz;
+
+        tensor_names[i] = strdup(name);
+        size_t bsz = tsz ? (size_t)tsz : 1;
+#ifdef _WIN32
+        uint8_t *buf = (uint8_t *)VirtualAlloc(NULL, bsz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+        uint8_t *buf = (uint8_t *)calloc(bsz, 1);
+#endif
+        if (buf && bsz > 0) memset(buf, 0, bsz);
+        if (!buf) { fprintf(stderr, "FAIL: OOM tensor %s\n", name);
+            gguf_free(gctx); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1; }
+        tensor_bufs[i] = buf;
+
+        int packed = 0;
+        if (csz != 0 && total_cells * csz == tsz && total_cells > 0) {
+            TensorHook hook;
+            memset(&hook, 0, sizeof(hook));
+            hook.pi = &pi;
+            int rc = load_pack_tensor(&hook, name, csz, total_cells, buf);
+            if (rc > 0) { n_from_pack++; packed = 1; }
         }
-        uint64_t data_off = gguf_get_data_offset(meta);
-        size_t body_sz = (size_t)max_end;
-        fprintf(stderr, "GGUF layout: header=%llu data_offset=%llu max_tensor_end=%llu body=%llu file_end=%llu\n",
-                (unsigned long long)hdr_sz, (unsigned long long)data_off,
-                (unsigned long long)max_end, (unsigned long long)body_sz,
-                (unsigned long long)hdr_sz + (unsigned long long)body_sz);
-        if (data_off != hdr_sz) {
-            fprintf(stderr, "FAIL: embedded header size/data offset mismatch\n");
-            gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
-        }
-        uint8_t *body = (uint8_t *)calloc(1, body_sz);
-        if (!body) { fprintf(stderr, "FAIL: OOM assemble\n");
-            gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1; }
-
-        TensorHook hook;
-        memset(&hook, 0, sizeof(hook));
-        hook.pi = &pi;
-
-        uint32_t n_from_pack = 0, n_from_source = 0, n_from_zero = 0;
-        for (uint32_t i = 0; i < n_tensors; i++) {
-            const char *name = gguf_get_tensor_name(meta, i);
-            uint64_t off = gguf_get_tensor_offset(meta, i);
-            if (off > body_sz) {
-                fprintf(stderr, "FAIL: tensor %s offset out of body bounds\n", name);
-                free(body); gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
-            }
-            uint64_t body_off = off;
-            uint32_t tsz = (uint32_t)gguf_get_tensor_size(meta, i);
-            int ttype = gguf_get_tensor_type(meta, i);
-            uint32_t csz = cell_size_of((enum ggml_type)ttype);
-            if (csz == 0) csz = 1;
-
-            uint64_t total_cells = (csz == 0) ? 0 : (uint64_t)tsz / csz;
-            if (csz != 0 && total_cells * csz == tsz && total_cells > 0) {
-                int rc = load_pack_tensor(&hook, name, csz, total_cells,
-                                          body + body_off);
-                if (rc > 0) { n_from_pack++; continue; }
-            }
-            /* fallback: copy from source GGUF if available */
+        if (!packed) {
+            int found_src = 0;
             if (src_base && src_meta) {
-                int found_src = 0;
                 uint32_t nsrc = gguf_get_n_tensors(src_meta);
                 for (uint32_t si = 0; si < nsrc; si++) {
                     if (strcmp(gguf_get_tensor_name(src_meta, si), name) == 0) {
                         uint64_t src_off = gguf_get_data_offset(src_meta) + gguf_get_tensor_offset(src_meta, si);
                         if (src_off + tsz <= src_sz) {
-                            if (body_off + tsz > body_sz) {
-                                fprintf(stderr, "FAIL: tensor %s exceeds body bounds\n", name);
-                                free(body); gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
-                            }
-                            memcpy(body + body_off, src_base + src_off, tsz);
+                            memcpy(buf, src_base + src_off, (size_t)tsz);
                             n_from_source++;
                         }
                         found_src = 1;
                         break;
                     }
                 }
-                if (found_src) continue;
             }
-            /* last resort: zero-fill (scale/input_scale/bias/rope_freqs) */
-            if (body_off + tsz > body_sz) {
-                fprintf(stderr, "FAIL: tensor %s exceeds body bounds\n", name);
-                free(body); gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
-            }
-            memset(body + body_off, 0, tsz);
-            n_from_zero++;
+            if (!found_src) n_from_zero++;
         }
-        double assemble_ms = now_ms() - t0;
-        fprintf(stderr, "Assemble: from_pack=%u from_source=%u from_zero=%u %.0f ms\n",
-                n_from_pack, n_from_source, n_from_zero, assemble_ms);
+    }
+    double assemble_ms = now_ms() - t0;
+    fprintf(stderr, "Buffers: from_pack=%u from_source=%u from_zero=%u %.0f ms (no full-body calloc)\n",
+            n_from_pack, n_from_source, n_from_zero, assemble_ms);
 
-        /* ── write header + body → full temp GGUF ── */
-        double t1 = now_ms();
-        FILE *wf = fopen(tmp_gguf, "wb");
-        if (!wf) { fprintf(stderr, "FAIL: tmp rewrite\n");
-            free(body); gguf_free(meta); tess_pack_close(&pi); return 1; }
-        size_t wh = fwrite(hdr_bytes, 1, (size_t)hdr_sz, wf);
-        size_t wb = fwrite(body, 1, body_sz, wf);
-        int we = ferror(wf);
-        int wc = fclose(wf);
-        fprintf(stderr, "Write receipt: header=%llu/%llu body=%llu/%llu ferror=%d fclose=%d errno=%d\n",
-                (unsigned long long)wh, (unsigned long long)hdr_sz,
-                (unsigned long long)wb, (unsigned long long)body_sz,
-                we, wc, errno);
-        if (wh != (size_t)hdr_sz || wb != body_sz || we || wc != 0) {
-            fprintf(stderr, "FAIL: incomplete temp GGUF write\n");
-            free(body); gguf_free(meta);
-            if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf);
-            tess_pack_close(&pi); return 1;
+    /* ── MoE expert graft: optional static top-K commit (env TESS_MOE_K) ── */
+    {
+        const char *ek = getenv("TESS_MOE_K");
+        int moe_k = ek ? atoi(ek) : 0;
+        if (moe_k > 0) {
+            /* find max layer */
+            int max_layer = -1;
+            for (uint32_t i = 0; i < n_tensors; i++) {
+                if (!is_expert_tensor_name(tensor_names[i])) continue;
+                int L = parse_layer_name(tensor_names[i]);
+                if (L > max_layer) max_layer = L;
+            }
+            uint64_t total_saved = 0;
+            for (int L = 0; L <= max_layer; L++) {
+                /* find reference expert tensor (prefer gate) for this layer */
+                int ref_idx = -1;
+                for (uint32_t i = 0; i < n_tensors; i++) {
+                    if (parse_layer_name(tensor_names[i]) != L) continue;
+                    if (!is_expert_tensor_name(tensor_names[i])) continue;
+                    if (strstr(tensor_names[i], "gate")) { ref_idx = (int)i; break; }
+                }
+                if (ref_idx < 0) {
+                    for (uint32_t i = 0; i < n_tensors; i++) {
+                        if (parse_layer_name(tensor_names[i]) != L) continue;
+                        if (is_expert_tensor_name(tensor_names[i])) { ref_idx = (int)i; break; }
+                    }
+                }
+                if (ref_idx < 0) continue;
+                uint64_t tsz = (uint64_t)gguf_get_tensor_size(gctx, (uint32_t)ref_idx);
+                /* E from dims */
+                const int64_t *ne = gguf_get_tensor_ne(gctx, (uint32_t)ref_idx);
+                uint32_t E = 0;
+                for (int d = GGML_MAX_DIMS - 1; d >= 0; d--) {
+                    if (ne[d] != 1) { E = (uint32_t)ne[d]; break; }
+                }
+                if (E == 0) continue;
+                if (E < 2 || E > 64 || tsz % E != 0) continue;
+                uint64_t sl = tsz / E;
+                uint32_t K = (uint32_t)moe_k;
+                if (K > E) K = E;
+
+                /* find bias buffer for this layer */
+                const uint8_t *bias_buf = NULL;
+                char want_bias[64];
+                snprintf(want_bias, sizeof(want_bias), "blk.%d.exp_probs_b.bias", L);
+                for (uint32_t i = 0; i < n_tensors; i++) {
+                    if (strcmp(tensor_names[i], want_bias) == 0) { bias_buf = tensor_bufs[i]; break; }
+                }
+
+                /* compute mask */
+                uint64_t mask = 0;
+                uint64_t used = 0;
+                for (uint32_t r = 0; r < K; r++) {
+                    int bi = -1;
+                    double best = 0;
+                    int have = 0;
+                    for (uint32_t e = 0; e < E; e++) {
+                        if (used & (1ull << e)) continue;
+                        double key;
+                        if (bias_buf) key = (double)((const float *)bias_buf)[e];
+                        else {
+                            const uint8_t *p = tensor_bufs[ref_idx] + e * sl;
+                            uint64_t acc = 0; uint64_t head = sl > 4096 ? 4096 : sl;
+                            for (uint64_t b = 0; b < head; b++) acc += p[b];
+                            key = (double)acc;
+                        }
+                        if (!have || key > best) { best = key; bi = (int)e; have = 1; }
+                    }
+                    if (bi < 0) break;
+                    used |= 1ull << bi;
+                    mask |= 1ull << bi;
+                }
+                if (mask == 0) mask = (E >= 64) ? ~0ull : ((1ull << E) - 1);
+
+                fprintf(stderr, "MoE layer %d: E=%u K=%u mask=%08llX\n", L, E, K, (unsigned long long)mask);
+
+                /* apply: guard unfired slices */
+                for (uint32_t ti = 0; ti < n_tensors; ti++) {
+                    if (parse_layer_name(tensor_names[ti]) != L) continue;
+                    if (!is_expert_tensor_name(tensor_names[ti])) continue;
+                    uint64_t tsz2 = (uint64_t)gguf_get_tensor_size(gctx, ti);
+                    if (tsz2 % E != 0) continue;
+                    uint64_t sl2 = tsz2 / E;
+                    uint8_t *buf = tensor_bufs[ti];
+                    for (uint32_t e = 0; e < E; e++) {
+                        if (mask & (1ull << e)) continue;
+                        uint8_t *st = buf + e * sl2;
+                        uint8_t *en = st + sl2;
+                        uintptr_t ps = ((uintptr_t)st + 4095) & ~(uintptr_t)4095;
+                        uintptr_t pe = (uintptr_t)en & ~(uintptr_t)4095;
+                        if (pe <= ps) continue;
+#ifdef _WIN32
+                        VirtualFree((void *)ps, (size_t)(pe - ps), MEM_DECOMMIT);
+#endif
+                        total_saved += (pe - ps);
+                    }
+                }
+            }
+            fprintf(stderr, "MoE graft: decommitted ~%.1f MB of unfired expert slices\n", total_saved / 1e6);
         }
-        free(body);
-        fprintf(stderr, "Write: %.0f ms\n", now_ms() - t1);
-        fprintf(stderr, "Temp GGUF: %s (%llu bytes)\n",
-                tmp_gguf, (unsigned long long)(hdr_sz + body_sz));
-        fprintf(stderr, "Temp size after write: %llu bytes\n",
-                file_size_path(tmp_gguf));
     }
 
-    /* ── load model from assembled temp GGUF ── */
+    /* ── callback load (no assembled temp GGUF) ── */
+    TessHook thook;
+    memset(&thook, 0, sizeof(thook));
+    thook.bufs = tensor_bufs;
+    thook.names = tensor_names;
+    thook.n = n_tensors;
+
     t0 = now_ms();
     struct llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = n_gpu; /* TESS_NGPU env (default 0=CPU, set 40-50 for GTX 1050 Ti 4GB) */
-    fprintf(stderr, "Temp size before model load: %llu bytes\n",
-            file_size_path(tmp_gguf));
-    struct llama_model *model = llama_model_load_from_file(tmp_gguf, mp);
-    fprintf(stderr, "Temp size after model load: %llu bytes\n",
-            file_size_path(tmp_gguf));
+    mp.n_gpu_layers = n_gpu;
+    mp.no_host = true; /* callback pointers are host buffers, not Vulkan_Host staging */
+    struct llama_model *model = llama_model_init_from_user(gctx, provide_tess_tensor, &thook, mp);
     double load_ms = now_ms() - t0;
+    fprintf(stderr, "Callback model load: matched=%u missing=%u %.0f ms\n",
+            thook.matched, thook.missing, load_ms);
     if (!model) {
-        fprintf(stderr, "FAIL: llama_model_load_from_file\n");
-        gguf_free(meta); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
+        fprintf(stderr, "FAIL: llama_model_init_from_user\n");
+        if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1;
     }
-    fprintf(stderr, "Model loaded in %.0f ms from temp GGUF\n", load_ms);
+    fprintf(stderr, "Model loaded in %.0f ms (callback, no full GGUF)\n", load_ms);
     fprintf(stderr, "RSS: %.1f MB\n", rss_mb());
-    gguf_free(meta);
 
     /* ── create context for inference ── */
     struct llama_context_params cparams = llama_context_default_params();
@@ -688,7 +791,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "REQUEST: prompt=%d chars, max_tokens=%d\n",
                 (int)strlen(prompt), n_gen);
 
-        /* run inference */
+        /* run inference (guarded: MoE K-mode may PAGE_NOACCESS unfired experts) */
         llama_memory_clear(llama_get_memory(ctx), false);
         InferenceResult ires;
         memset(&ires, 0, sizeof(ires));
