@@ -42,6 +42,17 @@ summarizes what the system can currently do, verified by passing tests.
 - `bfs_ann_put` / `bfs_ann_addr_of` / `bfs_ann_get` with lossless payload
   retrieval; persistence verified.
 
+## Phase 5 — Component adapters (`core/b_fs_components.h`)
+
+Docks the existing DWGLS components into b_fs as pure-arithmetic transforms:
+- **18tes (6ico compound)**: 18 tesseracts × 8 cells × 144 slots = 20736.
+  `bfc_18tes_decode` / `bfc_18tes_encode` are inverses (verified all 20736).
+- **fan24**: CRT bijection (dc mod 8, dx mod 3) on ring-24. `bfc_fan24_crt`
+  is a bijection (verified all 24 combos).
+- **gear**: tooth (pos mod 24) + frame (pos / 144).
+- **language**: 9-identity (pos mod 9), range [0,8].
+- **b_fs docking**: `bfc_store_18tes` stores 18tes entries via `BfsAnnIndex`.
+
 ## Real model verification (`tests/kis_real_gguf_test.c`)
 
 Adaptive storage + KIS container roundtrip verified lossless on real GGUF
@@ -61,8 +72,9 @@ weights (Q8_0 decode → adaptive store → readback → container serialize/ver
 | test_b_fs_dim (Phase 2) | 7 | PASS |
 | test_b_fs_kv (Phase 3) | 16 | PASS |
 | test_b_fs_ann (Phase 4) | 15 | PASS |
+| test_b_fs_components (Phase 5) | 7 | PASS |
 | kis_real_gguf (3 models) | 45 | PASS |
-| **Total** | **95** | **0 fail** |
+| **Total** | **102** | **0 fail** |
 
 ## Remaining work
 
@@ -70,3 +82,5 @@ weights (Q8_0 decode → adaptive store → readback → container serialize/ver
   instead of their own storage.
 - Cross-dimension data transfer (actual layout adapters between tess/kis).
 - Wire twin hot/cold into real serving path.
+- fan24/gear/language/18tes are now docked; deeper integration (storage of
+  actual fan24 logs, gear events) pending.
