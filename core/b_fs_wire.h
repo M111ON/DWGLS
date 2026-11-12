@@ -17,12 +17,15 @@
 #include "b_fs_kv.h"
 #include "b_fs_ann.h"
 #include "b_fs_components.h"
+#include "b_fs_multi.h"
 #include "bfs_persist.h"
 
 typedef struct {
     BreathingFS   fs;      /* single backing store              */
     BfsKvCache    kv;      /* KV cache docked on fs             */
     BfsAnnIndex   ann;     /* ANN index docked on fs            */
+    BfsMultiPtr   mptr;    /* multi-pointer (no auto-move)      */
+    BfsVoronoiMask vmask;  /* voronoi mask for multi-point      */
     int           ready;   /* 1 after init                      */
 } BfsSystem;
 
@@ -32,6 +35,8 @@ static inline int bfs_system_init(BfsSystem *sys) {
     bfs_init(&sys->fs);
     bfs_kv_init(&sys->kv, &sys->fs);
     bfs_ann_init(&sys->ann, &sys->fs);
+    bfm_init(&sys->mptr);
+    bvm_init(&sys->vmask, BFM_VORONOI_CELLS);
     sys->ready = 1;
     return 0;
 }
