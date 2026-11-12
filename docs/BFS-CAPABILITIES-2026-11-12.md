@@ -74,10 +74,23 @@ weights (Q8_0 decode → adaptive store → readback → container serialize/ver
 | test_b_fs_dim (Phase 2) | 7 | PASS |
 | test_b_fs_kv (Phase 3) | 16 | PASS |
 | test_b_fs_ann (Phase 4) | 15 | PASS |
-| test_b_fs_components (Phase 5) | 7 | PASS |
+| test_b_fs_components (Phase 5) | 9 | PASS |
+| test_b_fs_multi (multi-ptr+voronoi) | 12 | PASS |
+| test_b_fs_magnifier (magnifier) | 9 | PASS |
 | test_b_fs_wire (final wiring) | 20 | PASS |
 | kis_real_gguf (3 models) | 45 | PASS |
-| **Total** | **120** | **0 fail** |
+| **Total** | **139** | **0 fail** |
+
+## Magnifier (`core/b_fs_magnifier.h` + `core/bfs_magnify.h`)
+
+Wraps the proven magnifier glass (test_tess_magnify.c, 144/144 pass):
+- Glass = 144/4 = 36 slots (middle half), outer = compressed.
+- Antipodal inversion: a_w × a_{w+72} ≡ 1 (mod 144) — fixed rate assignment
+  bug in bfs_magnify.h (threshold was 77, should be quadrant boundary 72).
+- Walking half-distance simulates near-0; further walking pushes
+  deterministic delta to hyperbolic side for storage.
+- `bfmag_is_lossless()` = (pos == write_pos).
+- Docked into BfsSystem as `mag` field.
 
 ## Final wiring (`core/b_fs_wire.h`)
 
@@ -87,7 +100,7 @@ Single entry point `BfsSystem` ties together:
 - Cross-dimension transfer
 - Persistence (KV + ANN metadata survive save/load)
 
-Integration test `test_b_fs_wire`: 18/18 pass.
+Integration test `test_b_fs_wire`: 20/20 pass.
 
 ## Remaining work
 
