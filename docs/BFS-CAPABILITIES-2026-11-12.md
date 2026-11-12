@@ -73,8 +73,19 @@ weights (Q8_0 decode → adaptive store → readback → container serialize/ver
 | test_b_fs_kv (Phase 3) | 16 | PASS |
 | test_b_fs_ann (Phase 4) | 15 | PASS |
 | test_b_fs_components (Phase 5) | 7 | PASS |
+| test_b_fs_wire (final wiring) | 18 | PASS |
 | kis_real_gguf (3 models) | 45 | PASS |
-| **Total** | **102** | **0 fail** |
+| **Total** | **120** | **0 fail** |
+
+## Final wiring (`core/b_fs_wire.h`)
+
+Single entry point `BfsSystem` ties together:
+- Storage (BreathingFS) + KV cache + ANN index
+- Component transforms (fan24, gear, language, 18tes)
+- Cross-dimension transfer
+- Persistence (KV + ANN metadata survive save/load)
+
+Integration test `test_b_fs_wire`: 18/18 pass.
 
 ## Remaining work
 
@@ -82,5 +93,3 @@ weights (Q8_0 decode → adaptive store → readback → container serialize/ver
   instead of their own storage.
 - Cross-dimension data transfer (actual layout adapters between tess/kis).
 - Wire twin hot/cold into real serving path.
-- fan24/gear/language/18tes are now docked; deeper integration (storage of
-  actual fan24 logs, gear events) pending.
