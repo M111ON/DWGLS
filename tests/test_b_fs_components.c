@@ -58,13 +58,30 @@ int main(void) {
         int ok=1;
         for (uint32_t w=0; w<BFS_PAIR_N; w++) {
             uint32_t tooth = bfc_gear_tooth(w);
-            uint32_t frame = bfc_gear_frame(w);
             if (tooth >= FG_RING) { ok=0; break; }
-            if (w != frame*FG_LOCAL + (w % FG_LOCAL)) { /* sanity */ }
         }
         CHECK(ok, "T4 gear tooth in [0,24)");
-        /* roundtrip: frame*144 + local == w for w<20736? only if w<144*144 */
         CHECK(bfc_gear_frame(20735) == 143, "T4 frame(20735)==143");
+    }
+
+    /* T6: KIS frame range */
+    {
+        int ok=1;
+        for (uint32_t f=0; f<BFS_PAIR_N; f++) {
+            uint32_t k = bfc_kis_frame(f);
+            if (k >= 1440u) { ok=0; break; }
+        }
+        CHECK(ok, "T6 KIS frame in [0,1440)");
+    }
+
+    /* T7: hyperbolic axis range */
+    {
+        int ok=1;
+        for (uint32_t s=0; s<BFS_PAIR_N; s++) {
+            uint8_t a = bfc_hyperbolic_axis(s);
+            if (a > 2) { ok=0; break; }
+        }
+        CHECK(ok, "T7 hyperbolic axis in [0,2]");
     }
 
     /* T5: b_fs docking */

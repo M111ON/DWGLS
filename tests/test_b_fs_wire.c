@@ -51,6 +51,8 @@ int main(void) {
         CHECK(bfs_system_fan24(3,2) % 8 == 3, "T4 fan24 mod8");
         CHECK(bfs_system_language(100) < 9, "T4 language range");
         CHECK(bfs_system_gear_tooth(100) < 24, "T4 gear tooth range");
+        CHECK(bfs_system_kis_frame(100) < 1440, "T4 kis frame range");
+        CHECK(bfs_system_hyperbolic_axis(100) <= 2, "T4 hyperbolic axis range");
     }
 
     /* T5: cross-dim transfer */

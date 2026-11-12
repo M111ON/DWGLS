@@ -92,6 +92,16 @@ static inline uint32_t bfs_system_gear_tooth(uint32_t w) {
     return bfc_gear_tooth(w);
 }
 
+/* Component: KIS frame */
+static inline uint32_t bfs_system_kis_frame(uint32_t flat) {
+    return bfc_kis_frame(flat);
+}
+
+/* Component: hyperbolic axis */
+static inline uint8_t bfs_system_hyperbolic_axis(uint32_t slot) {
+    return bfc_hyperbolic_axis(slot);
+}
+
 /* Persistence */
 static inline int bfs_system_save(BfsSystem *sys, const char *path) {
     if (!sys || !sys->ready) return -1;

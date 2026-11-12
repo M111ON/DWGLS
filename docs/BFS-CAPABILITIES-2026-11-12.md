@@ -51,6 +51,8 @@ Docks the existing DWGLS components into b_fs as pure-arithmetic transforms:
   is a bijection (verified all 24 combos).
 - **gear**: tooth (pos mod 24) + frame (pos / 144).
 - **language**: 9-identity (pos mod 9), range [0,8].
+- **KIS**: stride-37 frame on 1440 cycle (`bfc_kis_frame`).
+- **hyperbolic**: axis (0..2) from slot (`bfc_hyperbolic_axis`).
 - **b_fs docking**: `bfc_store_18tes` stores 18tes entries via `BfsAnnIndex`.
 
 ## Real model verification (`tests/kis_real_gguf_test.c`)
@@ -73,7 +75,7 @@ weights (Q8_0 decode → adaptive store → readback → container serialize/ver
 | test_b_fs_kv (Phase 3) | 16 | PASS |
 | test_b_fs_ann (Phase 4) | 15 | PASS |
 | test_b_fs_components (Phase 5) | 7 | PASS |
-| test_b_fs_wire (final wiring) | 18 | PASS |
+| test_b_fs_wire (final wiring) | 20 | PASS |
 | kis_real_gguf (3 models) | 45 | PASS |
 | **Total** | **120** | **0 fail** |
 

@@ -55,6 +55,21 @@ static inline uint32_t bfc_gear_frame(uint32_t w) { return w / FG_LOCAL; }
 /* ── language: 9-identity ──────────────────────────────────────── */
 static inline uint32_t bfc_language(uint32_t pos) { return pos % 9u; }
 
+/* ── KIS: stride-37 frame on 1440 cycle ───────────────────────── */
+static inline uint32_t bfc_kis_frame(uint32_t flat) {
+    /* frame = (flat * 37) % 1440 mapped back; use frame_enc-style */
+    return (flat * 37u) % 1440u;
+}
+
+/* ── Hyperbolic: axis (0..2) from slot (hyperbolic_axis_of) ───── */
+static inline uint8_t bfc_hyperbolic_axis(uint32_t slot) {
+    /* hyperbolic_axis_of: slot / HYP_AXIS_SLOTS, clamped to 0..2 */
+    if (slot >= 20736u) slot = 20735u;
+    uint32_t a = slot / 6912u;  /* HYP_AXIS_SLOTS = 6912 (3 axes) */
+    if (a > 2) a = 2;
+    return (uint8_t)a;
+}
+
 /* ── b_fs docking: store a component value as a BFS entry ──────── */
 static inline int bfc_store_18tes(BfsAnnIndex *idx, uint32_t flat) {
     uint32_t t, c, s; bfc_18tes_decode(flat, &t, &c, &s);
