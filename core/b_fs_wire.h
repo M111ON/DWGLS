@@ -18,6 +18,7 @@
 #include "b_fs_ann.h"
 #include "b_fs_components.h"
 #include "b_fs_multi.h"
+#include "b_fs_magnifier.h"
 #include "bfs_persist.h"
 
 typedef struct {
@@ -26,6 +27,7 @@ typedef struct {
     BfsAnnIndex   ann;     /* ANN index docked on fs            */
     BfsMultiPtr   mptr;    /* multi-pointer (no auto-move)      */
     BfsVoronoiMask vmask;  /* voronoi mask for multi-point      */
+    BfsMagnifier  mag;     /* magnifier pointer (yin-yang)      */
     int           ready;   /* 1 after init                      */
 } BfsSystem;
 
@@ -37,6 +39,7 @@ static inline int bfs_system_init(BfsSystem *sys) {
     bfs_ann_init(&sys->ann, &sys->fs);
     bfm_init(&sys->mptr);
     bvm_init(&sys->vmask, BFM_VORONOI_CELLS);
+    bfmag_init(&sys->mag, 0);  /* write_pos=0 (ceiling anchor default) */
     sys->ready = 1;
     return 0;
 }
@@ -95,6 +98,17 @@ static inline uint32_t bfs_system_language(uint32_t pos) {
 /* Component: gear tooth */
 static inline uint32_t bfs_system_gear_tooth(uint32_t w) {
     return bfc_gear_tooth(w);
+}
+
+/* Magnifier (yin-yang) */
+static inline int bfs_system_mag_lossless(BfsSystem *sys) {
+    if (!sys) return 0;
+    return bfmag_is_lossless(&sys->mag);
+}
+static inline void bfs_system_mag_move(BfsSystem *sys, uint32_t center, double scale, uint32_t write_pos) {
+    if (!sys) return;
+    sys->mag.write_pos = write_pos % BFS_PAIR_N;
+    bfmag_move(&sys->mag, center, scale);
 }
 
 /* Component: KIS frame */
