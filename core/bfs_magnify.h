@@ -43,11 +43,15 @@ static inline uint32_t bfs_mg_antipode(uint32_t w) {
  * Glass: upper=5, lower=7. Outer: inv(7)=103, inv(5)=29.
  * gcd(rate, 144) = 1 always → bijection.                          */
 static inline uint32_t bfs_mg_rate(uint32_t w) {
+    /* proven in test_tess_magnify.c: Q0'=103, Q1'=5, Q2'=7, Q3'=29 */
     uint32_t shifted = (w + BFS_MG_CELLS - BFS_MG_OFFSET) % BFS_MG_CELLS;
-    int in_glass = (shifted >= BFS_MG_QUAD && shifted < 3u * BFS_MG_QUAD);
-    int upper = (shifted < BFS_MG_HALF + BFS_MG_OFFSET);
-    if (in_glass) return upper ? 5u : 7u;
-    return upper ? 29u : 103u;
+    uint32_t q = shifted / BFS_MG_QUAD;   /* 0..3 */
+    switch (q) {
+        case 0: return 103u;   /* Q0' outer — inverse of 7 */
+        case 1: return 5u;     /* Q1' glass upper (magnify) */
+        case 2: return 7u;     /* Q2' glass lower (magnify) */
+        default: return 29u;   /* Q3' outer — inverse of 5 */
+    }
 }
 
 /* ── Flat address: in-glass check ───────────────────────────────── */
