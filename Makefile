@@ -42,7 +42,11 @@ TIER1 := \
   test_bfs_stability \
   test_geo_bfs_hub \
   test_bfs_seek_anchor \
-  test_bfs_breath
+  test_bfs_breath \
+  test_b_fs_base \
+  test_b_fs_dim \
+  test_b_fs_kv \
+  test_b_fs_ann
 
 # ── Tier 2: need gguf_reader.h or geo_frame_seek.h ────
 # (removed: kis_codec_v5_test, kis_codec_v6_test, kis_map_roundtrip,
