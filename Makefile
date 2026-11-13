@@ -46,7 +46,11 @@ TIER1 := \
   test_b_fs_base \
   test_b_fs_dim \
   test_b_fs_kv \
-  test_b_fs_ann
+  test_b_fs_ann \
+  test_spatial_locality \
+  test_bfs_hnsw \
+  test_bcr \
+  test_bcr_mm
 
 # ── Tier 2: need gguf_reader.h or geo_frame_seek.h ────
 # (removed: kis_codec_v5_test, kis_codec_v6_test, kis_map_roundtrip,
