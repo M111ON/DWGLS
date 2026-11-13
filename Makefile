@@ -180,7 +180,15 @@ TIER1 := \
   test_rr_gate \
     test_fractal_addr \
     test_entropy_quadtree \
-  test_window_ladder
+  test_window_ladder \
+  test_b_fs_base \
+  test_b_fs_dim \
+  test_b_fs_kv \
+  test_b_fs_ann \
+  test_spatial_locality \
+  test_bfs_hnsw \
+  test_bcr \
+  test_bcr_mm
 
 # ── เทสต์ที่เหลือ (ไม่ได้อยู่ใน TIER1/TIER2) = legacy ประวัติการพัฒนา ──
 # เขียนก่อน rescope 2026-08-14 — เก็บไว้ย้อนดูเท่านั้น ไม่ใช้ยืนยันระบบปัจจุบัน
