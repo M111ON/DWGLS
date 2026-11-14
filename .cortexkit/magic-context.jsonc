@@ -13,11 +13,6 @@
       "max_commits": 5000
     }
   },
-  "embedding": {
-    "provider": "local",
-    "model": "Xenova/multilingual-e5-small",
-    "local_dtype": "int8"
-  },
   "execute_threshold_percentage": 58,
   "prompt_surface": {
     "default": "full"
@@ -38,10 +33,13 @@
         "schedule": ""
       },
       "verify-broad": {
-        "schedule": ""
+        "schedule": "0 4 * * 0"
       },
       "curate": {
         "schedule": "0 4 * * 0"
+      },
+      "compress-cues": {
+        "schedule": ""
       }
     }
   },
