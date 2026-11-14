@@ -19,9 +19,13 @@ ALL_TESTS := $(patsubst tests/%.c,%,$(wildcard tests/*.c))
 
 # ── Tier 1: self-contained (no missing deps) ──────────
 TIER1 := \
+  test_shell_gap \
+  test_capo_shrink \
   geo_cube_in_dodeca_test \
   kis_4d_explore \
   kis_alternating_verify \
+  test_kis_positional_gate \
+  test_kis_relocation_gate \
   kis_codec_v6_standalone_test \
   kis_adaptive_deploy \
   kis_container_place \
@@ -160,6 +164,10 @@ TIER1 := \
   test_tess_stream \
   test_tess_moe_bridge \
   test_tesspack \
+  test_26cell \
+  test_dim_bridge \
+  test_shifts \
+  test_loshu \
   test_gpu_pipeline \
   test_gpu_small_batch \
   test_jet_phase_align \
@@ -1022,7 +1030,7 @@ tess-pack: | $(BUILD)
 
 # ── GGUF → .tesspack directly ──
 tess-gguf-pack: | $(BUILD)
-	$(CC) -O2 -std=c11 -Wno-format -I core -I core/infra -I $(TESSPACK_E2E_LLAMA_INC) -o $(BUILD)/tess_gguf_pack tools/tess_gguf_pack.c -lm
+	$(CC) -O2 -std=c11 -Wno-format -I core -I include -I core/infra -I $(TESSPACK_E2E_LLAMA_INC) -o $(BUILD)/tess_gguf_pack tools/tess_gguf_pack.c -lm
 	@echo "✅ tess_gguf_pack ready → ./$(BUILD)/tess_gguf_pack <gguf> <out.tesspack> [filter]"
 
 # ── GGUF Stream Compare: byte-level verify assembled vs original ──
@@ -1039,7 +1047,7 @@ TESSPACK_E2E_GGUF ?= I:/model/Qwen3-0.6B-Q8_0.gguf
 TESSPACK_E2E_LLAMA_INC ?= I:/llama/include
 tesspack-e2e: | $(BUILD)
 	@echo "▶ Step 1: GGUF → .tesspack"
-	$(CC) -O2 -std=c11 -Wno-format -I core -I core/infra -I $(TESSPACK_E2E_LLAMA_INC) -o $(BUILD)/tess_gguf_pack.exe tools/tess_gguf_pack.c -lm
+	$(CC) -O2 -std=c11 -Wno-format -I core -I include -I core/infra -I $(TESSPACK_E2E_LLAMA_INC) -o $(BUILD)/tess_gguf_pack.exe tools/tess_gguf_pack.c -lm
 	./$(BUILD)/tess_gguf_pack.exe "$(TESSPACK_E2E_GGUF)" "$(BUILD)/e2e_test.tesspack"
 	@echo "▶ Step 2: .tesspack → assembled GGUF"
 	$(CC) -O2 -Wall -I core -o $(BUILD)/tesspack_assemble.exe tools/tesspack_assemble.c -lm

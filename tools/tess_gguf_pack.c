@@ -12,6 +12,7 @@
  * int-typed forward decls (would conflict). Same pattern as tesspack_llama_view.c. */
 #define GGML_TYPE_SIZE_DECL
 #include "geo_tess_container.h"
+#include "shell_gap.h"
 
 static uint32_t gguf_cell_size(uint32_t dtype) {
     static const uint32_t table[] = {
@@ -54,6 +55,13 @@ static int32_t encode_capo(const void *src, uint32_t n_elems, uint32_t cell_size
         hdr.scale_factor = (uint32_t)(s * 65536.0 + 0.5);
     }
     uint32_t eff_slots = tess_effective_slots(&hdr);
+    /* Last capo of a tensor: scatter over exactly what it holds instead of
+     * padding to the full field (10.4% of a Qwen2.5-0.5B pack is such padding).
+     * Only legal while stride 37 is still a permutation over that modulus. */
+    if (n_elems < eff_slots && (n_elems % V6_STRIDE) != 0u) {
+        eff_slots = n_elems;
+        hdr.version = 2u;
+    }
     uint32_t cube_bytes = eff_slots * cell_size;
     uint32_t payload = TESS_HEADER_SIZE + TESS_FORMULA_SIZE + cube_bytes + TESS_CRC_SIZE;
     if (dst_cap < payload) return -1;
@@ -193,6 +201,18 @@ int main(int argc, char **argv) {
 
         fprintf(stderr, "  [%3u] %-40s  cell=%3u  blocks=%7u  capos=%u\n",
                 i, gguf.names[i], csz, n_blocks, n_capos);
+
+        /* tail ledger — report only, never changes the layout. */
+        {
+            uint32_t used = n_blocks - (n_capos - 1u) * TESS_TOTAL_SLOTS;
+            uint32_t tail = TESS_TOTAL_SLOTS - used;
+            if (tail) {
+                int shrunk = (used % V6_STRIDE) != 0u;
+                fprintf(stderr, "        tail=%u cells %s\n", (unsigned)tail,
+                        shrunk ? "(last capo written compactly, v2)"
+                               : "(last capo padded: tail % 37 == 0)");
+            }
+        }
 
         for (uint32_t c = 0; c < n_capos; c++) {
             uint32_t off = c * TESS_TOTAL_SLOTS;

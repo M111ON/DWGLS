@@ -32,6 +32,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* onion (f32/f16) entries are stored raw and contiguous, never scattered —
+     * they have no capo to open, so they need their own path here. */
+    TESS_PackIndex pi;
+    int have_pi = (tess_pack_open_mmap(&pi, pack_path) == 0);
+
     uint32_t total = 0, matched = 0, failed = 0, skipped = 0;
 
     for (uint32_t i = 0; i < gguf.n_tensors; i++) {
@@ -44,9 +49,29 @@ int main(int argc, char **argv) {
 
         uint32_t n_blocks = gguf.sizes[i] / csz;
         if (n_blocks == 0) { skipped++; continue; }
-        uint32_t n_capos = (n_blocks + TESS_TOTAL_SLOTS - 1) / TESS_TOTAL_SLOTS;
 
         const uint8_t *tensor_data = gguf.base + gguf.data_offset + gguf.offsets[i];
+
+        if (have_pi && (dtype == 0 || dtype == 1)) {
+            const uint8_t *onion = NULL;
+            uint32_t onion_sz = 0;
+            if (tess_pack_find_onion(&pi, gguf.names[i], &onion, &onion_sz) != 0) {
+                fprintf(stderr, "FAIL find onion: %s\n", gguf.names[i]);
+                failed++;
+            } else if (onion_sz != gguf.sizes[i]) {
+                fprintf(stderr, "MISMATCH: %s onion size %u != %llu\n", gguf.names[i],
+                        onion_sz, (unsigned long long)gguf.sizes[i]);
+                failed++;
+            } else if (memcmp(onion, tensor_data, onion_sz) == 0) {
+                matched++;
+            } else {
+                fprintf(stderr, "MISMATCH: %s onion bytes\n", gguf.names[i]);
+                failed++;
+            }
+            continue;
+        }
+
+        uint32_t n_capos = (n_blocks + TESS_TOTAL_SLOTS - 1) / TESS_TOTAL_SLOTS;
 
         for (uint32_t c = 0; c < n_capos; c++) {
             uint32_t off = c * TESS_TOTAL_SLOTS;
@@ -83,6 +108,7 @@ int main(int argc, char **argv) {
     }
 
     printf("Verify: %u/%u capos matched, %u failed, %u skipped\n", matched, total, failed, skipped);
+    if (have_pi) tess_pack_close(&pi);
     gguf_close(&gguf);
     return failed ? 1 : 0;
 }

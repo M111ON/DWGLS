@@ -105,10 +105,10 @@ static inline int bfs_system_mag_lossless(BfsSystem *sys) {
     if (!sys) return 0;
     return bfmag_is_lossless(&sys->mag);
 }
-static inline void bfs_system_mag_move(BfsSystem *sys, uint32_t center, double scale, uint32_t write_pos) {
+static inline void bfs_system_mag_move(BfsSystem *sys, uint32_t center, uint32_t write_pos) {
     if (!sys) return;
     sys->mag.write_pos = write_pos % BFS_PAIR_N;
-    bfmag_move(&sys->mag, center, scale);
+    bfmag_move(&sys->mag, center);
 }
 
 /* Component: KIS frame */

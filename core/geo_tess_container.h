@@ -57,6 +57,7 @@ int ggml_blck_size(int type);
 
 #define GEO_TESS_MAGIC      0x54455353u  /* "TESS" little-endian */
 #define TESS_VERSION        1u
+#define TESS_VERSION_MAX    2u   /* v2: last capo scatters over tensor_count */
 #define TESS_TOTAL_SLOTS    20736u       /* 12^4 = 144^2 = 128 × 162 */
 #define TESS_X_SLOTS        6912u        /* 20736 / 3 */
 #define TESS_Y_SLOTS        6912u        /* 20736 / 3 */
@@ -279,6 +280,18 @@ static inline uint32_t tess_effective_slots(const TESS_Header *h) {
     return (uint32_t)(((uint64_t)TESS_TOTAL_SLOTS * h->scale_factor + 32768u) >> 16);
 }
 
+/* Slots actually written in this capo.
+ * v1: the full scaled field (20736 at W=0). v2: the last capo of a tensor is
+ * scattered over exactly what it holds (tensor_count), so no tail is padded.
+ * The encoder only writes v2 when gcd(37, tensor_count) == 1, i.e. when stride
+ * 37 is still a permutation over that modulus. */
+static inline uint32_t tess_capo_eff_slots(const TESS_Header *h) {
+    uint32_t eff = tess_effective_slots(h);
+    if (h->version >= 2u && h->tensor_count && h->tensor_count < eff)
+        eff = h->tensor_count;
+    return eff;
+}
+
 /* Scatter into arbitrary effective field size.
  * stride 37 is prime → coprime with any effective_slots not divisible by 37.
  * 20736 = 2^8 * 3^4, all powers-of-2 scaled values remain coprime. */
@@ -488,7 +501,7 @@ static inline int tess_is_home_scale(const TESS_Header *h) {
 /* Validate header fields */
 static inline int tess_header_validate(const TESS_Header *h) {
     if (h->magic != GEO_TESS_MAGIC) return -1;       /* bad magic */
-    if (h->version != TESS_VERSION) return -2;    /* bad version */
+    if (h->version < 1u || h->version > TESS_VERSION_MAX) return -2;    /* bad version */
     if (h->total_slots != TESS_TOTAL_SLOTS) return -3; /* wrong slots */
     if (h->x_slots + h->y_slots + h->z_slots != TESS_TOTAL_SLOTS)
         return -4;                                 /* axis mismatch */
@@ -609,7 +622,7 @@ static inline int tess_capo_open(TESS_CapoReader *r, const char *path) {
     }
 
     r->cell_size  = r->hdr->cell_size;
-    r->cube_bytes = r->hdr->total_slots * r->cell_size;
+    r->cube_bytes = tess_capo_eff_slots(r->hdr) * r->cell_size;
     r->cube_data  = r->buf + TESS_HEADER_SIZE + TESS_FORMULA_SIZE;
     r->n_elems    = r->hdr->tensor_count ? r->hdr->tensor_count : r->hdr->total_slots;
     return 0;
@@ -630,7 +643,7 @@ static inline int tess_capo_open_buf(TESS_CapoReader *r, uint8_t *buf, uint64_t 
     if (tess_header_validate(r->hdr) != 0) return -5;
 
     r->cell_size  = r->hdr->cell_size;
-    r->cube_bytes = r->hdr->total_slots * r->cell_size;
+    r->cube_bytes = tess_capo_eff_slots(r->hdr) * r->cell_size;
     r->cube_data  = buf + TESS_HEADER_SIZE + TESS_FORMULA_SIZE;
     r->n_elems    = r->hdr->tensor_count ? r->hdr->tensor_count : r->hdr->total_slots;
     return 0;
@@ -649,8 +662,9 @@ static inline void tess_capo_close(TESS_CapoReader *r) {
 static inline int tess_capo_load_elem(const TESS_CapoReader *r, uint32_t idx,
                                       void *dst) {
     if (idx >= r->n_elems) return 0;
-    uint32_t slot = tess_stride_scatter(idx);
-    if (slot >= TESS_TOTAL_SLOTS) slot = idx % TESS_TOTAL_SLOTS;
+    uint32_t eff = tess_capo_eff_slots(r->hdr);
+    uint32_t slot = tess_stride_scatter_in(idx, eff);
+    if (slot >= eff) slot = idx % eff;
     uint32_t src_off = slot * r->cell_size;
     if (src_off + r->cell_size > r->cube_bytes) return 0;
     memcpy(dst, r->cube_data + src_off, r->cell_size);
@@ -664,9 +678,10 @@ static inline int tess_capo_load_range(const TESS_CapoReader *r, uint32_t start,
                                        uint32_t n, void *dst) {
     if (start + n > r->n_elems) return 0;
     uint8_t *out = (uint8_t *)dst;
+    uint32_t eff = tess_capo_eff_slots(r->hdr);
     for (uint32_t i = 0; i < n; i++) {
-        uint32_t slot = tess_stride_scatter(start + i);
-        if (slot >= TESS_TOTAL_SLOTS) slot = (start + i) % TESS_TOTAL_SLOTS;
+        uint32_t slot = tess_stride_scatter_in(start + i, eff);
+        if (slot >= eff) slot = (start + i) % eff;
         uint32_t src_off = slot * r->cell_size;
         if (src_off + r->cell_size > r->cube_bytes) return 0;
         memcpy(out + (uint64_t)i * r->cell_size, r->cube_data + src_off, r->cell_size);
@@ -785,7 +800,7 @@ static inline int tess_capo_open_pack(TESS_CapoReader *r, const char *pack_path,
     }
 
     r->cell_size  = r->hdr->cell_size;
-    r->cube_bytes = r->hdr->total_slots * r->cell_size;
+    r->cube_bytes = tess_capo_eff_slots(r->hdr) * r->cell_size;
     r->cube_data  = r->buf + TESS_HEADER_SIZE + TESS_FORMULA_SIZE;
     r->n_elems    = r->hdr->tensor_count ? r->hdr->tensor_count : r->hdr->total_slots;
     return 0;
@@ -1126,7 +1141,7 @@ static inline int tess_pack_get_capo_mmap(TESS_PackIndex *pi, TESS_CapoReader *r
             r->fml = (const TESS_Formula *)(r->buf + TESS_HEADER_SIZE);
             if (tess_header_validate(r->hdr) != 0) return -5;
             r->cell_size  = r->hdr->cell_size;
-            r->cube_bytes = r->hdr->total_slots * r->cell_size;
+            r->cube_bytes = tess_capo_eff_slots(r->hdr) * r->cell_size;
             r->cube_data  = r->buf + TESS_HEADER_SIZE + TESS_FORMULA_SIZE;
             r->n_elems    = r->hdr->tensor_count ? r->hdr->tensor_count : r->hdr->total_slots;
             return 0;
@@ -1207,7 +1222,7 @@ static inline int tess_pack_get_capo(TESS_PackIndex *pi, TESS_CapoReader *r,
             if (tess_header_validate(r->hdr) != 0) return -5;
 
             r->cell_size  = r->hdr->cell_size;
-            r->cube_bytes = r->hdr->total_slots * r->cell_size;
+            r->cube_bytes = tess_capo_eff_slots(r->hdr) * r->cell_size;
             r->cube_data  = r->buf + TESS_HEADER_SIZE + TESS_FORMULA_SIZE;
             r->n_elems    = r->hdr->tensor_count ? r->hdr->tensor_count : r->hdr->total_slots;
             return 0;
