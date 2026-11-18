@@ -64,8 +64,8 @@ TIER1 := \
   test_lazy_serve_search \
   test_safetensors_reader \
   test_tess_index_frame \
-  test_tess_wdim_read \\\
-  test_tess_scale_log \\
+  test_tess_wdim_read \
+  test_tess_scale_log \
   test_clim_shift \
   test_concurrent_mdim_read \
   test_tess_frame_seek \

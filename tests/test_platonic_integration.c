@@ -217,8 +217,9 @@ static int test_masked_seeking(void) {
 
     for (uint32_t cell = 0; cell < VM_CELLS; cell++) {
         MaskedPointer p = vm_seed_pointer(cell);
+        Spotlight s = vm_spotlight_make(p.local, VM_SPOTLIGHT_RADIUS);
         for (int32_t delta = -500; delta <= 500; delta++) {
-            MaskedPointer q = vm_masked_seek(p, delta);
+            MaskedPointer q = vm_masked_seek(p, delta, &s);
             if (q.cell_id != cell) violations++;
         }
     }

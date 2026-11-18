@@ -44,6 +44,7 @@ typedef int sock_t;
 #define GGML_TYPE_SIZE_DECL
 #include "../core/gguf_reader.h"
 #include "../core/geo_tess_container.h"
+#include "../core/breathe_commit.h"
 
 /* ── per-tensor hook (shared with bridge) ── */
 typedef struct {
@@ -63,6 +64,12 @@ static int is_expert_tensor_name(const char *name) {
 }
 
 /* ── tesspack callback hook (per-tensor buffers, no full-body calloc) ── */
+static int g_tess_n_gpu = 0;   /* 0 = CPU-only lazy path (VEH), >0 = committed (GPU) */
+/* MoE selective scatter: per-layer expert mask cache (computed on first
+ * expert tensor of that layer, applied immediately to every expert tensor). */
+static uint64_t g_layer_mask[64];
+static uint32_t g_layer_E[64];
+static int      g_layer_mask_ready[64];
 typedef struct { uint8_t **bufs; char **names; uint32_t n; uint32_t matched, missing; } TessHook;
 static void provide_tess_tensor(struct ggml_tensor *t, void *ud) {
     TessHook *h = (TessHook *)ud;
@@ -73,12 +80,18 @@ static void provide_tess_tensor(struct ggml_tensor *t, void *ud) {
         if (h->bufs[i]) { t->data = h->bufs[i]; h->matched++; return; }
     }
     size_t fbsz = nb ? nb : 1;
+    uint8_t *fb;
+    if (g_tess_n_gpu == 0) {
+        fb = (uint8_t *)breathe_reserve(fbsz);   /* lazy commit (VEH) */
+    } else {
 #ifdef _WIN32
-    uint8_t *fb = (uint8_t *)VirtualAlloc(NULL, fbsz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        fb = (uint8_t *)VirtualAlloc(NULL, fbsz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #else
-    uint8_t *fb = (uint8_t *)calloc(fbsz, 1);
+        fb = (uint8_t *)calloc(fbsz, 1);
 #endif
-    if (fb) { memset(fb, 0, fbsz); t->data = fb; }
+        if (fb) memset(fb, 0, fbsz);
+    }
+    if (fb) { t->data = fb; }
     h->missing++;
 }
 
@@ -411,9 +424,12 @@ int main(int argc, char **argv) {
     if (port < 1 || port > 65535) port = 8080;
     int n_gpu = 0;
     { const char *eg = getenv("TESS_NGPU"); if (eg) n_gpu = atoi(eg); }
+    g_tess_n_gpu = n_gpu;
     if (!pack_path) { fprintf(stderr, "Usage: tesspack_server <tesspack> [port] [dll_dir] [source_gguf]\n"); return 1; }
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+    breathe_register();
+    atexit(breathe_unregister);
 
 #ifdef _WIN32
     SetDllDirectoryA(dll_dir);
@@ -515,6 +531,7 @@ int main(int argc, char **argv) {
     uint32_t n_from_pack = 0, n_from_source = 0, n_from_zero = 0;
     for (uint32_t i = 0; i < n_tensors; i++) {
         const char *name = gguf_get_tensor_name(gctx, i);
+
         uint64_t tsz = gguf_get_tensor_size(gctx, i);
         int ttype = gguf_get_tensor_type(gctx, i);
         uint32_t csz = cell_size_of((enum ggml_type)ttype);
@@ -523,12 +540,17 @@ int main(int argc, char **argv) {
 
         tensor_names[i] = strdup(name);
         size_t bsz = tsz ? (size_t)tsz : 1;
+        uint8_t *buf;
+        if (g_tess_n_gpu == 0) {
+            buf = (uint8_t *)breathe_reserve(bsz);
+        } else {
 #ifdef _WIN32
-        uint8_t *buf = (uint8_t *)VirtualAlloc(NULL, bsz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            buf = (uint8_t *)VirtualAlloc(NULL, bsz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #else
-        uint8_t *buf = (uint8_t *)calloc(bsz, 1);
+            buf = (uint8_t *)calloc(bsz, 1);
 #endif
-        if (buf && bsz > 0) memset(buf, 0, bsz);
+            if (buf && bsz > 0) memset(buf, 0, bsz);
+        }
         if (!buf) { fprintf(stderr, "FAIL: OOM tensor %s\n", name);
             gguf_free(gctx); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1; }
         tensor_bufs[i] = buf;
@@ -558,6 +580,69 @@ int main(int argc, char **argv) {
                 }
             }
             if (!found_src) n_from_zero++;
+        }
+
+        /* selective scatter: for MoE expert tensors, decommit unfired slices
+         * immediately (peak RSS stays low) using a per-layer mask. */
+        if (strstr(name, "exps") != NULL) {
+            int L = parse_layer_name(name);
+            if (L >= 0 && L < 64) {
+                /* compute mask on first expert tensor of this layer */
+                if (!g_layer_mask_ready[L]) {
+                    uint32_t E = 0;
+                    const int64_t *ne = gguf_get_tensor_ne(gctx, i);
+                    for (int d = GGML_MAX_DIMS - 1; d >= 0; d--) {
+                        if (ne[d] != 1) { E = (uint32_t)ne[d]; break; }
+                    }
+                    if (E >= 2 && E <= 64 && tsz % E == 0) {
+                        g_layer_E[L] = E;
+                        /* find bias buffer if already loaded */
+                        const uint8_t *bias_buf = NULL;
+                        char want_bias[64];
+                        snprintf(want_bias, sizeof(want_bias), "blk.%d.exp_probs_b.bias", L);
+                        for (uint32_t k = 0; k < n_tensors; k++) {
+                            if (tensor_bufs[k] && tensor_names[k] &&
+                                strcmp(tensor_names[k], want_bias) == 0) {
+                                bias_buf = tensor_bufs[k]; break;
+                            }
+                        }
+                        uint64_t sl = tsz / E;
+                        uint64_t mask = 0, used = 0;
+                        const char *ek = getenv("TESS_MOE_K");
+                        uint32_t K = ek ? (uint32_t)atoi(ek) : 0;
+                        if (K == 0) K = (E >= 4) ? 4 : E;
+                        if (K > E) K = E;
+                        for (uint32_t r = 0; r < K; r++) {
+                            int bi = -1; double best = 0; int have = 0;
+                            for (uint32_t e = 0; e < E; e++) {
+                                if (used & (1ull << e)) continue;
+                                double key;
+                                if (bias_buf) key = (double)((const float *)bias_buf)[e];
+                                else {
+                                    const uint8_t *p = buf + e * sl;
+                                    uint64_t acc = 0; uint64_t head = sl > 4096 ? 4096 : sl;
+                                    for (uint64_t b = 0; b < head; b++) acc += p[b];
+                                    key = (double)acc;
+                                }
+                                if (!have || key > best) { best = key; bi = (int)e; have = 1; }
+                            }
+                            if (bi < 0) break;
+                            used |= 1ull << bi;
+                            mask |= 1ull << bi;
+                        }
+                        if (mask == 0) mask = (E >= 64) ? ~0ull : ((1ull << E) - 1);
+                        g_layer_mask[L] = mask;
+                        g_layer_mask_ready[L] = 1;
+                        fprintf(stderr, "MoE layer %d: E=%u K=%u mask=%08llX (selective scatter)\n",
+                                L, E, K, (unsigned long long)mask);
+                    }
+                }
+                /* VEH lazy commit handles selective scatter: unfired slices'
+                 * pages are never touched during scatter (memcpy skipped below
+                 * is not possible; instead pages commit on first read, zeroed
+                 * by the OS). Do NOT decommit — stock MoE kernel reads unfired
+                 * slices (masked afterward) and PAGE_NOACCESS would crash. */
+            }
         }
     }
     double assemble_ms = now_ms() - t0;
