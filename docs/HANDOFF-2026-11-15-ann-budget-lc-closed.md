@@ -23,7 +23,28 @@ Everything here is measurement + receipts. **The live service was never changed*
 
 ## 2. ANN — what actually limits the route
 
-### 2.1 Fidelity is fine, and label-free
+### 2.0 The live config is not a fixed value — check it before believing any baseline
+`ann_keepalive.py` derives the whole env from **`USE_COS = os.path.exists(build/ann_search_cos.exe)`**:
+
+| knob | USE_COS true | USE_COS false |
+|---|---|---|
+| `LZ_ROUTE_BUCKETS` | 64 | 15 |
+| `LZ_SEARCH_BUDGET` | 41,000 | 24,000 |
+| `ANN_WALK_FLOOR` | **0.0** | 0.5 |
+| `ANN_ROUTE_ORDER` | cos | (empty) |
+
+`ann_search_cos.exe` was built 2026-11-16 and the service was **restarted onto it
+2026-11-18 13:55**, so the live route is now that column: measured on the running
+process, `items_scored = 41,000`, `fallback = 0`, 56 buckets, `mode anchor+p` for
+text, vector and junk queries alike.
+
+**Every "live" column below that quotes floor 0.5 / 15 buckets / 24,000 rows
+describes the PREVIOUS process (11-14/15), not the service as it runs now.** The
+current live arm corresponds to the measured `budget 41,000 + floor 0` row in
+§2.3 — text 0.9765, self 0.9820, both at 75.41% scan. Judge any proposal against
+that row, not against the floor-0.5 one.
+
+### 2.1 Fidelity
 `experiments/memcore_fidelity_v2_2026-11-14.py`, 200 corpus vectors posted as
 `{"vec":...}` (no embedder in the loop), self excluded, vs exact cosine oracle:
 overlap@10 **0.9295**, top-1 ∈ oracle top-10 **0.99**, scan **21.9%**, p50 11.5 ms.
@@ -83,8 +104,10 @@ how good the BEST hit is, not whether the top-10 is complete.
 
 **Two-tier (walk 24,000; extend to 48,000 only if the best score < τ): WORKS.**
 At τ=0.60: self is untouched (0% extended, 0.9745 at 44.02%) while text reaches
-0.9967 at 85.1% scan, versus 0.9983 at 88.04% for a blanket 48,000 — and versus
-the live floor-0.5 config's 0.9924 at 100%. The score is being used as a
+0.9967 at 85.1% scan, versus 0.9983 at 88.04% for a blanket 48,000. Against the
+arm the service runs now (41,000 / floor 0: text 0.9765, self 0.9820, both at
+75.41%), two-tier buys text +0.020 recall for +9.7pp scan while cutting self from
+75.41% to 44.02% scan for −0.0075. The score is being used as a
 self/text type signal (self ≈ 0.9, real text ≈ 0.43), not as a completeness test.
 
 Caveats: this is a walk model, not the server. It tracks the server's fixed
@@ -146,8 +169,12 @@ ANN-side benefit measured.
 
 ## 5. Open decisions (ranked)
 
-1. **Adopt `buckets=56 + budget=48000 + floor=0`?** It beats live on text
-   tolerant recall, scan and latency. Cost: self latency 19.6 → 32.6 ms.
+1. **Move the live route from `budget=41000` to the two-tier rule** (§2.5) — walk
+   24,000, extend to 48,000 only when the best score is below 0.60. Against the
+   arm the service actually runs now (41,000 / floor 0): self drops from 75.41% to
+   44.02% scan for −0.0075 overlap (0.9820 → 0.9745), and text rises from 0.9765
+   to 0.9967 for +9.7pp scan. A plain `budget=48000` is the simpler fallback but
+   costs self 75.41% → 88.28% for +0.008.
 2. **Implement two-tier escalation** — walk 24,000, extend to 48,000 only when the
    best score is below 0.60. Measured at §2.5: self untouched, text 0.9967 at
    85.1% scan. A code change in the walk loop of `src/ann_search.c`, not a config
