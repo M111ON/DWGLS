@@ -40,6 +40,7 @@
 #include <psapi.h>
 #include <sys/stat.h>
 #include <time.h>
+#include "../core/geo_tesseract_addr.h"
 #pragma comment(lib, "ws2_32.lib")
 typedef SOCKET sock_t;
 #define SOCK_INVALID INVALID_SOCKET
@@ -1073,6 +1074,14 @@ static void provide_tensor(struct ggml_tensor *t, void *ud) {
                  * demand when ggml first reads them (at generation) */
                 t->data = (void *)(s->field + s->body_off + s->fpos[i]);
                 touch_window(s, s->body_off + s->fpos[i], nb);
+                /* higher-dim (w/tesseract) coordinate of this tensor's slot */
+                if (getenv("GGUF_WDIM_LOG")) {
+                    uint32_t _sl = (uint32_t)(((s->body_off + s->fpos[i]) / 64u) % TESS_GEO_FULL);
+                    uint32_t _t, _c, _s;
+                    tess_unflat(_sl, &_t, &_c, &_s);
+                    fprintf(stderr, "  wdim: %-40s flat_slot=%u -> tess=%u cell=%u slot=%u\n",
+                            name, _sl, _t, _c, _s);
+                }
                 s->bytes_served += nb;
                 s->matched++;
                 return;
@@ -1769,6 +1778,20 @@ int main(int argc, char **argv) {
             }
 
             sc.box = &box; sc.field = fmap; sc.body_off = fbody_off; sc.fpos = fpos;
+            /* w-dim (tesseract) self-check: every tensor's flat slot must roundtrip
+             * through the higher dimension (tess_unflat -> tess_flat). This wires
+             * the consumer's resolution path to the multi-dim coordinate. */
+            {
+                uint32_t wfail = 0, wok = 0;
+                for (uint32_t wi = 0; wi < box.n_tensors; wi++) {
+                    uint32_t slot = (uint32_t)(((fbody_off + fpos[wi]) / 64u) % TESS_GEO_FULL);
+                    uint32_t t, c, s;
+                    tess_unflat(slot, &t, &c, &s);
+                    if (tess_flat(t, c, s) == slot) wok++; else wfail++;
+                }
+                fprintf(stderr, "  w-dim (tesseract) selfcheck: %u/%u tensors roundtrip identity%s\n",
+                        wok, box.n_tensors, wfail ? "  (FAIL)" : "");
+            }
             struct llama_model_params mp = llama_model_default_params();
             mp.n_gpu_layers = 0;
             /* L2 fix: bypass GPU host-pinned staging (Vulkan_Host) — its buft

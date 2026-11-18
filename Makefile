@@ -64,7 +64,10 @@ TIER1 := \
   test_lazy_serve_search \
   test_safetensors_reader \
   test_tess_index_frame \
-  test_tess_scale_log \
+  test_tess_wdim_read \\\
+  test_tess_scale_log \\
+  test_clim_shift \
+  test_concurrent_mdim_read \
   test_tess_frame_seek \
   test_tess_scale_dedup \
   test_tess_scale_log_gear \
@@ -223,7 +226,7 @@ SMOKE :=   kis_codec_v6_standalone_test   test_tess_index_frame   test_geo_fs   
 KIS :=   kis_4d_explore   kis_alternating_verify   kis_codec_v6_standalone_test   kis_adaptive_deploy   kis_container_place   kis_birds_eye   kis_multi_container   kis_scale_test   test_v5_collision   test_kis_cube_views
 
 # TESS: tessellation pipeline (biggest group)
-TESS :=   test_tess_index_frame   test_tess_scale_log   test_tess_frame_seek   test_tess_scale_dedup   test_tess_scale_log_gear   test_tess_gear_full   test_tess_magnify   test_tess_hex_delta   test_tess_sacred   test_tess_subdivide   test_tess_scale_wire   test_tess_tetra_axis   test_tess_torus   test_tess_tetra_torus   test_tess_12x1728   test_tess_geo_jump_walks   test_tess_full_cycle   test_tess_belt   test_tess_tensor_belt   test_tess_ghost   test_tess_leverage   test_tess_registry_gate   test_tess_trace   test_tess_wiring   test_tess_header   test_tess_stream   test_tess_moe_bridge   test_scatter_single   test_tess_view   test_tesspack_tiles
+TESS :=   test_tess_index_frame   test_tess_wdim_read   test_tess_scale_log   test_tess_frame_seek   test_tess_scale_dedup   test_tess_scale_log_gear   test_tess_gear_full   test_tess_magnify   test_tess_hex_delta   test_tess_sacred   test_tess_subdivide   test_tess_scale_wire   test_tess_tetra_axis   test_tess_torus   test_tess_tetra_torus   test_tess_12x1728   test_tess_geo_jump_walks   test_tess_full_cycle   test_tess_belt   test_tess_tensor_belt   test_tess_ghost   test_tess_leverage   test_tess_registry_gate   test_tess_trace   test_tess_wiring   test_tess_header   test_tess_stream   test_tess_moe_bridge   test_scatter_single   test_tess_view   test_tesspack_tiles
 
 # GEO: geometry core + address space + hyperbolic
 # GEO_FAST: <0.5s each — run often
@@ -1405,6 +1408,11 @@ field-address: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
 	    -I . -I core -I core/infra -o $(BUILD)/field_address tools/field_address.c -lm
 	@echo "✅ field_address ready → ./$(BUILD)/field_address <field.bin> [name-filter]"
+
+field-resolve: | $(BUILD)
+	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
+	    -I . -I core -I core/infra -o $(BUILD)/field_resolve tools/field_resolve.c -lm -lws2_32
+	@echo "✅ field_resolve ready → ./$(BUILD)/field_resolve <field.bin> [filter] [source.gguf] [--selfcheck]"
 
 forage-real: | $(BUILD)
 	$(CC) -O2 -std=c11 -Wall -Wno-unused-parameter -Wno-format \
