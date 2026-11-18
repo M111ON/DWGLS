@@ -72,6 +72,29 @@ fires on ~85% of them — and that full scan is where the 0.993 comes from.
 Without it, the 44% budget yields 0.8429. Of the true top-1 buckets, 60/60 sit
 within rank 40 of 56 in a 60-query sample.
 
+### 2.5 Progressive widening — measured, and only the two-tier form works
+Two runs, same 420 queries and oracle.
+
+**Staged (6k→12k→24k→48k, stop when the best score ≥ τ): FAILS.** Self never
+escalated at any τ up to 0.55 (0%), stopping at 6,000 rows (11.00% scan) where
+overlap is 0.8320 — because a self query's own neighbourhood is dense, so the
+best score is already high while ranks 2..10 are still missing. Max score says
+how good the BEST hit is, not whether the top-10 is complete.
+
+**Two-tier (walk 24,000; extend to 48,000 only if the best score < τ): WORKS.**
+At τ=0.60: self is untouched (0% extended, 0.9745 at 44.02%) while text reaches
+0.9967 at 85.1% scan, versus 0.9983 at 88.04% for a blanket 48,000 — and versus
+the live floor-0.5 config's 0.9924 at 100%. The score is being used as a
+self/text type signal (self ≈ 0.9, real text ≈ 0.43), not as a completeness test.
+
+Caveats: this is a walk model, not the server. It tracks the server's fixed
+budgets within 0.004 (24k) and 0.010 (48k), but does not match the server at
+small budgets, so `base=12,000` (self 0.9270 at 22.01%) is **not** trustworthy
+and the base should stay 24,000. Implementing the escalation is a code change in
+the walk loop of `src/ann_search.c`, not a config value. (`LZ_OVERLAP_TOPB`
+defaults to **2** in source; live gets 21.9% scan from `ANN_TOPB` in the env, so
+reading the source default instead of the live env will mislead.)
+
 ---
 
 ## 3. LC_tilecube — closed on this stack
@@ -125,8 +148,10 @@ ANN-side benefit measured.
 
 1. **Adopt `buckets=56 + budget=48000 + floor=0`?** It beats live on text
    tolerant recall, scan and latency. Cost: self latency 19.6 → 32.6 ms.
-2. **Progressive widening instead of the full-scan fallback** — the design change
-   that would give both a fast self path and a full-recall text path.
+2. **Implement two-tier escalation** — walk 24,000, extend to 48,000 only when the
+   best score is below 0.60. Measured at §2.5: self untouched, text 0.9967 at
+   85.1% scan. A code change in the walk loop of `src/ann_search.c`, not a config
+   value. The staged (stop-when-confident) form does NOT work — see §2.5.
 3. **LC**: park (identity/scope has no consumer) or delete the prototype tree?
 4. **`data/_wikivecs` + `_wikivecs_scratch`** = 1.4 GB, keep or delete.
 5. **`F:\e5-archive-2026-11-15\`** = 5.36 GB of 384-d e5 artifacts, parked.
