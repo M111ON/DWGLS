@@ -157,9 +157,14 @@ ANN-side benefit measured.
 ## 7. How to start next session
 
 ```
-git -C I:\tools log --oneline -3            # main, expect 4beac35 at the tip
-git -C I:\DWGLS-native-fs log --oneline -2  # feat/geo-native-fs
-curl http://127.0.0.1:8096/health           # expect entries 54373, k 56
+git -C I:\tools log --oneline -3            # 4beac35 must be an ANCESTOR; the tip moves (cef92ec on 2026-11-18 added client.py)
+git -C I:\DWGLS-native-fs log --oneline -2  # expect 7374699 (this handoff)
+curl http://127.0.0.1:8096/health           # k must be 56; entries GROW (54,373 at measurement, 54,521 on 2026-11-18)
 cd I:\tools\ann\experiments && I:\python3.14.4\python.exe text_budget_sweep_2026-11-15.py
 ```
 Scratch port is 8098; the live service is 8096 and must not be disturbed.
+
+**Re-measure after growth.** Every scan percentage in §2 is out of 54,373 rows, and the
+route appends continuously (148 rows arrived in the 3 days after this was written), so
+`scan` and the absolute row budget move with N: `budget = min(N, max(24000, 0.40·N))`
+pins 24,000 until N passes 60,000, then starts scaling again.
