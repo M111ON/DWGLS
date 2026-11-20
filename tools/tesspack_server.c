@@ -45,6 +45,9 @@ typedef int sock_t;
 #include "../core/gguf_reader.h"
 #include "../core/geo_tess_container.h"
 #include "../core/breathe_commit.h"
+#ifndef MAX_PATH
+#define MAX_PATH 4096
+#endif
 
 /* ── per-tensor hook (shared with bridge) ── */
 typedef struct {
