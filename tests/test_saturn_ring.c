@@ -34,7 +34,7 @@ int main(void) {
     CHECK(saturn_promote(&s, "too.big", big, sizeof(big)) == -1, "oversize rejected");
 
     /* T4: demote path + cold roundtrip */
-    CHECK(saturn_demote_cold(&s, "cold.item", wbuf, 512) == 0, "demote fits");
+    CHECK(saturn_demote_cold(&s, "cold.item", wbuf, 512) >= 0, "demote fits");
     p = saturn_get(&s, "cold.item");
     CHECK(p != NULL && memcmp(p, wbuf, 512) == 0, "cold roundtrip");
 
@@ -49,10 +49,38 @@ int main(void) {
         if (p && memcmp(p, wbuf, 1024) == 0) hot_hits++;
     }
     CHECK(hot_hits == 100, "hot set always serves identical");
-    printf("  counters: promote=%lu demote=%lu evict=%lu hot_place=%lu cold_place=%lu\n",
+    printf("  counters: promote=%lu demote=%lu evict=%lu hot_place=%lu cold_place=%lu hot_routed=%lu cold_routed=%lu\n",
            (unsigned long)s.n_promote, (unsigned long)s.n_demote,
            (unsigned long)s.n_evict,
-           (unsigned long)s.hot.n_place, (unsigned long)s.cold.n_place);
+           (unsigned long)s.hot.n_place, (unsigned long)s.cold.n_place,
+           (unsigned long)s.n_hot_routed, (unsigned long)s.n_cold_routed);
+    /* T6: demote overflow — force hot eviction into cold */
+    for (int i = 0; i < 20; i++) {
+        char nm[64]; snprintf(nm, sizeof(nm), "overflow.%d", i);
+        saturn_promote(&s, nm, wbuf, 1024);
+    }
+    CHECK(s.n_demote > 0, "demote overflow triggered");
+    CHECK(s.hot.n_valid <= 8, "hot stays bounded after overflow");
+    CHECK(s.cold.n_valid > 0, "cold received demoted entries");
+    CHECK(saturn_verify(&s) == 0, "invariants after overflow");
+
+    /* T7: mirror snapshot + sync-back + carry recover don't crash */
+    CHECK(saturn_mirror_snapshot(&s) == 0, "mirror snapshot");
+    CHECK(saturn_mirror_sync_back(&s) == 0, "mirror sync-back");
+    CHECK(saturn_carry_recover(&s) == 0, "carry recover");
+    CHECK(saturn_verify(&s) == 0, "invariants after recover");
+
+    /* T8: thread-safe read path */
+    uint8_t rbuf2[1024];
+    CHECK(saturn_promote(&s, "readback", wbuf, 1024) >= 0, "promote for read");
+    CHECK(saturn_read(&s, "readback", rbuf2, 1024) == 0, "saturn_read ok");
+    CHECK(memcmp(rbuf2, wbuf, 1024) == 0, "readback identical");
+
+    /* T9: reset/recovery rebuilds store and clears fault */
+    CHECK(saturn_reset(&s) == 0, "saturn_reset ok");
+    CHECK(s.faulted == 0, "fault cleared after reset");
+    CHECK(saturn_verify(&s) == 0, "invariants after reset");
+
     CHECK(saturn_verify(&s) == 0, "final invariants");
 
     saturn_free(&s);

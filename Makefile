@@ -400,6 +400,13 @@ contract-test:
 	@python3.11 tools/test_contract_fence.py
 
 # ── Single test ───────────────────────────────────────
+# Saturn ring uses CUDA (GPU 1 VRAM) — needs cuda include/lib
+test-saturn_ring: tests/test_saturn_ring.c | $(BUILD)
+	@echo "▶ BUILD  $< (cuda)"
+	$(CC) $(CFLAGS) -I/i/cuda_temp/include -o $(BUILD)/$@ $< $(LDFLAGS) -L/i/cuda_temp/lib/x64 -lcudart
+	@echo "▶ RUN    $@"
+	@./$(BUILD)/$@ && echo "✅ $@ PASS" || echo "❌ $@ FAIL"
+
 test-%: tests/%.c | $(BUILD)
 	@echo "▶ BUILD  $<"
 	$(CC) $(CFLAGS) -o $(BUILD)/$@ $< $(LDFLAGS)
