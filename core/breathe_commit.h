@@ -60,8 +60,9 @@ static LONG WINAPI breathe_veh(EXCEPTION_POINTERS *ep) {
     void *page_base = (char *)r->base + page_idx * 4096;
     if (!VirtualAlloc(page_base, 4096, MEM_COMMIT, PAGE_READWRITE))
         return EXCEPTION_CONTINUE_SEARCH;
-    /* mark committed (best-effort, no lock needed for correctness) */
-    r->bitmap[page_idx / 8] |= (uint8_t)(1 << (page_idx % 8));
+    /* mark committed atomically (InterlockedOr8) */
+    InterlockedOr8((volatile CHAR *)&r->bitmap[page_idx / 8],
+                   (CHAR)(1 << (page_idx % 8)));
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 

@@ -49,6 +49,8 @@
 #include "../core/geo_entropy_quadtree.h"
 #include "../core/breathing_fs.h"
 #include "../core/bfs_quadtree.h"
+#include "../core/geo_param_grid.h"
+#include "../core/geo_fs_voronoi.h"
 #include "../core/geo_hyper_jump.h"
 #pragma comment(lib, "ws2_32.lib")
 typedef SOCKET sock_t;
@@ -1963,6 +1965,27 @@ int main(int argc, char **argv) {
                             bqt_count(&bqt));
                     free(bfs);
                 }
+            }
+            /* Param grid self-check: codec init + verify roundtrip */
+            {
+                float w[64];
+                for (int i = 0; i < 64; i++) w[i] = (float)(i * 0.1);
+                GeoCodec gc;
+                memset(&gc, 0, sizeof(gc));
+                int ok = geo_codec_init(&gc, 0, w, 64);
+                int vok = (ok == 0) ? geo_codec_verify(&gc) : -1;
+                fprintf(stderr, "  param_grid selfcheck: init=%d verify=%d\n", ok, vok);
+                geo_codec_free(&gc);
+            }
+            /* Geo FS voronoi self-check: insert + lookup roundtrip */
+            {
+                VoronoiCache vc;
+                memset(&vc, 0, sizeof(vc));
+                voronoi_init(&vc);
+                VoronoiCell *c = voronoi_insert(&vc, 100, 0, 0, NULL);
+                VoronoiCell *lk = voronoi_lookup(&vc, 100);
+                fprintf(stderr, "  geo_fs_voronoi selfcheck: insert=%s lookup=%s\n",
+                        c ? "ok" : "FAIL", lk ? "ok" : "FAIL");
             }
             struct llama_model_params mp = llama_model_default_params();
             mp.n_gpu_layers = 0;
