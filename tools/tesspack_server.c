@@ -740,9 +740,7 @@ int main(int argc, char **argv) {
                         uintptr_t ps = ((uintptr_t)st + 4095) & ~(uintptr_t)4095;
                         uintptr_t pe = (uintptr_t)en & ~(uintptr_t)4095;
                         if (pe <= ps) continue;
-#ifdef _WIN32
-                        VirtualFree((void *)ps, (size_t)(pe - ps), MEM_DECOMMIT);
-#endif
+                        breathe_decommit((void *)ps, (size_t)(pe - ps));
                         total_saved += (pe - ps);
                     }
                 }
