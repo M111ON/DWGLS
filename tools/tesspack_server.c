@@ -44,7 +44,9 @@ typedef int sock_t;
 #define GGML_TYPE_SIZE_DECL
 #include "../core/gguf_reader.h"
 #include "../core/geo_tess_container.h"
+#include "../core/tess_resolver.h"
 #include "../core/breathe_commit.h"
+#include "../core/tess_resolver.h"
 #ifndef MAX_PATH
 #define MAX_PATH 4096
 #endif
@@ -431,8 +433,7 @@ int main(int argc, char **argv) {
     if (!pack_path) { fprintf(stderr, "Usage: tesspack_server <tesspack> [port] [dll_dir] [source_gguf]\n"); return 1; }
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
-    breathe_register();
-    atexit(breathe_unregister);
+    /* breathe_register removed — no VEH lazy commit, mmap handles paging */
 
 #ifdef _WIN32
     SetDllDirectoryA(dll_dir);
@@ -544,27 +545,86 @@ int main(int argc, char **argv) {
         tensor_names[i] = strdup(name);
         size_t bsz = tsz ? (size_t)tsz : 1;
         uint8_t *buf;
-        if (g_tess_n_gpu == 0) {
-            buf = (uint8_t *)breathe_reserve(bsz);
-        } else {
+        /* aligned alloc (32-byte, for TENSOR_ALIGNMENT) — no VEH, mmap handles paging */
 #ifdef _WIN32
-            buf = (uint8_t *)VirtualAlloc(NULL, bsz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        buf = (uint8_t *)_aligned_malloc(bsz ? bsz : 1, 32);
 #else
-            buf = (uint8_t *)calloc(bsz, 1);
+        buf = (uint8_t *)aligned_alloc(32, bsz ? (bsz + 31) & ~31 : 32);
 #endif
-            if (buf && bsz > 0) memset(buf, 0, bsz);
-        }
+        if (buf && bsz > 0) memset(buf, 0, bsz);
         if (!buf) { fprintf(stderr, "FAIL: OOM tensor %s\n", name);
             gguf_free(gctx); if (!getenv("TESS_KEEP_TEMP")) remove(tmp_gguf); tess_pack_close(&pi); return 1; }
         tensor_bufs[i] = buf;
 
         int packed = 0;
         if (csz != 0 && total_cells * csz == tsz && total_cells > 0) {
-            TensorHook hook;
-            memset(&hook, 0, sizeof(hook));
-            hook.pi = &pi;
-            int rc = load_pack_tensor(&hook, name, csz, total_cells, buf);
-            if (rc > 0) { n_from_pack++; packed = 1; }
+            /* Count capos */
+            uint32_t capo_count = 0;
+            {
+                const uint8_t *cur = pi.base + pi.index_offset;
+                const uint8_t *end = pi.base + pi.file_sz;
+                uint32_t nlen = (uint32_t)strlen(name);
+                for (uint32_t j = 0; j < pi.n_capos; j++) {
+                    if (cur + 1 > end) break;
+                    uint8_t nl = *cur++;
+                    if (cur + nl + 16 > end) break;
+                    const uint8_t *np = cur;
+                    cur += nl;
+                    uint32_t cid = *(const uint32_t *)cur;
+                    cur += 16;
+                    if (nl == (uint8_t)nlen && memcmp(np, name, nlen) == 0) {
+                        if (cid + 1 > capo_count) capo_count = cid + 1;
+                    }
+                }
+            }
+            if (capo_count == 0) capo_count = 1;
+
+            /* ONION path first: F32/F16 raw entries (cid 0xFFFFFFFF, no scatter) */
+            {
+                const uint8_t *onion = NULL;
+                uint32_t onion_sz = 0;
+                if (tess_pack_find_onion(&pi, name, &onion, &onion_sz) == 0) {
+                    uint64_t need = total_cells * (uint64_t)csz;
+                    if (onion_sz == need) {
+                        memcpy(buf, onion, onion_sz);
+                        n_from_pack++; packed = 1;
+                        /* skip capo path */
+                        goto tensor_done;
+                    }
+                }
+            }
+
+            /* Build multi-cube view (zero-copy) */
+            TessMultiCubeView mc;
+            mc.n_caps = capo_count;
+            mc.cell_size = csz;
+            mc.total_cells = total_cells;
+            mc.caps = (TessCubeView *)calloc(capo_count, sizeof(TessCubeView));
+            if (mc.caps) {
+                for (uint32_t c = 0; c < capo_count; c++) {
+                    TESS_CapoReader cr;
+                    if (tess_pack_get_capo_mmap(&pi, &cr, name, c) == 0) {
+                        mc.caps[c].base = cr.cube_data;
+                        mc.caps[c].cell_size = cr.cell_size;
+                        mc.caps[c].n_cells = cr.n_elems;
+                        mc.caps[c].capo_id = c;
+                    } else {
+                        mc.caps[c].base = NULL;
+                        mc.caps[c].cell_size = csz;
+                        mc.caps[c].n_cells = TESS_TOTAL_SLOTS;
+                        mc.caps[c].capo_id = c;
+                    }
+                }
+                /* De-scatter via resolver (zero-copy source reads) */
+                int rc = 0;
+                for (uint64_t s = 0; s < total_cells; s++) {
+                    const uint8_t *p = tess_resolve_multi(&mc, s);
+                    if (p) { memcpy(buf + s * csz, p, csz); rc++; }
+                }
+                if (rc == (int)total_cells) { n_from_pack++; packed = 1; }
+                free(mc.caps);
+            }
+        tensor_done: ;
         }
         if (!packed) {
             int found_src = 0;
