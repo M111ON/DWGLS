@@ -22,6 +22,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #include "tess_resolver.h"
 
 /* ── Jump types (from geo_jump) ────────────────────────────────── */

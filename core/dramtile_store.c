@@ -607,7 +607,13 @@ int dt_store_load_dir(DRamTileStore *store) {
             memcpy(shape, p, sizeof(uint32_t) * DT_MAX_NDIM);
             p += sizeof(uint32_t) * DT_MAX_NDIM;
             memcpy(&namelen, p, 4); p += 4;
+            /* linear probe to match dt_probe_insert placement */
             uint32_t slot = addr % DT_HASH_SLOTS;
+            for (uint32_t pp = 0; pp < DT_HASH_SLOTS; pp++) {
+                uint32_t ss = (slot + pp) % DT_HASH_SLOTS;
+                if (store->hash[ss].size == 0 && store->hash[ss].dram_addr == 0) { slot = ss; break; }
+                if ((store->hash[ss].dram_addr & ~DT_FLAGS_MASK) == addr) { slot = ss; break; }
+            }
             if (namelen > 0 && namelen < DT_NAME_MAX) {
                 memcpy(store->hash[slot].name, p, namelen);
                 store->hash[slot].name[namelen] = '\0';
@@ -629,6 +635,11 @@ int dt_store_load_dir(DRamTileStore *store) {
             memcpy(&off,  p, 8); p += 8;
             memcpy(&sz,   p, 8); p += 8;
             uint32_t slot = addr % DT_HASH_SLOTS;
+            for (uint32_t pp = 0; pp < DT_HASH_SLOTS; pp++) {
+                uint32_t ss = (slot + pp) % DT_HASH_SLOTS;
+                if (store->hash[ss].size == 0 && store->hash[ss].dram_addr == 0) { slot = ss; break; }
+                if ((store->hash[ss].dram_addr & ~DT_FLAGS_MASK) == addr) { slot = ss; break; }
+            }
             store->hash[slot].dram_addr = addr;
             store->hash[slot].offset    = off;
             store->hash[slot].size      = sz;

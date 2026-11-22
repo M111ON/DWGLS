@@ -545,7 +545,7 @@ int main(int argc, char **argv) {
         tensor_names[i] = strdup(name);
         size_t bsz = tsz ? (size_t)tsz : 1;
         uint8_t *buf;
-        /* aligned alloc (32-byte, for TENSOR_ALIGNMENT) — no VEH, mmap handles paging */
+        /* aligned alloc (32-byte, for TENSOR_ALIGNMENT) */
 #ifdef _WIN32
         buf = (uint8_t *)_aligned_malloc(bsz ? bsz : 1, 32);
 #else
