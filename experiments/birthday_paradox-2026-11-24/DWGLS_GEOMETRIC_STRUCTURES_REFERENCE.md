@@ -1,0 +1,291 @@
+# DWGLS Geometric Structures — Comprehensive Reference
+
+Date: 2026-11-25 · Consolidates all exploration from this session
+
+## 1. Core Equation
+
+```
+20736 = 144² = 128×162 = 256×81 = 4⁴×3⁴ = 12⁴
+```
+
+**Decompositions:**
+- 144 = 16×9 = 12×12 = 4×4×3×3 (geojump tower)
+- 128/2=64, 162/3=54 → 64×54 = 3456 → ×6 = 20736 (6-direction base)
+- 128/32=4, 162/54=3 → 4×3 = 12 (growth factor)
+- 128/8=16, 162/18=9 → 16×9 = 144 (tower)
+- 256×81 = 4⁴×3⁴ (tesseract × trinity)
+
+**Growth chain (×12):** 4 → 48 → 576 → 6912 → 20736
+
+## 2. Structures and Their Properties
+
+### 2.1 Tring Walk (core/infra/geo_tring_walk.h)
+- **Size:** 720 = 6 spokes × 120
+- **Stride:** 37 (coprime to 720, inverse = 253)
+- **Type:** Bijection (O(1) inverse)
+- **God number:** 360 (bidirectional ±37), 8 (with spoke ±120 + polarity ±60), 1 (O(1) inverse)
+- **Status:** Active in production
+
+### 2.2 GeoJump (sid/geo_jump.h)
+- **Structure:** 4×4 Hilbert (horizontal) ×3 floors (Peano vertical) = 48-cell block
+- **Verified:** 4×4 Hilbert ✅ bijection, 4×4 Peano (serpentine) ✅ bijection, 48-block ✅, 144-tower ✅
+- **Constants:** GEO_METATRON_COLS=4, ROWS=4, FLOORS=3, GEO_BLOCK=48, GEO_TOWER=144, GEO_FULL=20736
+- **Type:** Bijective router (HILBERT/PEANO are "walls" — idempotent projections, never placement)
+- **Status:** Used in container, not as free address space
+
+### 2.3 Goldberg Sphere (core/geo_goldberg_sphere.h)
+- **Formula:** gp_face_count(n) = 10n² + 2 (n=1..8)
+- **Levels:** 12, 42, 92, 162, 252, 362, 492, 642 tiles
+- **Total:** 2,056 tile-instances across 8 levels
+- **Birthday capacity:** √tiles = 3.5..25.3 per level
+- **Type:** Addressing layer (tile_id × dim)
+- **Tring fiber:** tick = (tile_id << 8) | dim — bijection, independently computed per dim
+- **Status:** Header, used in tests
+
+### 2.4 Diamond Shell (core/geo_diamond_field_v4.h)
+- **Formula:** shell_slots(n) = (2n+1)³ (n=0..8)
+- **Levels:** 1, 27, 125, 343, 729, 1331, 2197, 3375, 4913 slots
+- **Total:** 13,041 slots across 9 levels
+- **Birthday capacity:** √slots = 1.0..70.1 per level
+- **Classifier:** entropy-based (SCORE_THRESH), no capacity gate
+- **Type:** Storage layer (64-byte chunks)
+- **Status:** Header, used in tests
+
+### 2.5 Fan24 CRT (core/fan24_gear.h)
+- **Ring:** 24 = 8×3 (KIS wheel × hyperbolic axis wheel)
+- **CRT:** s ↦ (s%8, s%3) on Z24, gcd(8,3)=1
+- **LC (LetterCube):** 24 letter pairs = 8 mini × 3 axes
+- **Status:** Wired in b_fs, used in tesspack
+
+### 2.6 Rail Sync (core/infra/geo_rail_sync.h)
+- **Threshold:** 24° (10% of 360°)
+- **Ready:** exact match (0°)
+- **Arriving:** within 24°
+- **Sync points:** 48=2, 576=24, 6912=288, 144=6, 1728=72, 20736=864
+- **Status:** Dormant (no production consumer)
+
+### 2.7 Fibo Spine / Ribcage (core/infra/fibo_spine.h)
+- **Structure:** 1728 pipes × 12 ticks = 20736 slots
+- **Jet bridge:** tick 11 → residual → tick 13 (skip tick 12)
+- **Ribcage:** freeze at tick 12 → assign residual address
+- **Status:** Partial (tools + collection, not core production)
+
+### 2.8 Tesspack Storage (core/tess_resolver.h)
+- **Size:** 20736 slots
+- **Bijection:** cell = (slot × 37) % 20736, gcd(37, 20736)=1
+- **Type:** Collision-free by construction
+- **Status:** Active in production
+
+## 3. Mathematical Properties
+
+### 3.1 Birthday Paradox (applies to routing, not storage)
+- Single-sided collision: 1.1774×√M
+- Applies to: Goldberg tiles, Diamond shells, Batch groups, ANN doors
+- Does NOT apply to: Tesspack storage (bijection), Tring walk (bijection)
+
+### 3.2 Light Cone (Minkowski geometry)
+- Timelike: inside budget, deterministic, cheap
+- Overflow: inside radius but too costly
+- Spacelike: outside radius, O(1) prune
+- Knee: marginal gain per unit cost
+
+### 3.3 Matryoshka (nested representations)
+- **Applies to:** Tesseract 8 octant views (store 1, derive 8)
+- **Does NOT apply to:** Tring dim (independently computed), Diamond shell (entropy classes)
+- **Unverified:** Goldberg level (need to check coarsening)
+
+### 3.4 0.5 Remainder (tetra/octa/frustum)
+- **Problem:** Half-integer positions break exact bijection
+- **Rail_sync absorbs:** 0.5 << 24° → "arriving" but never "ready"
+- **Rescale option:** Double coords (0.5→1), address space 20736→41472 (breaks 12⁴)
+- **Verdict:** Use rail_sync threshold-based (already exists, dormant)
+
+### 3.5 3456 Base (6-direction structure)
+- **Formula:** 3456 = 6 × 576 = 6 × 24²
+- **Residual:** 6912 = 2 × 3456 (8-dir minus 6-dir)
+- **Inside:** 3456 = 128 × 27 = 2⁷ × 3³ (3 visible faces × 3 layers)
+- **Status:** Valid math, no consumer exists
+
+### 3.6 312 = 26×12 = 24×13 (letterpair/tesseract)
+- **26:** letterpair pool (A-Z:a-z)
+- **24:** used pairs (tesseract 8 mini × 3 axes)
+- **12:** growth factor
+- **13:** 12+1 (pool extra)
+- **Status:** Valid math, no consumer exists
+
+### 3.7 Weighted Planar Tree
+- **Concept:** Model routing as weighted tree (edges = choices, weights = success/cost)
+- **Verdict:** REDUNDANT for DWGLS (deterministic routing has no choices to weigh)
+- **Might apply to:** ANN (probabilistic cosine similarity routing)
+
+## 4. What's Proven vs Unproven
+
+### Proven ✅
+- 20736 decompositions (all variants)
+- 4×4 Hilbert bijection
+- 4×4 Peano (serpentine) bijection
+- 48-cell block bijection
+- 144-tower bijection
+- Invert Hilbert ×3 bijection
+- Sparse inverse storage (81-97% savings at ≤10% occ)
+- 25× speedup (inverse vs forward lookup)
+- 0.5 breaks exact bijection
+- Rail_sync absorbs 0.5 via threshold
+- 3456 structure is valid bijection
+- Tring dim is bijection (not projection)
+- Tring dim content is independently computed (not nested)
+- Weighted planar tree is redundant for DWGLS
+- 720 = 15 × 48 (no clean mapping)
+
+### Proven ❌ (fails)
+- XOR combination (4/16 on 4×4, 63% collision on sparse)
+- Peano weave (1/16)
+- Interleave (injective but wasteful)
+- Matryoshka on tring dim (not nested)
+- Matryoshka on diamond shell (entropy classes)
+
+### Unproven ⚠️
+- 0.5 rescale benefit vs cost (needs evaluation)
+- 3456 structure benefit (needs design + benchmark)
+- Rail_sync wiring (needs implementation + benchmark)
+- Fibo_spine wiring (needs implementation + benchmark)
+- Goldberg level nesting (need to verify coarsening)
+- Cross-dim overlap exploitation (need to verify which pairs are projections)
+
+## 5. Integration Recommendations
+
+### Ready to use now
+1. **Sparse inverse storage** — 81-97% savings at ≤10% occupancy, 25× faster lookup
+2. **Birthday collision analysis** — for any bucketed structure's capacity planning
+3. **Light cone pruning** — O(1) spacelike prune, measurable knee
+
+### Needs wiring + benchmark
+4. **Rail_sync** — threshold-based sync at every level (4→48→576→6912→20736)
+5. **Fibo_spine/jet bridge** — pipeline scheduling with async overflow
+6. **3456 base** — new 6-direction structure
+
+### Needs design first
+7. **0.5 rescale** — evaluate benefit vs cost of doubling address space
+8. **Cross-dim folding** — verify which structures are projections vs bijections
+
+### Do not use
+9. **XOR combination** — collapses space
+10. **Weighted planar tree** — redundant for deterministic routing
+11. **Matryoshka on tring dim** — independently computed, not nested
+
+## 8. Rejected / Failed / Not Suitable
+
+Principle + method/theory + reason for rejection.
+
+### 8.1 Collision / Birthday (probability-based)
+
+| # | Principle/Method | Theory | Reason Rejected |
+|---|---|---|---|
+| 1 | Meet-in-the-middle search | Bidirectional search: 2k ≈ 1.665√S steps | No reverse walk toward unknown target. Only single-sided 1.1774√M transfers. |
+| 2 | POC "saved X% compute" | Light-cone bound on synthetic required_cycles | `required_cycles` from `np.random.exponential`. Saving is property of generator, not system. |
+| 3 | Birthday on 20736 storage cube | Collision probability in bucketed map | Tesspack storage is bijection (stride-37). Collision-free by construction. Birthday applies to routing, not storage. |
+
+### 8.2 Cross-dimensional combination (XOR/interleave/weave)
+
+| # | Principle/Method | Theory | Reason Rejected |
+|---|---|---|---|
+| 4 | XOR of Hilbert × Peano (4×4) | Combine two walks via XOR | Collapses: 4 unique / 16 (12 collisions). |
+| 5 | XOR of Hilbert × Peano (sparse) | Same on larger grids | 63% collision (96/259). Not suitable as unique address. |
+| 6 | Peano weave (XOR of two Peano) | XOR two serpentine patterns | Total collision: 1/16 on 4×4. |
+| 7 | Interleave (Hilbert \| Peano<<4) | Concatenate two curve indices | Injective (0 collisions) but wasteful: 16 values in 0..255. Not compact. |
+
+### 8.3 Matryoshka (nested/truncation)
+
+| # | Principle/Method | Theory | Reason Rejected |
+|---|---|---|---|
+| 8 | Matryoshka on tring dim | Truncate larger dim to get smaller | Independently computed per dim (bit-pack). Not nested. Truncation gives dim, not tile_id. |
+| 9 | Matryoshka on diamond shell | Lower level = coarsening of higher | Entropy classes (SCORE_THRESH), not resolution levels. No nesting. |
+| 10 | Matryoshka on goldberg level | Lower level = coarsening of higher | Unverified. Not confirmed rejected, not confirmed either. |
+
+### 8.4 Learned/reranking approaches
+
+| # | Principle/Method | Theory | Reason Rejected |
+|---|---|---|---|
+| 11 | Weighted planar tree | Weighted tree (edges=choices, weights=success/cost) | DWGLS routing is deterministic (bijection). No choices to weigh. P4 feedback + light cone already cover. Redundant. Might apply to ANN only. |
+| 12 | Decision tree rerank/prune | Prune underperforming paths via event triggers | Light cone already does O(1) spacelike pruning. Decision tree adds learned layer on deterministic routing. Nothing to learn. |
+
+### 8.5 Geometric structures (0.5 / residual)
+
+| # | Principle/Method | Theory | Reason Rejected |
+|---|---|---|---|
+| 13 | Tetra compound (5 tetra in dodecahedron) | Higher-direction addressing | Produces 0.5 (half-integer). MAP-not-COMPRESS requires exact integer bijection. 0.5 breaks it. |
+| 14 | Octa compound (8 octa in cube) | Higher-direction addressing | Same 0.5 remainder. Diagonal positions at half-integers. |
+| 15 | Frustum (truncated pyramid) | 6-direction with virtual apex | (a+b)/2 mid-section produces 0.5 when a,b have different parity. Pythagorean slope produces half-integers. |
+| 16 | 0.5 rescale (double coords) | Convert 0.5→1 by doubling address space | Possible (20736→41472) but breaks 12⁴ symmetry. Cost may not justify. Alternative: rail_sync threshold. |
+| 17 | 3456 base (6-direction structure) | 3456 = 6×576 = 6×24² | Valid math, no consumer. Needs new structure design + benchmark. Not rejected, unimplemented. |
+
+### 8.6 Scale-dependent / unreliable
+
+| # | Principle/Method | Theory | Reason Rejected |
+|---|---|---|---|
+| 18 | Seam detection on 4×4 | Hilbert/Peano disagreement marks boundaries | 75% on 4×4 vs 23.2% on 8×8. Not scale-invariant. Unreliable at small scales. |
+| 19 | LC using fan24 CRT | LetterCube uses same 24 as fan24 CRT | Share number 24 (8×3) but different systems. LC does not use CRT bijection. |
+
+### 8.7 Not suitable for production
+
+| # | Principle/Method | Theory | Reason Rejected |
+|---|---|---|---|
+| 20 | LC-Tilecube (test_lc_integration.c) | Integrate tesspack + dim_bridge + 26cell | Test only. 20736-byte chunks. Byte-exact roundtrip verified but not wired to serve path. |
+| 21 | Rail_sync (dormant) | Threshold-based phase sync (24°) | No production consumer. Headers + tests only. Needs wiring + benchmark. |
+| 22 | Fibo_spine/ribcage (partial) | 1728 pipes × 12 ticks pipeline | Used in tools (checkpoint sweep, tesspack graft display) but not core production. |
+
+### 8.8 Compression (historical)
+
+| # | Principle/Method | Theory | Reason Rejected |
+|---|---|---|---|
+| 23 | All transforms (digit-split, CRT, quadtree, frames, bipolar, zstd, Huffman) | Rearrangement reduces entropy | ~15 proofs: every transform conserves bits. Rearrangement never reduces entropy. Only elimination + scoped lossy. |
+| 24 | Compression as field identity | Field should compress data | DWGLS is MAP not COMPRESS. Compression reads values (violates value-blindness). |
+| 25 | Permutation as compression | Shuffle data to compress | Permutation never reduces entropy. Geometry organizes addresses, never de-randomizes values. |
+
+### 8.9 Other rejected (from project memory)
+
+| # | Principle/Method | Theory | Reason Rejected |
+|---|---|---|---|
+| 26 | Meet-in-the-middle for ANN | Bidirectional search on unknown target | No reverse walk. Only single-sided birthday. |
+| 27 | Per-plane metric (separate clocks) | Each dimension has own distance metric | Rankings incomparable. Retrieval ill-posed. One shared metric required. |
+| 28 | Intra-tensor reindex | Move tensor via reindex | Destroys column identity and row locality. Whole tensor must move preserving layout. |
+| 29 | tesseract + tensor for ANN | Collision avoidance via extra dimension | ANN uses cosine similarity, not geometric addressing. Different layer. |
+| 30 | Compression for storage | Store compressed weights | DWGLS serves via O(1) address. Compression adds decode cost. Value-blindness violated. |
+
+## 9. Summary: What to Use vs What to Avoid
+
+### USE (proven, ready)
+- Sparse inverse storage (81-97% savings, 25× faster)
+- Birthday collision analysis (capacity planning)
+- Light cone pruning (O(1) spacelike prune, measurable knee)
+- Stride-37 bijection (O(1) address, collision-free)
+- Tesseract 8 octant views (store 1, derive 8)
+- Rail_sync threshold (if wired + benchmarked)
+- Fan24 CRT (8×3=24, wired in b_fs)
+
+### AVOID (rejected/failed)
+- XOR combination of two walks (collapses)
+- Peano weave (total collision)
+- Meet-in-the-middle (no reverse walk)
+- Weighted planar tree (redundant for deterministic routing)
+- Matryoshka on tring dim/diamond shell (not nested)
+- Compression as field identity (violates value-blindness)
+- Per-plane metrics (ill-posed retrieval)
+
+### EVALUATE (unproven, needs work)
+- 0.5 rescale (benefit vs cost)
+- 3456 structure (needs design + benchmark)
+- Rail_sync wiring (needs implementation + benchmark)
+- Fibo_spine wiring (needs implementation + benchmark)
+- Goldberg level nesting (need to verify coarsening)
+- Cross-dim folding (need to verify projections vs bijections)
+
+## 7. Files
+
+- `experiments/birthday_paradox-2026-11-24/FINDINGS.md` — birthday/light-cone ANN analysis
+- `experiments/birthday_paradox-2026-11-24/invert_hilbert_peano_results.md` — invert-Hilbert/Peano results
+- `experiments/birthday_paradox-2026-11-24/geojump_verify_results.md` — geojump structural verification
+- `experiments/birthday_paradox-2026-11-24/remaining_proofs.md` — remaining proofs (0.5, cross-dim, 3456)
+- `experiments/birthday_paradox-2026-11-24/remaining_proofs2.md` — additional proofs (rescale, planar tree, rail_sync, matryoshka)
+- Session notes: #33 (structures), #34 (FGLS_new history + rail_sync), #35 (3456 residual), #36 (weighted planar tree)
+- Project memories: #8418 (ANN frontier), #8419 (DWGLS mapping), #8420 (core equation), #8421 (FGLS_new constraint), #8422 (rail_sync), #8423 (uint64→uint32 fold), #8424 (3456 residual), #8425 (frustum virtual apex), #8426 (rail_sync x12), #8427 (letterpair/CRT), #8428 (312), #8429 (weighted planar tree)

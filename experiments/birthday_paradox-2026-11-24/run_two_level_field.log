@@ -1,0 +1,48 @@
+corpus V 54527 x 768 (unit norm)
+real table K=64 dim=768 ntr=65275
+
+[real K=64] door membership min/med/mean/max = 269/1533/1704/4581  (total 109054 = 2.00 x N)
+[real K=64] imbalance max/mean = 2.69
+[cone b= 1] ceiling 0.6760  all-top10-inside 0.263  rows walked 2071
+[cone b= 2] ceiling 0.8043  all-top10-inside 0.417  rows walked 4242
+[cone b= 3] ceiling 0.8707  all-top10-inside 0.540  rows walked 6212
+[cone b= 5] ceiling 0.9303  all-top10-inside 0.650  rows walked 9951
+[cone b= 8] ceiling 0.9660  all-top10-inside 0.780  rows walked 14665
+[cone b=16] ceiling 0.9943  all-top10-inside 0.950  rows walked 25727
+[cone b=24] ceiling 0.9987  all-top10-inside 0.987  rows walked 34259
+[K=  8] r90=24989rows/b2 r95=33604rows/b3 r99=41248rows/b4 | door max/mean 1.40
+[K= 16] r90=19057rows/b3 r95=24503rows/b4 r99=37323rows/b7 | door max/mean 1.53
+[K= 24] r90=13488rows/b3 r95=20818rows/b5 r99=35417rows/b10 | door max/mean 1.61
+[K= 32] r90=11342rows/b3 r95=17488rows/b5 r99=30484rows/b10 | door max/mean 2.10
+[K= 48] r90=10689rows/b4 r95=17227rows/b7 r99=29182rows/b14 | door max/mean 2.29
+[K= 64] r90=8118rows/b4 r95=13222rows/b7 r99=28314rows/b18 | door max/mean 2.38
+[K= 96] r90=5839rows/b4 r95=11045rows/b8 r99=26904rows/b24 | door max/mean 2.51
+[K=144] r90=4938rows/b5 r95=9267rows/b10 r99=22766rows/b30 | door max/mean 2.88
+[K=192] r90=4621rows/b6 r95=8739rows/b12 r99=21631rows/b36 | door max/mean 3.59
+[K=256] r90=4268rows/b7 r95=7491rows/b13 r99=18043rows/b37 | door max/mean 3.71
+
+cheapest (K,b) per recall target:
+  recall>=0.9: K=256 b=7 rows=4268 (7.8% of corpus)
+  recall>=0.95: K=256 b=13 rows=7491 (13.7% of corpus)
+  recall>=0.99: K=256 b=37 rows=18043 (33.1% of corpus)
+
+[real K=64] r90=8198rows/b4 r95=13176rows/b7 r99=21966rows/b13
+[cone b= 1] rows   2071 (  3.8%) recall@10 0.6760
+[cone b= 2] rows   4242 (  7.8%) recall@10 0.8043
+[cone b= 3] rows   6212 ( 11.4%) recall@10 0.8707
+[cone b= 4] rows   8198 ( 15.0%) recall@10 0.9043
+[cone b= 6] rows  11581 ( 21.2%) recall@10 0.9490
+[cone b= 8] rows  14665 ( 26.9%) recall@10 0.9660
+[cone b=12] rows  20601 ( 37.8%) recall@10 0.9883
+[cone b=16] rows  25727 ( 47.2%) recall@10 0.9943
+[cone b=24] rows  34259 ( 62.8%) recall@10 0.9987
+[cone b=32] rows  41189 ( 75.5%) recall@10 0.9993
+[cone b=64] rows  54527 (100.0%) recall@10 1.0000
+
+[b=2 cone] top-10 inside 0.804 | recoverable by b=8 0.162 | outside b=8 (spacelike residual) 0.034
+
+birthday scale of a state space M:
+  M=   720  sqrt(M)=  26.83  k50=1.1774*sqrt(M)=  31.59  two-level optimum n*=27
+  M= 20736  sqrt(M)= 144.00  k50=1.1774*sqrt(M)= 169.55  two-level optimum n*=144
+
+wrote I:\DWGLS-native-fs\experiments\birthday_paradox-2026-11-24\experiment_two_level_field.json
