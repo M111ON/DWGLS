@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+<title>GeoGebra - Construction Protocol</title>
+<meta http-equiv="content-type" content="text/html; charset=utf-8"></head>
+<body>
+<h1>segment-regen4</h1>
+<table border="1">
+<tr>
+<th>Name</th>
+<th>Definition</th>
+<th>Value</th>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point A</span></td>
+<td>&nbsp;</td>
+<td><span style="color:#4D4DFF">A = (0, 3)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point B</span></td>
+<td><span style="color:#6464E6">Point(xAxis)</span></td>
+<td><span style="color:#6464E6">B = (0, 0)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point B'</span></td>
+<td><span style="color:#6464E6">Rotate(B, -36&#176;, A)</span></td>
+<td><span style="color:#6464E6">B' = (-1.7633557569, 0.5729490169)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#EB0000">Angle ±</span></td>
+<td><span style="color:#EB0000">Angle(B', A, B)</span></td>
+<td><span style="color:#EB0000">± = 36°</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point A'</span></td>
+<td><span style="color:#4D4DFF">Rotate(A, 36&#176;, B)</span></td>
+<td><span style="color:#4D4DFF">A' = (-1.7633557569, 2.4270509831)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#006400">Angle ²</span></td>
+<td><span style="color:#006400">Angle(A, B, A')</span></td>
+<td><span style="color:#006400">² = 36°</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td>Ray g</td>
+<td>Ray(A, B')</td>
+<td>g: 2.4270509831x - 1.7633557569y = -5.2900672706</td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td>Ray h</td>
+<td>Ray(B, A')</td>
+<td>h: -2.4270509831x - 1.7633557569y = 0</td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point C</span></td>
+<td><span style="color:#CC0000">Intersect(g, h)</span></td>
+<td><span style="color:#CC0000">C = (-1.089813792, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point D</span></td>
+<td>&nbsp;</td>
+<td><span style="color:#4D4DFF">D = (0, 3)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point D'</span></td>
+<td><span style="color:#4D4DFF">Rotate(D, -72&#176;, C)</span></td>
+<td><span style="color:#4D4DFF">D' = (0.6735419649, 0.9270509831)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#006400">Angle ³</span></td>
+<td><span style="color:#006400">Angle(D', C, D)</span></td>
+<td><span style="color:#006400">³ = 72°</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6"><html>Point B'<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#6464E6">Rotate(B, 72&#176;, C)</span></td>
+<td><span style="color:#6464E6">B'<sub><font size="-1">1</font></sub> = (0.6735419649, 2.0729490169)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Angle ´</span></td>
+<td><span style="color:#CC0000">Angle(B, C, B'<sub><font size="-1">1</font></sub>)</span></td>
+<td><span style="color:#CC0000">´ = 72°</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#8552EB">Segment k</span></td>
+<td><span style="color:#8552EB">Segment(B'<sub><font size="-1">1</font></sub>, C)</span></td>
+<td><span style="color:#8552EB">k = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td>Segment l</td>
+<td>Segment(D', C)</td>
+<td>l = 1.8541019662</td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td>Segment m</td>
+<td>Segment(D, D')</td>
+<td>m = 2.179627584</td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td>Segment n</td>
+<td>Segment(B'<sub><font size="-1">1</font></sub>, B)</td>
+<td>n = 2.179627584</td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000"><html>Point B'<sub><font size="-1">2</font></sub></html></span></td>
+<td><span style="color:#CC0000">Rotate(B, 60&#176;, D)</span></td>
+<td><span style="color:#CC0000">B'<sub><font size="-1">2</font></sub> = (2.5980762114, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#B95386">Angle µ</span></td>
+<td><span style="color:#B95386">Angle(B, D, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#B95386">µ = 60°</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#993300">Triangle t1</span></td>
+<td><span style="color:#993300">Polygon(D, B'<sub><font size="-1">2</font></sub>, B)</span></td>
+<td><span style="color:#993300">t1 = 3.897114317</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#993300">Segment b</span></td>
+<td><span style="color:#993300">Segment(D, B'<sub><font size="-1">2</font></sub>, t1)</span></td>
+<td><span style="color:#993300">b = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#993300">Segment d</span></td>
+<td><span style="color:#993300">Segment(B'<sub><font size="-1">2</font></sub>, B, t1)</span></td>
+<td><span style="color:#993300">d = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#993300"><html>Segment b'<sub><font size="-1">2</font></sub></html></span></td>
+<td><span style="color:#993300">Segment(B, D, t1)</span></td>
+<td><span style="color:#993300">b'<sub><font size="-1">2</font></sub> = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF"><html>Point D'<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#4D4DFF">Rotate(D, -30&#176;, B)</span></td>
+<td><span style="color:#4D4DFF">D'<sub><font size="-1">1</font></sub> = (1.5, 2.5980762114)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#0000CC">Angle ¶</span></td>
+<td><span style="color:#0000CC">Angle(D'<sub><font size="-1">1</font></sub>, B, D)</span></td>
+<td><span style="color:#0000CC">¶ = 30°</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point G</span></td>
+<td>&nbsp;</td>
+<td><span style="color:#4D4DFF">G = (1.2990381057, 0.75)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point H</span></td>
+<td>&nbsp;</td>
+<td><span style="color:#4D4DFF">H = (0, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td>Segment i</td>
+<td>Segment(D, B)</td>
+<td>i = 3</td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point E</span></td>
+<td>&nbsp;</td>
+<td><span style="color:#4D4DFF">E = (0, 0)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#737373">Segment j</span></td>
+<td><span style="color:#737373">Segment(D, E)</span></td>
+<td><span style="color:#737373">j = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#8552EB">Angle ·</span></td>
+<td><span style="color:#8552EB">Angle(D, D', C)</span></td>
+<td><span style="color:#8552EB">· = 54°</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6E6D73">Point F</span></td>
+<td><span style="color:#6E6D73">Intersect(k, i)</span></td>
+<td><span style="color:#6E6D73">F = (0, 1.8541019662)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#006400">Line f</span></td>
+<td><span style="color:#006400">AngleBisector(C, D, D')</span></td>
+<td><span style="color:#006400">f: 0.9876883406x - 0.156434465y = -0.4693033951</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#006400">Line p</span></td>
+<td><span style="color:#006400">AngleBisector(C, D', D)</span></td>
+<td><span style="color:#006400">p: -0.7071067812x - 0.7071067812y = -1.1317901274</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Triangle t2</span></td>
+<td><span style="color:#CC0000">Polygon(C, B'<sub><font size="-1">1</font></sub>, B)</span></td>
+<td><span style="color:#CC0000">t2 = 1.634720688</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000"><html>Segment b<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#CC0000">Segment(C, B'<sub><font size="-1">1</font></sub>, t2)</span></td>
+<td><span style="color:#CC0000">b<sub><font size="-1">1</font></sub> = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Segment c</span></td>
+<td><span style="color:#CC0000">Segment(B'<sub><font size="-1">1</font></sub>, B, t2)</span></td>
+<td><span style="color:#CC0000">c = 2.179627584</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000"><html>Segment b'<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#CC0000">Segment(B, C, t2)</span></td>
+<td><span style="color:#CC0000">b'<sub><font size="-1">1</font></sub> = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Triangle t3</span></td>
+<td><span style="color:#008600">Polygon(D, C, D')</span></td>
+<td><span style="color:#008600">t3 = 1.634720688</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Segment d'</span></td>
+<td><span style="color:#008600">Segment(D, C, t3)</span></td>
+<td><span style="color:#008600">d' = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600"><html>Segment d<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#008600">Segment(C, D', t3)</span></td>
+<td><span style="color:#008600">d<sub><font size="-1">1</font></sub> = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600"><html>Segment c<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#008600">Segment(D', D, t3)</span></td>
+<td><span style="color:#008600">c<sub><font size="-1">1</font></sub> = 2.179627584</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#1565C0">Angle ¸</span></td>
+<td><span style="color:#1565C0">Angle(C, D, D')</span></td>
+<td><span style="color:#1565C0">¸ = 54°</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td>Text text1</td>
+<td>&nbsp;</td>
+<td>"Radial Pentagon x2"</td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td>Text text2</td>
+<td>&nbsp;</td>
+<td>"6 equal Tri > Radial Hexagon with 7CTD } x10time"</td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#006400">Line q</span></td>
+<td><span style="color:#006400">Line(B, D'<sub><font size="-1">1</font></sub>)</span></td>
+<td><span style="color:#006400">q: -2.5980762114x + 1.5y = 0</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#006400">Line r</span></td>
+<td><span style="color:#006400">Line(D, G)</span></td>
+<td><span style="color:#006400">r: 2.25x + 1.2990381057y = 3.897114317</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point I</span></td>
+<td><span style="color:#CC0000">Intersect(q, r)</span></td>
+<td><span style="color:#CC0000">I = (0.8660254038, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#BE5800">Triangle t4</span></td>
+<td><span style="color:#BE5800">Polygon(D, I, B)</span></td>
+<td><span style="color:#BE5800">t4 = 1.2990381057</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#BE5800"><html>Segment b<sub><font size="-1">2</font></sub></html></span></td>
+<td><span style="color:#BE5800">Segment(D, I, t4)</span></td>
+<td><span style="color:#BE5800">b<sub><font size="-1">2</font></sub> = 1.7320508076</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#BE5800"><html>Segment d<sub><font size="-1">2</font></sub></html></span></td>
+<td><span style="color:#BE5800">Segment(I, B, t4)</span></td>
+<td><span style="color:#BE5800">d<sub><font size="-1">2</font></sub> = 1.7320508076</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#BE5800"><html>Segment i<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#BE5800">Segment(B, D, t4)</span></td>
+<td><span style="color:#BE5800">i<sub><font size="-1">1</font></sub> = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF"><html>Point D'<sub><font size="-1">2</font></sub></html></span></td>
+<td><span style="color:#4D4DFF">Rotate(D, 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#4D4DFF">D'<sub><font size="-1">2</font></sub> = (0, 0)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point J</span></td>
+<td><span style="color:#CC0000">Rotate(B'<sub><font size="-1">2</font></sub>, 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#CC0000">J = (2.5980762114, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6"><html>Point B'<sub><font size="-1">3</font></sub></html></span></td>
+<td><span style="color:#6464E6">Rotate(B, 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#6464E6">B'<sub><font size="-1">3</font></sub> = (2.5980762114, -1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Triangle t1'</span></td>
+<td><span style="color:#767676">Polygon(D'<sub><font size="-1">2</font></sub>, J, B'<sub><font size="-1">3</font></sub>)</span></td>
+<td><span style="color:#767676">t1' = 3.897114317</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676"><html>Segment b'<sub><font size="-1">3</font></sub></html></span></td>
+<td><span style="color:#767676">Segment(D'<sub><font size="-1">2</font></sub>, J, t1')</span></td>
+<td><span style="color:#767676">b'<sub><font size="-1">3</font></sub> = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676"><html>Segment d'<sub><font size="-1">2</font></sub></html></span></td>
+<td><span style="color:#767676">Segment(J, B'<sub><font size="-1">3</font></sub>, t1')</span></td>
+<td><span style="color:#767676">d'<sub><font size="-1">2</font></sub> = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676"><html>Segment j<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#767676">Segment(B'<sub><font size="-1">3</font></sub>, D'<sub><font size="-1">2</font></sub>, t1')</span></td>
+<td><span style="color:#767676">j<sub><font size="-1">1</font></sub> = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point K</span></td>
+<td><span style="color:#4D4DFF">Rotate(D'<sub><font size="-1">2</font></sub>, 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#4D4DFF">K = (2.5980762114, -1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point J'</span></td>
+<td><span style="color:#CC0000">Rotate(J, 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#CC0000">J' = (2.5980762114, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point L</span></td>
+<td><span style="color:#6464E6">Rotate(B'<sub><font size="-1">3</font></sub>, 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#6464E6">L = (5.1961524227, 0)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Triangle t1''</span></td>
+<td><span style="color:#767676">Polygon(K, J', L)</span></td>
+<td><span style="color:#767676">t1'' = 3.897114317</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676"><html>Segment l<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#767676">Segment(K, J', t1'')</span></td>
+<td><span style="color:#767676">l<sub><font size="-1">1</font></sub> = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676"><html>Segment k<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#767676">Segment(J', L, t1'')</span></td>
+<td><span style="color:#767676">k<sub><font size="-1">1</font></sub> = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Segment j'</span></td>
+<td><span style="color:#767676">Segment(L, K, t1'')</span></td>
+<td><span style="color:#767676">j' = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point K'</span></td>
+<td><span style="color:#4D4DFF">Rotate(K, 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#4D4DFF">K' = (5.1961524227, 0)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point J''</span></td>
+<td><span style="color:#CC0000">Rotate(J', 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#CC0000">J'' = (2.5980762114, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point L'</span></td>
+<td><span style="color:#6464E6">Rotate(L, 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#6464E6">L' = (5.1961524227, 3)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Triangle t1'''</span></td>
+<td><span style="color:#767676">Polygon(K', J'', L')</span></td>
+<td><span style="color:#767676">t1''' = 3.897114317</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Segment l'</span></td>
+<td><span style="color:#767676">Segment(K', J'', t1''')</span></td>
+<td><span style="color:#767676">l' = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Segment k'</span></td>
+<td><span style="color:#767676">Segment(J'', L', t1''')</span></td>
+<td><span style="color:#767676">k' = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Segment j''</span></td>
+<td><span style="color:#767676">Segment(L', K', t1''')</span></td>
+<td><span style="color:#767676">j'' = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point K''</span></td>
+<td><span style="color:#4D4DFF">Rotate(K', 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#4D4DFF">K'' = (5.1961524227, 3)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point J'''</span></td>
+<td><span style="color:#CC0000">Rotate(J'', 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#CC0000">J''' = (2.5980762114, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point L''</span></td>
+<td><span style="color:#6464E6">Rotate(L', 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#6464E6">L'' = (2.5980762114, 4.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Triangle t5</span></td>
+<td><span style="color:#767676">Polygon(K'', J''', L'')</span></td>
+<td><span style="color:#767676">t5 = 3.897114317</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Segment l''</span></td>
+<td><span style="color:#767676">Segment(K'', J''', t5)</span></td>
+<td><span style="color:#767676">l'' = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Segment k''</span></td>
+<td><span style="color:#767676">Segment(J''', L'', t5)</span></td>
+<td><span style="color:#767676">k'' = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Segment j'''</span></td>
+<td><span style="color:#767676">Segment(L'', K'', t5)</span></td>
+<td><span style="color:#767676">j''' = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point K'''</span></td>
+<td><span style="color:#4D4DFF">Rotate(K'', 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#4D4DFF">K''' = (2.5980762114, 4.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point M</span></td>
+<td><span style="color:#CC0000">Rotate(J''', 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#CC0000">M = (2.5980762114, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point L'''</span></td>
+<td><span style="color:#6464E6">Rotate(L'', 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#6464E6">L''' = (0, 3)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Triangle t5'</span></td>
+<td><span style="color:#767676">Polygon(K''', M, L''')</span></td>
+<td><span style="color:#767676">t5' = 3.897114317</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Segment l'''</span></td>
+<td><span style="color:#767676">Segment(K''', M, t5')</span></td>
+<td><span style="color:#767676">l''' = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676">Segment k'''</span></td>
+<td><span style="color:#767676">Segment(M, L''', t5')</span></td>
+<td><span style="color:#767676">k''' = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#767676"><html>Segment m<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#767676">Segment(L''', K''', t5')</span></td>
+<td><span style="color:#767676">m<sub><font size="-1">1</font></sub> = 3</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point I'</span></td>
+<td><span style="color:#CC0000">Rotate(I, 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#CC0000">I' = (1.7320508076, 0)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point I''</span></td>
+<td><span style="color:#CC0000">Rotate(I', 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#CC0000">I'' = (3.4641016151, 0)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point I'''</span></td>
+<td><span style="color:#CC0000">Rotate(I'', 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#CC0000">I''' = (4.3301270189, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point N</span></td>
+<td><span style="color:#CC0000">Rotate(I''', 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#CC0000">N = (3.4641016151, 3)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Point N'</span></td>
+<td><span style="color:#CC0000">Rotate(N, 60&#176;, B'<sub><font size="-1">2</font></sub>)</span></td>
+<td><span style="color:#CC0000">N' = (1.7320508076, 3)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6E6D73">Point C'</span></td>
+<td><span style="color:#6E6D73">Rotate(C, 72&#176;, C)</span></td>
+<td><span style="color:#6E6D73">C' = (-1.089813792, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point O</span></td>
+<td><span style="color:#6464E6">Rotate(B'<sub><font size="-1">1</font></sub>, 72&#176;, C)</span></td>
+<td><span style="color:#6464E6">O = (-1.089813792, 3.3541019662)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6"><html>Point B'<sub><font size="-1">4</font></sub></html></span></td>
+<td><span style="color:#6464E6">Rotate(B, 72&#176;, C)</span></td>
+<td><span style="color:#6464E6">B'<sub><font size="-1">4</font></sub> = (0.6735419649, 2.0729490169)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Triangle t2'</span></td>
+<td><span style="color:#CC0000">Polygon(C', O, B'<sub><font size="-1">4</font></sub>)</span></td>
+<td><span style="color:#CC0000">t2' = 1.634720688</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000"><html>Segment b'<sub><font size="-1">4</font></sub></html></span></td>
+<td><span style="color:#CC0000">Segment(C', O, t2')</span></td>
+<td><span style="color:#CC0000">b'<sub><font size="-1">4</font></sub> = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Segment c'</span></td>
+<td><span style="color:#CC0000">Segment(O, B'<sub><font size="-1">4</font></sub>, t2')</span></td>
+<td><span style="color:#CC0000">c' = 2.179627584</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Segment o</span></td>
+<td><span style="color:#CC0000">Segment(B'<sub><font size="-1">4</font></sub>, C', t2')</span></td>
+<td><span style="color:#CC0000">o = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6E6D73"><html>Point C'<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#6E6D73">Rotate(C, -72&#176;, C)</span></td>
+<td><span style="color:#6E6D73">C'<sub><font size="-1">1</font></sub> = (-1.089813792, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point P</span></td>
+<td><span style="color:#6464E6">Rotate(B'<sub><font size="-1">1</font></sub>, -72&#176;, C)</span></td>
+<td><span style="color:#6464E6">P = (0, 0)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6"><html>Point B'<sub><font size="-1">5</font></sub></html></span></td>
+<td><span style="color:#6464E6">Rotate(B, -72&#176;, C)</span></td>
+<td><span style="color:#6464E6">B'<sub><font size="-1">5</font></sub> = (-2.179627584, 0)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000"><html>Triangle t2'<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#CC0000">Polygon(C'<sub><font size="-1">1</font></sub>, P, B'<sub><font size="-1">5</font></sub>)</span></td>
+<td><span style="color:#CC0000">t2'<sub><font size="-1">1</font></sub> = 1.634720688</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000"><html>Segment b'<sub><font size="-1">5</font></sub></html></span></td>
+<td><span style="color:#CC0000">Segment(C'<sub><font size="-1">1</font></sub>, P, t2'<sub><font size="-1">1</font></sub>)</span></td>
+<td><span style="color:#CC0000">b'<sub><font size="-1">5</font></sub> = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000"><html>Segment c'<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#CC0000">Segment(P, B'<sub><font size="-1">5</font></sub>, t2'<sub><font size="-1">1</font></sub>)</span></td>
+<td><span style="color:#CC0000">c'<sub><font size="-1">1</font></sub> = 2.179627584</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000"><html>Segment p<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#CC0000">Segment(B'<sub><font size="-1">5</font></sub>, C'<sub><font size="-1">1</font></sub>, t2'<sub><font size="-1">1</font></sub>)</span></td>
+<td><span style="color:#CC0000">p<sub><font size="-1">1</font></sub> = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6E6D73">Point Q</span></td>
+<td><span style="color:#6E6D73">Rotate(C'<sub><font size="-1">1</font></sub>, -72&#176;, C)</span></td>
+<td><span style="color:#6E6D73">Q = (-1.089813792, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point P'</span></td>
+<td><span style="color:#6464E6">Rotate(P, -72&#176;, C)</span></td>
+<td><span style="color:#6464E6">P' = (-2.179627584, 0)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point R</span></td>
+<td><span style="color:#6464E6">Rotate(B'<sub><font size="-1">5</font></sub>, -72&#176;, C)</span></td>
+<td><span style="color:#6464E6">R = (-2.8531695489, 2.0729490169)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Triangle t6</span></td>
+<td><span style="color:#CC0000">Polygon(Q, P', R)</span></td>
+<td><span style="color:#CC0000">t6 = 1.634720688</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000"><html>Segment r<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#CC0000">Segment(Q, P', t6)</span></td>
+<td><span style="color:#CC0000">r<sub><font size="-1">1</font></sub> = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000"><html>Segment q<sub><font size="-1">1</font></sub></html></span></td>
+<td><span style="color:#CC0000">Segment(P', R, t6)</span></td>
+<td><span style="color:#CC0000">q<sub><font size="-1">1</font></sub> = 2.179627584</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Segment p'</span></td>
+<td><span style="color:#CC0000">Segment(R, Q, t6)</span></td>
+<td><span style="color:#CC0000">p' = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6E6D73">Point Q'</span></td>
+<td><span style="color:#6E6D73">Rotate(Q, -72&#176;, C)</span></td>
+<td><span style="color:#6E6D73">Q' = (-1.089813792, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point P''</span></td>
+<td><span style="color:#6464E6">Rotate(P', -72&#176;, C)</span></td>
+<td><span style="color:#6464E6">P'' = (-2.8531695489, 2.0729490169)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6464E6">Point R'</span></td>
+<td><span style="color:#6464E6">Rotate(R, -72&#176;, C)</span></td>
+<td><span style="color:#6464E6">R' = (-1.089813792, 3.3541019662)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Triangle t6'</span></td>
+<td><span style="color:#CC0000">Polygon(Q', P'', R')</span></td>
+<td><span style="color:#CC0000">t6' = 1.634720688</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Segment r'</span></td>
+<td><span style="color:#CC0000">Segment(Q', P'', t6')</span></td>
+<td><span style="color:#CC0000">r' = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Segment q'</span></td>
+<td><span style="color:#CC0000">Segment(P'', R', t6')</span></td>
+<td><span style="color:#CC0000">q' = 2.179627584</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#CC0000">Segment p''</span></td>
+<td><span style="color:#CC0000">Segment(R', Q', t6')</span></td>
+<td><span style="color:#CC0000">p'' = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF"><html>Point D'<sub><font size="-1">3</font></sub></html></span></td>
+<td><span style="color:#4D4DFF">Rotate(D, -72&#176;, C)</span></td>
+<td><span style="color:#4D4DFF">D'<sub><font size="-1">3</font></sub> = (0.6735419649, 0.9270509831)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6E6D73"><html>Point C'<sub><font size="-1">2</font></sub></html></span></td>
+<td><span style="color:#6E6D73">Rotate(C, -72&#176;, C)</span></td>
+<td><span style="color:#6E6D73">C'<sub><font size="-1">2</font></sub> = (-1.089813792, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point D''</span></td>
+<td><span style="color:#4D4DFF">Rotate(D', -72&#176;, C)</span></td>
+<td><span style="color:#4D4DFF">D'' = (-1.089813792, -0.3541019662)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Triangle t3'</span></td>
+<td><span style="color:#008600">Polygon(D'<sub><font size="-1">3</font></sub>, C'<sub><font size="-1">2</font></sub>, D'')</span></td>
+<td><span style="color:#008600">t3' = 1.634720688</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Segment d''</span></td>
+<td><span style="color:#008600">Segment(D'<sub><font size="-1">3</font></sub>, C'<sub><font size="-1">2</font></sub>, t3')</span></td>
+<td><span style="color:#008600">d'' = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600"><html>Segment d'<sub><font size="-1">3</font></sub></html></span></td>
+<td><span style="color:#008600">Segment(C'<sub><font size="-1">2</font></sub>, D'', t3')</span></td>
+<td><span style="color:#008600">d'<sub><font size="-1">3</font></sub> = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600"><html>Segment c'<sub><font size="-1">2</font></sub></html></span></td>
+<td><span style="color:#008600">Segment(D'', D'<sub><font size="-1">3</font></sub>, t3')</span></td>
+<td><span style="color:#008600">c'<sub><font size="-1">2</font></sub> = 2.179627584</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point S</span></td>
+<td><span style="color:#4D4DFF">Rotate(D'<sub><font size="-1">3</font></sub>, -72&#176;, C)</span></td>
+<td><span style="color:#4D4DFF">S = (-1.089813792, -0.3541019662)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6E6D73">Point T</span></td>
+<td><span style="color:#6E6D73">Rotate(C'<sub><font size="-1">2</font></sub>, -72&#176;, C)</span></td>
+<td><span style="color:#6E6D73">T = (-1.089813792, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point D'''</span></td>
+<td><span style="color:#4D4DFF">Rotate(D'', -72&#176;, C)</span></td>
+<td><span style="color:#4D4DFF">D''' = (-2.8531695489, 0.9270509831)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Triangle t3''</span></td>
+<td><span style="color:#008600">Polygon(S, T, D''')</span></td>
+<td><span style="color:#008600">t3'' = 1.634720688</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Segment d'''</span></td>
+<td><span style="color:#008600">Segment(S, T, t3'')</span></td>
+<td><span style="color:#008600">d''' = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Segment s</span></td>
+<td><span style="color:#008600">Segment(T, D''', t3'')</span></td>
+<td><span style="color:#008600">s = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Segment t</span></td>
+<td><span style="color:#008600">Segment(D''', S, t3'')</span></td>
+<td><span style="color:#008600">t = 2.179627584</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point S'</span></td>
+<td><span style="color:#4D4DFF">Rotate(S, -72&#176;, C)</span></td>
+<td><span style="color:#4D4DFF">S' = (-2.8531695489, 0.9270509831)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6E6D73">Point T'</span></td>
+<td><span style="color:#6E6D73">Rotate(T, -72&#176;, C)</span></td>
+<td><span style="color:#6E6D73">T' = (-1.089813792, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point U</span></td>
+<td><span style="color:#4D4DFF">Rotate(D''', -72&#176;, C)</span></td>
+<td><span style="color:#4D4DFF">U = (-2.179627584, 3)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Triangle t3'''</span></td>
+<td><span style="color:#008600">Polygon(S', T', U)</span></td>
+<td><span style="color:#008600">t3''' = 1.634720688</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Segment u</span></td>
+<td><span style="color:#008600">Segment(S', T', t3''')</span></td>
+<td><span style="color:#008600">u = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Segment s'</span></td>
+<td><span style="color:#008600">Segment(T', U, t3''')</span></td>
+<td><span style="color:#008600">s' = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Segment t'</span></td>
+<td><span style="color:#008600">Segment(U, S', t3''')</span></td>
+<td><span style="color:#008600">t' = 2.179627584</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point S''</span></td>
+<td><span style="color:#4D4DFF">Rotate(S', -72&#176;, C)</span></td>
+<td><span style="color:#4D4DFF">S'' = (-2.179627584, 3)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#6E6D73">Point T''</span></td>
+<td><span style="color:#6E6D73">Rotate(T', -72&#176;, C)</span></td>
+<td><span style="color:#6E6D73">T'' = (-1.089813792, 1.5)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point U'</span></td>
+<td><span style="color:#4D4DFF">Rotate(U, -72&#176;, C)</span></td>
+<td><span style="color:#4D4DFF">U' = (0, 3)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Triangle t7</span></td>
+<td><span style="color:#008600">Polygon(S'', T'', U')</span></td>
+<td><span style="color:#008600">t7 = 1.634720688</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Segment u'</span></td>
+<td><span style="color:#008600">Segment(S'', T'', t7)</span></td>
+<td><span style="color:#008600">u' = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Segment s''</span></td>
+<td><span style="color:#008600">Segment(T'', U', t7)</span></td>
+<td><span style="color:#008600">s'' = 1.8541019662</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#008600">Segment t''</span></td>
+<td><span style="color:#008600">Segment(U', S'', t7)</span></td>
+<td><span style="color:#008600">t'' = 2.179627584</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point V</span></td>
+<td>&nbsp;</td>
+<td><span style="color:#4D4DFF">V = (-0.0885437911, 3.1660040362)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td>Circle e</td>
+<td>Circle(D, V)</td>
+<td>e: x² + (y - 3)² = 0.035397343</td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#4D4DFF">Point W</span></td>
+<td>&nbsp;</td>
+<td><span style="color:#4D4DFF">W = (0.2203115598, -0.0639299414)</span></td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><html>Circle e<sub><font size="-1">1</font></sub></html></td>
+<td>Circle(B, W)</td>
+<td>e<sub><font size="-1">1</font></sub>: x&#178; + y&#178; = 0.0526242208</td>
+</tr>
+<tr style='vertical-align:baseline;'>
+<td><span style="color:#737373">Segment a</span></td>
+<td><span style="color:#737373">Segment(D, B)</span></td>
+<td><span style="color:#737373">a = 3</span></td>
+</tr>
+</table>
+Created with <a href="https://www.geogebra.org/" target="_blank" >GeoGebra</a>
+<!-- Base64 string so that this file can be opened in GeoGebra with File -> Open -->
+<applet width='1' height='1' code='' style="display:none">
+<param name="ggbBase64" value="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">
+</applet>
+</body>
+</html>

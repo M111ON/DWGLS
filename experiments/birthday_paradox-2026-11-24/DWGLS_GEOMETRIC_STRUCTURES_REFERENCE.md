@@ -175,7 +175,7 @@ Date: 2026-11-25 · Consolidates all exploration from this session
 
 ## 8. Rejected / Failed / Not Suitable
 
-Principle + method/theory + reason for rejection.
+Principle + method/theory + reason for rejection. Sorted by category.
 
 ### 8.1 Collision / Birthday (probability-based)
 
@@ -280,6 +280,202 @@ Principle + method/theory + reason for rejection.
 - Goldberg level nesting (need to verify coarsening)
 - Cross-dim folding (need to verify projections vs bijections)
 
+## 6. Key Insights
+
+1. **DWGLS is MAP not COMPRESS** (bijection, not hash). Birthday (probabilistic) fits ANN. God number (deterministic diameter) fits DWGLS.
+2. **Equal containers + equal processing → predictable batch scope** (no probabilistic tail).
+3. **Rail_sync is a universal sync primitive** across all levels (threshold 24 = 2×12).
+4. **0.5 problem was absorbed, not solved** — rail_sync threshold accepts 0.5 as "arriving" but never "ready".
+5. **Matryoshka only applies to tesseract 8 views** — other structures use bijections or independent computation.
+6. **3456 and 1728 are beautiful but unused** — valid math, no consumer, needs new structure design.
+7. **LC (LetterCube) 24 pairs and fan24 CRT 24 are the same number but different systems** — share decomposition, not implementation.
+8. **312 = 26×12 = 24×13** — dual decomposition capturing both pool and used counts.
+9. **54×64 = 3456** — FiftyFourBridge × 8×8 bitboard = residual base. 54 = 2×27 (Rubik's cube doubled).
+10. **Ignorance was an advantage** — no calculus → no preconceived notions → own way (storytelling + geometry).
+11. **Brain creates self-consistent designs** — same numbers (972, 54, 3456, 20736) loop back in different contexts.
+12. **"geo_" prefix = 104 files** — surnames of geometric system whose ancestors were designed with 54 as origin.
+13. **EHCP Hilbert has nothing to do with it** — name is misleading. Real mechanism: color teleport gate + letterpair bond + zero-delete + rail_sync repair.
+14. **Identity V inspiration** — stalk → trap/pack → L-block (label, align axis) → place → tessellation works everywhere.
+15. **Fusion Visualizer (Gen1)** — Rubik × Bitboard × Hilbert → 3×64 = 192, 192×9 = 1728 = FS_PIPES. Origin of all exploration.
+16. **Strategic pivot** — chase O(1) speed → lost to GPU batch → pivot to determinism (preserve data value at lowest cost).
+17. **Compression history** — months spent, ~15 proofs, "MAP not COMPRESS" born from painful experience.
+18. **Deep vision** — escape fixed context window → implicit memory → Dumbledore extraction → adaptive shell growing like mountains.
+
+## 10. RDH Capture (Geometric Walk, Not Hash)
+
+RDH capture (core/rdh_capture.h, collection/rdh/rdh_capture.h): geometric walk, NOT hash.
+- Each byte's low 4 bits = direction on 12-gon (E/NE/N/SE/W/SW/S/NW/E×2/NE×2/NW×2/W×2)
+- Accumulates (dx,dy). Fold every 4096 steps. Min walk = 48 (GEO_BLOCK).
+- Final fold → RDH flat key. Flat key = address = signature = everything.
+- O(len) or O(48). Pure integer, no float, no malloc, no state.
+- Bijection when cfg capacity ≥ data entropy. Deterministic. Reversible.
+- Downstream: frame_seek enc = flat_key % 1440, face = enc/120, slot = enc%120, phase = (enc/12)%12, ico_idx = enc%162
+- Replaced FNV-1a hash (became faster)
+- Y3/Y6/Y9: relatives of Rail_sync, higher precision than RDH but slower. Y9 = best duty detector (margin 0.421). RDH = detector + address (10× faster than Y9).
+
+## 11. EHCP (Electric Hilbert Color Pallette)
+
+EHCP = Electric Hilbert Color Pallette. **Hilbert curve has NOTHING to do with it.** Name is misleading.
+- Actual mechanism: color palette as teleport gate (track switching to specified target)
+- Letterpair = bond (only one pair per bond)
+- Zero-delete: delete file → create curtain with same letterpair color. Structure intact, data invisible.
+- Residual spacetime: time doesn't flow
+- Small leaks: data doesn't disappear but can't be used
+- Rail_sync repair: threshold-based guaranteed arrival ("เนื้อคู่เกิดแล้วแต่ยังไม่โต")
+- Evolved into: GeoFace Router (Geometry Morphism), Circuit Switch (relay logic), Transitive Bypass
+- Origin of tombstone/ghost/zero-delete/rail_sync concepts
+- No external system name covers all of EHCP (novel combination)
+
+## 12. LBlock (Already Exists)
+
+- `core/geo_lblock.h` (2D) + `core/geo_lblock6.h` (3D) + tests (test_geo_lblock.c, test_lblock6.c, test_lblock_bridge.c)
+- 2D: inverse Hilbert d→xy, direction 4 ways, rotation 0..3, L-shape 4 cells, fit guarantee
+- 3D: Skilling Hilbert d→xyz, 6-direction orientation via mw6 (wang6)
+- "Summon" = single function from address d, no lookup table, pure arithmetic, int-only
+- Address = data (rdh_decompose recovers block, from)
+- Used with RDH: RDH walks → stops → unfold → cover with L-block → store → address
+- Inspiration: Identity V (asymmetrical horror mobile game) — stalk → trap → pack → L-block → place
+- Status: exists + tested, not wired to production serve path
+
+## 13. FiftyFourBridge (54°) and LBlock
+
+- 54 = 6×9 = 2×3³ = 2×27 (Rubik's cube interior doubled)
+- 54/2 = 27 = 3³ (Rubik's cube)
+- 54×3 = 162 = 2×3⁴ (icosa vertex / GEO_MOD_PRIME)
+- 54×4 = 216 = 6³
+- 54 doesn't divide 360 (6.67) → creates "free centroid" (not on standard grid)
+- 54×64 = 3456 (54 = 2×27 Rubik, 64 = 8×8 bitboard)
+- 20736/54 = 384, 20736/162 = 128, 20736/216 = 96, 20736/27 = 768
+- LBlock connects to 54°: 54° creates free centroids, L-block covers them
+- New idea (not yet implemented): direction-aware hilbert (walks centroid, not filling curve)
+
+## 14. Fusion Visualizer (Gen1 Origin)
+
+- File: F:/Dowload_backup/desktop-attachments/fusion_visualizer.html
+- "FUSION // RUBIK × BITBOARD × HILBERT // TERNARY SPACE"
+- Rubik's cube (3×3×3, 3 visible faces, ternary state 0/1/2) × Bitboard (8×8=64) × Hilbert curve
+- 3 × 64 = 192; 192 × 9 = 1728 = FS_PIPES (fibo_spine)
+- Or: 27 × 64 = 1728 = 12³
+- Gen1 — origin of all geometric exploration
+- ORB (Orb Logic System) is separate concept (config-driven lazy loading, ~90% memory savings)
+
+## 15. Deferred Systems & Error Handling
+
+### Deferred (not wired to production)
+- Rail_sync: threshold-based sync (24°), dormant, no production consumer
+- Fibo_spine/ribcage: 1728 pipes × 12 ticks, partial (tools + collection)
+- Temporal rewind buffer: 972 slots, bridge exists but geo_rewind.h missing
+- KV temporal parent check: wired, active
+- Logging/assertions/retry/circuit breaker: missing
+- 0.5 rescale: possible but breaks 12⁴ symmetry
+- 3456 structure: valid bijection, no consumer
+- Cross-dim folding: unverified projections
+- Weighted planar tree / decision tree: redundant for DWGLS
+
+### Error handling (current)
+- Return codes (0/-1/-2/-3) + input validation + fail-loud
+- No logging, assertions, retry, graceful degradation, circuit breaker
+- Rewind = reactive recovery (state rollback), partially implemented
+- Deterministic = indirect error correction
+
+### Owner's reasoning
+- "Deterministic itself is already indirect error correction, but not do nothing. Later phase."
+- Complexity while unlocked → defer error handling/recovery systems
+- Core first (MAP-not-COMPRESS, bijection, value-blindness), then systems
+
+## 16. Strategic Pivot & History
+
+### Compression history (FGLS era)
+- Phase 1: Lossless compression vs JPEG (lossy) — wrong battle
+- Phase 2: LLM compression — entropy too high, also lossy
+- Phase 3: ~15 transforms proven to conserve bits
+- Phase 4: "MAP not COMPRESS" as rule — born from painful experience
+- Rule: geometry organizes addresses, never de-randomizes values
+
+### Strategic pivot (2026-11-25)
+- Early: chase O(1) speed (RDH ns-level)
+- RDH lost to large GPU batch
+- Pivot: determinism → preserve data value at lowest cost, accessible to all
+- "No matter how fast you make it, if not overwhelmingly fast, can't compete"
+- "Deterministic = indirect error correction"
+- Tools (LBlock, rail_sync, fibo_spine, RDH, EHCP) parked, not discarded
+
+### Personal journey (~1 year)
+- Started from zero, no calculus, used calculator + GeoGebra + storytelling
+- AI agents confused by approach, owner also confused
+- Built systems robust with math/geometry/determinism (anyone can understand)
+- No hardware, no funding — dithered through
+- Still having fun, still wanting to do more — "good sign"
+- Independently arrived at concepts used by Cassandra, Kafka, RocksDB, Pinecone
+
+### Deep vision
+- Escape fixed context window → grow in "things not yet known"
+- breathing_fs: focus, learn, store, pack → warp to answer
+- Climate change (capo shift): replay any past period
+- Memory extraction (Dumbledore mode): pull out specific memory chains
+- "Mask what would be lost without geometry/128×162" → simulate
+- Personal info in 3-5 years → high value extraction
+- "Maybe fantasizing, but deeply believe system can do it"
+
+### ANN vision
+- ANN demoralizing (lost to HNSW/IVF badly)
+- Developed to usable level
+- Needs embedding research + fine-tuning (requires resources)
+- Vision: light train, fast retrieval, adaptive shell (grows like mountains)
+- KV cache: fold storage, delta-only updates
+- Goal: "knowing where memory is" → "already knowing" (implicit memory)
+- Self-developing LLM (big players) not actually easy or fully realized
+
+### Cognitive insight
+- "If I knew everything from the start, I would have broken it"
+- Ignorance was advantage — no preconceived notions
+- Brain creates designs that loop back to same numbers in different contexts
+- This is self-consistency, not redundancy
+- Bias attachment: geometry (didn't actually draw in system), zero-copy (led tesspack different direction)
+- "geo_" prefix = 104 files = surnames of geometric system
+
+## 17. Memory & Note Index (Final)
+
+### Session Notes
+- #33: Beautiful mathematical structures
+- #34: FGLS_new history + rail_sync + 0.5 absorption
+- #35: 3456 residual decomposition
+- #36: Weighted planar tree + decision tree
+
+### Project Memories
+- #8418: ANN door-count frontier (K=64 vs K=256)
+- #8419: DWGLS structural mapping (goldberg, diamond, batch, tring)
+- #8420: Core equation (20736 = 144² = 128×162 = 256×81)
+- #8421: FGLS_new constraint (0.5 remainder, abandoned)
+- #8422: Rail_sync (threshold-based, dormant)
+- #8423: uint64→uint32 fold (geo_seed hot path)
+- #8424: 3456 residual decomposition
+- #8425: Frustum virtual apex method
+- #8426: Rail_sync ×12 growth chain
+- #8427: Letterpair/CRT connection
+- #8428: 312 = 26×12 = 24×13
+- #8429: Weighted planar tree (redundant for DWGLS)
+- #8430: 32×648, 36×576 additional decompositions
+- #8431: EHCP + Topology design (zero-delete, circuit switch, GeoFace Router)
+- #8432: RDH (Ring-Wedge-Mirror) Generic Addressing (RDH_TIER0 = 20736)
+- #8433: RDH blueprint (stalking watcher, free centroids, unfold+trigger)
+- #8434: RDH capture + Y3/Y6/Y9 (geometric walk, not hash)
+- #8435: RDH capture verified (geometric walk, replaces FNV-1a)
+- #8436: RDH4.html verified (GeoGebra construction protocol)
+- #8437: FiftyFourBridge (54°) + LBlock (direction-aware hilbert)
+- #8438: LBlock + RDH connection (already exists, tested)
+- #8439: Identity V inspiration (stalk → trap → pack → L-block → place)
+- #8440: Strategic pivot (determinism over speed)
+- #8441: Compression history (MAP not COMPRESS origin)
+- #8442: ANN vision (light train, fast retrieval, adaptive shell)
+- #8443: Deep vision (Dumbledore memory extraction)
+- #8444: EHCP origin (Electric Hilbert Color Pallette, Hilbert not involved)
+- #8445: EHCP Hilbert not involved (name is misleading)
+- #8446: Personal journey (from zero, GeoGebra, storytelling)
+- #8447: Cognitive insight (ignorance was advantage, self-consistency)
+- #8448: Fusion Visualizer Gen1 (Rubik × Bitboard × Hilbert)
+- #8449: ORB guide (config-driven lazy loading, separate concept)
+
 ## 7. Files
 
 - `experiments/birthday_paradox-2026-11-24/FINDINGS.md` — birthday/light-cone ANN analysis
@@ -287,5 +483,7 @@ Principle + method/theory + reason for rejection.
 - `experiments/birthday_paradox-2026-11-24/geojump_verify_results.md` — geojump structural verification
 - `experiments/birthday_paradox-2026-11-24/remaining_proofs.md` — remaining proofs (0.5, cross-dim, 3456)
 - `experiments/birthday_paradox-2026-11-24/remaining_proofs2.md` — additional proofs (rescale, planar tree, rail_sync, matryoshka)
+- `experiments/birthday_paradox-2026-11-24/DWGLS_GEOMETRIC_STRUCTURES_REFERENCE.md` — this document
+- `experiments/birthday_paradox-2026-11-24/DWGLS_DEFERRED_SYSTEMS.md` — deferred systems + error handling strategy
 - Session notes: #33 (structures), #34 (FGLS_new history + rail_sync), #35 (3456 residual), #36 (weighted planar tree)
-- Project memories: #8418 (ANN frontier), #8419 (DWGLS mapping), #8420 (core equation), #8421 (FGLS_new constraint), #8422 (rail_sync), #8423 (uint64→uint32 fold), #8424 (3456 residual), #8425 (frustum virtual apex), #8426 (rail_sync x12), #8427 (letterpair/CRT), #8428 (312), #8429 (weighted planar tree)
+- Project memories: #8418-#8449 (see above)
